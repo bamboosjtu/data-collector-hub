@@ -41,7 +41,7 @@ dev = [
 ]
 
 [project.scripts]
-dch-server = "api.server:main"
+dch-server = "run:main"
 dch-scheduler = "run_scheduler:main"
 
 [tool.uv]

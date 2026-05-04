@@ -106,33 +106,17 @@ source .venv/bin/activate  # Linux/macOS
 .venv\Scripts\activate     # Windows
 ```
 
-### 启动 API 服务
+### 启动服务
 
 ```bash
-# 方式1：使用 uv run（推荐）
-uv run python -m uvicorn api.server:app --host 0.0.0.0 --port 8000
-
-# 方式2：激活虚拟环境后
-python -m uvicorn api.server:app --host 0.0.0.0 --port 8000
+# 同时启动 API 服务和 Streamlit 管理界面
+uv run run.py
 ```
 
 服务启动后访问：
 - API 文档：http://localhost:8000/docs
 - 根端点：http://localhost:8000/
-
-### 启动管理界面（可选）
-
-本项目不是前后端分离应用。Streamlit 管理界面是同一项目内的可选运维面板，直接读取本地 SQLite 数据库；API 服务仍负责 REST、RSS、WebSocket 和 MCP 接口。
-
-```bash
-# 方式1：使用 uv run（推荐）
-uv run python -m streamlit run dashboard/app.py
-
-# 方式2：激活虚拟环境后
-python -m streamlit run dashboard/app.py
-```
-
-管理界面访问：http://localhost:8501
+- 管理界面：http://localhost:8501
 
 ### 运行集成测试
 
@@ -344,10 +328,13 @@ uv add <package-name>
 # 添加开发依赖
 uv add --dev <package-name>
 
-# 运行 API 服务
+# 同时运行 API 服务和管理界面
+uv run run.py
+
+# 单独运行 API 服务（调试）
 uv run python -m uvicorn api.server:app --reload
 
-# 运行管理界面（可选）
+# 单独运行管理界面（调试）
 uv run python -m streamlit run dashboard/app.py
 
 # 运行测试

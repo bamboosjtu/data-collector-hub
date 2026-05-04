@@ -206,6 +206,16 @@ class TaskScheduler:
         print(f"[Scheduler] Manual trigger for {plugin_id}")
         return await self._execute_plugin_task(plugin_id, config)
 
+    def _is_external_plugin(self, plugin_id: str) -> bool:
+        metadata = self.plugin_manager.get_plugin_metadata(plugin_id)
+        return bool(
+            metadata
+            and (
+                metadata.plugin_kind == "external"
+                or metadata.execution_mode == "external_job"
+            )
+        )
+
     async def _execute_plugin_task(
         self,
         plugin_id: str,
@@ -221,6 +231,15 @@ class TaskScheduler:
         Returns:
             Execution result
         """
+        if self._is_external_plugin(plugin_id):
+            error_msg = "External plugin cannot be executed by embedded scheduler"
+            print(f"[Scheduler] {error_msg}: {plugin_id}")
+            return {
+                "plugin_id": plugin_id,
+                "success": False,
+                "error": error_msg,
+            }
+
         # Check if already running
         if plugin_id in self._running_tasks:
             print(f"[Scheduler] Task already running for {plugin_id}, skipping")

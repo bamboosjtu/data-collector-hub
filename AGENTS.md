@@ -1,16 +1,21 @@
-# DataHub Rules
+# vibe-DataCollectorHub Rules
 
 ## Responsibility
-- Own ingestion API, raw event storage, canonical models, auth, cache, scheduler, and serving APIs.
-- Do not include DCP HTTP/page/session scraping code.
-- Source-specific knowledge may exist only in processing/normalizers.
+This project is the DataHub.
+It owns ingestion, raw event storage, canonical normalization, API keys, cache, scheduling, and serving APIs.
+
+## Boundaries
+- Do not implement DCP site login or page scraping here.
+- Do not expose DCP raw fields directly to consumers.
+- Source-specific mapping must live under processing/normalizers.
+- Consumers must access data through serving APIs.
 
 ## Ingestion
 - Validate SourceEvent schema.
-- Use idempotency keys.
 - Store raw events before normalization.
-- Do not drop raw payloads.
+- Use idempotency keys.
+- Preserve raw payload for traceability.
 
 ## Serving
-- Consumer APIs must use API key scopes.
-- Consumer DTOs must not expose collector-specific raw fields unless explicitly requested.
+- Consumer APIs must enforce API key scopes.
+- Sandbox APIs return sandbox DTOs, not raw DCP records.

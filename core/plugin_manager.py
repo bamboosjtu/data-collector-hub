@@ -24,7 +24,9 @@ class PluginMetadata:
     def __init__(self, plugin_id: str, name: str, version: str,
                  description: str, author: str, tags: List[str],
                  config_schema: Dict[str, Any], class_name: str,
-                 file_path: Path, collection_mode: str = "full"):
+                 file_path: Path, collection_mode: str = "full",
+                 plugin_kind: str = "embedded",
+                 execution_mode: str = "embedded_pipeline"):
         self.plugin_id = plugin_id
         self.name = name
         self.version = version
@@ -35,6 +37,8 @@ class PluginMetadata:
         self.class_name = class_name
         self.file_path = file_path
         self.collection_mode = collection_mode
+        self.plugin_kind = plugin_kind
+        self.execution_mode = execution_mode
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -46,6 +50,8 @@ class PluginMetadata:
             "tags": self.tags,
             "config_schema": self.config_schema,
             "collection_mode": self.collection_mode,
+            "plugin_kind": self.plugin_kind,
+            "execution_mode": self.execution_mode,
         }
 
 
@@ -161,7 +167,9 @@ class PluginManager:
             config_schema=attrs.get("config_schema", {}),
             class_name=class_name,
             file_path=file_path,
-            collection_mode=attrs.get("collection_mode", "full")
+            collection_mode=attrs.get("collection_mode", "full"),
+            plugin_kind=attrs.get("plugin_kind", "embedded"),
+            execution_mode=attrs.get("execution_mode", "embedded_pipeline"),
         )
 
     def get_plugin_metadata(self, plugin_id: str) -> Optional[PluginMetadata]:
@@ -186,6 +194,9 @@ class PluginManager:
                 author=metadata.author,
                 tags=metadata.tags,
                 config_schema=metadata.config_schema,
+                collection_mode=metadata.collection_mode,
+                plugin_kind=metadata.plugin_kind,
+                execution_mode=metadata.execution_mode,
                 enabled=enabled,
             )
             count += 1

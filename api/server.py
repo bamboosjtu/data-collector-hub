@@ -18,7 +18,15 @@ import json
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException, Query, Response, WebSocket, WebSocketDisconnect
+from fastapi import (
+    Body,
+    FastAPI,
+    HTTPException,
+    Query,
+    Response,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 from contextlib import asynccontextmanager
@@ -28,19 +36,24 @@ import uuid
 
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.plugin_manager import PluginManager
+from core.plugin_config_validator import validate_plugin_runtime_config
+from core.dataset_resolver import resolve_dataset_key, source_ref_matches_dataset
 from core.paths import DEFAULT_DB_PATH, PLUGINS_DIR
 from core.scheduler import TaskScheduler
 from core.websocket_manager import WebSocketBroadcastManager
 from core.mcp_tools import MCPTools, TOOL_SCHEMAS
+from processing.normalizer_runner import NormalizerRunner, supported_datasets
 from storage.sqlite_store import SQLiteStore
 
 
 # Pydantic Models
 class PluginInfo(BaseModel):
     """Plugin information response model."""
+
     id: str
     name: str
     version: str
@@ -50,15 +63,29 @@ class PluginInfo(BaseModel):
     enabled: bool
     health_status: str
     collection_mode: str = "full"
+    plugin_kind: str = "embedded"
+    execution_mode: str = "embedded_pipeline"
 
 
 class PluginTriggerRequest(BaseModel):
     """Plugin trigger request model."""
+
     config: Optional[Dict[str, Any]] = Field(default_factory=dict)
+
+
+class PluginRuntimeConfigRequest(BaseModel):
+    """Plugin runtime config update request model."""
+
+    config: Dict[str, Any] = Field(default_factory=dict)
+
+
+class PluginConfigUpdateRequest(BaseModel):
+    config: Dict[str, Any]
 
 
 class PluginTriggerResponse(BaseModel):
     """Plugin trigger response model."""
+
     success: bool
     plugin_id: str
     items_fetched: int = 0
@@ -69,6 +96,7 @@ class PluginTriggerResponse(BaseModel):
 
 class RawDataItem(BaseModel):
     """Raw data item response model."""
+
     id: int
     plugin_id: str
     source: str
@@ -78,6 +106,7 @@ class RawDataItem(BaseModel):
 
 class NormalizedDataItem(BaseModel):
     """Normalized data item response model."""
+
     id: int
     plugin_id: str
     event_type: Optional[str]
@@ -92,19 +121,49 @@ class NormalizedDataItem(BaseModel):
 
 class DataQueryResponse(BaseModel):
     """Data query response model."""
+
     total: int
     items: List[Dict[str, Any]]
+
+
+class IngestionError(BaseModel):
+    """Per-event ingestion validation error."""
+
+    index: int
+    event_id: Optional[str] = None
+    idempotency_key: Optional[str] = None
+    error: str
+
+
+class IngestionResponse(BaseModel):
+    """Batch ingestion result."""
+
+    accepted: int
+    duplicated: int
+    failed: int
+    errors: List[IngestionError]
+
+
+class ProcessingRunRequest(BaseModel):
+    """Manual processing run request."""
+
+    dataset_key: str = "station"
+    mode: str = "incremental"
 
 
 # MCP Models
 class MCPToolCallRequest(BaseModel):
     """MCP tool call request model."""
+
     tool: str = Field(..., description="Tool name to call")
-    parameters: Dict[str, Any] = Field(default_factory=dict, description="Tool parameters")
+    parameters: Dict[str, Any] = Field(
+        default_factory=dict, description="Tool parameters"
+    )
 
 
 class MCPToolCallResponse(BaseModel):
     """MCP tool call response model."""
+
     success: bool
     tool: str
     result: Dict[str, Any]
@@ -137,7 +196,7 @@ async def lifespan(app: FastAPI):
         store=store,
         plugin_manager=plugin_manager,
         max_concurrency=2,
-        default_timeout=30
+        default_timeout=30,
     )
     scheduler.start()
     default_job_count = scheduler.register_default_jobs()
@@ -170,11 +229,348 @@ app = FastAPI(
     title="Data Collector Hub API",
     description="REST API for Data Collector Hub v1.0",
     version="1.0.0",
-    lifespan=lifespan
+    lifespan=lifespan,
 )
 
 
 # API Routes
+
+REQUIRED_SOURCE_EVENT_FIELDS = (
+    "schema_version",
+    "event_id",
+    "idempotency_key",
+    "source_system",
+    "source_event_type",
+    "event_granularity",
+    "occurred_at",
+    "collected_at",
+    "payload",
+    "source_ref",
+)
+
+
+def _extract_ingestion_events(body: Any) -> list[Any]:
+    if isinstance(body, list):
+        return body
+    if isinstance(body, dict) and isinstance(body.get("events"), list):
+        return body["events"]
+    raise ValueError(
+        "Request body must be a SourceEvent array or an object with an events array."
+    )
+
+
+def _validate_source_event(event: Any) -> list[str]:
+    errors: list[str] = []
+    if not isinstance(event, dict):
+        return ["event must be an object"]
+
+    for field in REQUIRED_SOURCE_EVENT_FIELDS:
+        if field not in event or event.get(field) in (None, ""):
+            errors.append(f"missing required field: {field}")
+
+    if event.get("schema_version") != "source_event.v1":
+        errors.append("schema_version must be source_event.v1")
+
+    if event.get("event_granularity") not in {"envelope", "api_result", "record"}:
+        errors.append("event_granularity must be one of: envelope, api_result, record")
+
+    if not event.get("source_record_id") and not event.get("source_record_hash"):
+        errors.append("source_record_id or source_record_hash is required")
+
+    if "payload" in event and not isinstance(event.get("payload"), dict):
+        errors.append("payload must be an object")
+
+    if "source_ref" in event and not isinstance(event.get("source_ref"), dict):
+        errors.append("source_ref must be an object")
+
+    for timestamp_field in ("occurred_at", "collected_at"):
+        timestamp_value = event.get(timestamp_field)
+        if timestamp_value not in (None, ""):
+            try:
+                datetime.fromisoformat(str(timestamp_value).replace("Z", "+00:00"))
+            except ValueError:
+                errors.append(f"{timestamp_field} must be ISO datetime")
+
+    return errors
+
+
+def _merge_runtime_config(
+    current: Dict[str, Any], updates: Dict[str, Any]
+) -> Dict[str, Any]:
+    merged = dict(current)
+    for key, value in updates.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _merge_runtime_config(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _resolve_and_validate_ingestion_dataset(event: Dict[str, Any]) -> tuple[Optional[str], list[str]]:
+    """Resolve DCP dataset_key and enforce runtime config enablement."""
+    if event.get("source_system") != "dcp":
+        return None, []
+
+    dcp_plugin = store.get_plugin("dcp")
+    if not dcp_plugin:
+        return None, ["dataset_key=None: dcp plugin is not registered"]
+    if int(dcp_plugin.get("enabled", 0)) == 0:
+        return None, ["dataset_key=None: dcp plugin is disabled"]
+    if event.get("event_granularity") != "record":
+        return None, ["dataset_key=None: DCP event_granularity must be record"]
+
+    payload = event.get("payload")
+    if not isinstance(payload, dict) or not isinstance(payload.get("raw"), dict):
+        return None, ["dataset_key=None: DCP record event requires payload.raw object"]
+
+    source_ref = event.get("source_ref") if isinstance(event.get("source_ref"), dict) else {}
+    required_source_ref_fields = (
+        "collection",
+        "page_name",
+        "api_name",
+        "raw_data_index",
+        "record_index",
+        "record_path",
+        "source_file",
+    )
+    missing_source_ref_fields = [
+        field
+        for field in required_source_ref_fields
+        if field not in source_ref or source_ref.get(field) in (None, "")
+    ]
+    if missing_source_ref_fields:
+        return None, [
+            "dataset_key=None: DCP source_ref missing required field(s): "
+            + ", ".join(missing_source_ref_fields)
+        ]
+
+    if not event.get("source_record_hash"):
+        return None, ["dataset_key=None: DCP event requires source_record_hash"]
+
+    try:
+        runtime_config = store.get_plugin_runtime_config("dcp")["config"]
+    except Exception as exc:
+        return None, [f"dataset_key=None: failed to load dcp runtime config: {exc}"]
+
+    dataset_key = resolve_dataset_key(event, runtime_config, allow_fallback=False)
+    if not dataset_key:
+        return None, ["dataset_key=None: unable to resolve DCP dataset"]
+
+    datasets = runtime_config.get("datasets") or {}
+    if dataset_key not in datasets:
+        return dataset_key, [f"dataset_key={dataset_key}: not defined in dcp runtime config"]
+
+    matches, mismatch_reason = source_ref_matches_dataset(event, datasets[dataset_key])
+    if not matches:
+        return dataset_key, [f"dataset_key={dataset_key}: source_ref mismatch: {mismatch_reason}"]
+
+    enabled_datasets = runtime_config.get("enabled_datasets") or []
+    if dataset_key not in enabled_datasets:
+        return dataset_key, [f"dataset_key={dataset_key}: not listed in enabled_datasets"]
+
+    dataset_config = datasets.get(dataset_key) or {}
+    if dataset_config.get("enabled") is not True:
+        return dataset_key, [f"dataset_key={dataset_key}: dataset config is disabled"]
+
+    return dataset_key, []
+
+
+@app.post("/ingestion/v1/events", response_model=IngestionResponse)
+async def ingest_source_events(body: Any = Body(...)):
+    """
+    Ingest SourceEvent v1 events into raw_events.
+
+    This endpoint only validates and stores raw ingestion events. It does not
+    normalize, schedule, cache, or serve consumer DTOs.
+    """
+    try:
+        events = _extract_ingestion_events(body)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    accepted = 0
+    duplicated = 0
+    failed = 0
+    errors: list[IngestionError] = []
+
+    for index, event in enumerate(events):
+        validation_errors = _validate_source_event(event)
+        if validation_errors:
+            failed += 1
+            errors.append(
+                IngestionError(
+                    index=index,
+                    event_id=event.get("event_id") if isinstance(event, dict) else None,
+                    idempotency_key=(
+                        event.get("idempotency_key")
+                        if isinstance(event, dict)
+                        else None
+                    ),
+                    error="; ".join(validation_errors),
+                )
+            )
+            continue
+
+        dataset_key, dataset_errors = _resolve_and_validate_ingestion_dataset(event)
+        if dataset_errors:
+            failed += 1
+            errors.append(
+                IngestionError(
+                    index=index,
+                    event_id=event.get("event_id"),
+                    idempotency_key=event.get("idempotency_key"),
+                    error="; ".join(dataset_errors),
+                )
+            )
+            continue
+
+        try:
+            status, _ = store.save_raw_event(event, dataset_key=dataset_key)
+        except Exception as exc:
+            failed += 1
+            errors.append(
+                IngestionError(
+                    index=index,
+                    event_id=event.get("event_id"),
+                    idempotency_key=event.get("idempotency_key"),
+                    error=str(exc),
+                )
+            )
+            continue
+
+        if status == "accepted":
+            accepted += 1
+        elif status == "duplicated":
+            duplicated += 1
+        else:
+            failed += 1
+            errors.append(
+                IngestionError(
+                    index=index,
+                    event_id=event.get("event_id"),
+                    idempotency_key=event.get("idempotency_key"),
+                    error=f"unknown storage status: {status}",
+                )
+            )
+
+    return IngestionResponse(
+        accepted=accepted,
+        duplicated=duplicated,
+        failed=failed,
+        errors=errors,
+    )
+
+
+@app.post("/processing/v1/run")
+async def run_processing(request: ProcessingRunRequest):
+    """Run a foreground normalizer pass for a supported dataset."""
+    supported = supported_datasets()
+    if request.dataset_key not in supported:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": f"unsupported dataset_key: {request.dataset_key}",
+                "supported_datasets": supported,
+            },
+        )
+    return NormalizerRunner(store).run(dataset_key=request.dataset_key, mode=request.mode)
+
+
+@app.get("/api/v1/sandbox/map/skeleton")
+async def get_sandbox_map_skeleton(
+    limit: int = Query(10000, ge=1, le=50000, description="Maximum stations/towers to return")
+):
+    """Return a minimal sandbox map skeleton from canonical current entities."""
+    stations = []
+    station_entities = store.list_canonical_entities(entity_type="station", limit=limit + 1)
+    tower_entities = store.list_canonical_entities(entity_type="tower", limit=limit + 1)
+    truncated = len(station_entities) > limit or len(tower_entities) > limit
+    for entity in station_entities[:limit]:
+        attributes = entity.get("attributes") or {}
+        stations.append(
+            {
+                "id": entity["entity_key"],
+                "project_code": attributes.get("project_code"),
+                "single_project_code": attributes.get("single_project_code"),
+                "longitude": attributes.get("longitude"),
+                "latitude": attributes.get("latitude"),
+            }
+        )
+    towers = []
+    for entity in tower_entities[:limit]:
+        attributes = entity.get("attributes") or {}
+        towers.append(
+            {
+                "id": entity["entity_key"],
+                "tower_id": attributes.get("tower_id"),
+                "single_project_code": attributes.get("single_project_code"),
+                "bidding_section_code": attributes.get("bidding_section_code"),
+                "tower_no": attributes.get("tower_no"),
+                "upstream_tower_no": attributes.get("upstream_tower_no"),
+                "longitude": attributes.get("longitude"),
+                "latitude": attributes.get("latitude"),
+                "tower_type": attributes.get("tower_type"),
+                "tower_full_height": attributes.get("tower_full_height"),
+                "nominal_height": attributes.get("nominal_height"),
+            }
+        )
+    return {
+        "meta": {
+            "limit": limit,
+            "stations_count": len(stations),
+            "towers_count": len(towers),
+            "truncated": truncated,
+        },
+        "stations": stations,
+        "towers": towers,
+        "lines": [],
+    }
+
+
+@app.get("/api/v1/sandbox/map/summary")
+async def get_sandbox_map_summary(
+    date: Optional[str] = Query(None, description="Work point date in YYYY-MM-DD format"),
+    limit: int = Query(10000, ge=1, le=50000, description="Maximum work points to return")
+):
+    """Return sandbox work point summary from canonical current entities."""
+    selected_date = date or store.get_latest_canonical_entity_date("work_point")
+    entities = (
+        store.list_canonical_entities(
+            entity_type="work_point",
+            entity_date=selected_date,
+            limit=limit + 1,
+        )
+        if selected_date
+        else []
+    )
+    truncated = len(entities) > limit
+    work_points = []
+    for entity in entities[:limit]:
+        attributes = entity.get("attributes") or {}
+        work_points.append(
+            {
+                "id": entity["entity_key"],
+                "project_name": attributes.get("project_name"),
+                "longitude": attributes.get("longitude"),
+                "latitude": attributes.get("latitude"),
+                "person_count": attributes.get("person_count"),
+                "risk_level": attributes.get("risk_level"),
+                "work_status": attributes.get("work_status"),
+                "voltage_level": attributes.get("voltage_level"),
+                "city": attributes.get("city"),
+                "work_date": attributes.get("work_date"),
+            }
+        )
+    return {
+        "meta": {
+            "date": selected_date,
+            "limit": limit,
+            "work_points_count": len(work_points),
+            "truncated": truncated,
+        },
+        "work_points": work_points,
+    }
+
 
 @app.get("/api/plugins")
 async def list_plugins():
@@ -188,23 +584,67 @@ async def list_plugins():
 
     result = []
     for plugin in plugins:
-        result.append({
-            "id": plugin["id"],
-            "name": plugin["name"],
-            "version": plugin["version"],
-            "description": plugin.get("description", ""),
-            "author": plugin.get("author", ""),
-            "tags": plugin.get("tags", []),
-            "enabled": bool(plugin.get("enabled", 1)),
-            "health_status": plugin.get("health_status", "unknown"),
-            "collection_mode": plugin.get("collection_mode", "full")
-        })
+        result.append(
+            {
+                "id": plugin["id"],
+                "name": plugin["name"],
+                "version": plugin["version"],
+                "description": plugin.get("description", ""),
+                "author": plugin.get("author", ""),
+                "tags": plugin.get("tags", []),
+                "enabled": bool(plugin.get("enabled", 1)),
+                "health_status": plugin.get("health_status", "unknown"),
+                "collection_mode": plugin.get("collection_mode", "full"),
+                "plugin_kind": plugin.get("plugin_kind", "embedded"),
+                "execution_mode": plugin.get("execution_mode", "embedded_pipeline"),
+            }
+        )
 
     return {"plugins": result}
 
 
+@app.get("/api/plugins/{plugin_id}/config")
+async def get_plugin_config(plugin_id: str):
+    plugin = store.get_plugin(plugin_id)
+    if not plugin:
+        raise HTTPException(status_code=404, detail=f"plugin not found: {plugin_id}")
+
+    runtime = store.get_plugin_runtime_config(plugin_id)
+
+    return {
+        "plugin_id": plugin_id,
+        "config": runtime["config"],
+        "config_schema": plugin.get("config") or {},
+        "source": runtime["source"],
+        "updated_at": runtime["updated_at"],
+    }
+
+
+@app.put("/api/plugins/{plugin_id}/config")
+async def update_plugin_config(plugin_id: str, request: PluginConfigUpdateRequest):
+    plugin = store.get_plugin(plugin_id)
+    if not plugin:
+        raise HTTPException(status_code=404, detail=f"plugin not found: {plugin_id}")
+
+    runtime = store.get_plugin_runtime_config(plugin_id)
+    config = _merge_runtime_config(runtime["config"], request.config)
+    errors = validate_plugin_runtime_config(plugin_id, config)
+    if errors:
+        raise HTTPException(status_code=400, detail=errors)
+
+    store.save_plugin_runtime_config(plugin_id, config)
+
+    return {
+        "plugin_id": plugin_id,
+        "saved": True,
+        "config": config,
+    }
+
+
 @app.post("/api/plugins/{plugin_id}/trigger")
-async def trigger_plugin(plugin_id: str, request: Optional[PluginTriggerRequest] = None):
+async def trigger_plugin(
+    plugin_id: str, request: Optional[PluginTriggerRequest] = None
+):
     """
     Manually trigger a plugin execution.
 
@@ -219,6 +659,11 @@ async def trigger_plugin(plugin_id: str, request: Optional[PluginTriggerRequest]
     metadata = plugin_manager.get_plugin_metadata(plugin_id)
     if not metadata:
         raise HTTPException(status_code=404, detail=f"Plugin not found: {plugin_id}")
+    if metadata.plugin_kind == "external" or metadata.execution_mode == "external_job":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Plugin {plugin_id} is external and cannot be triggered by the embedded scheduler",
+        )
 
     # Trigger execution via scheduler (reuses pipeline)
     config = request.config if request else {}
@@ -230,13 +675,13 @@ async def trigger_plugin(plugin_id: str, request: Optional[PluginTriggerRequest]
             "success": True,
             "plugin_id": plugin_id,
             "collected": result.get("items_fetched", 0),
-            "saved_ids": []  # v1.0 spec field (not implemented in MVP)
+            "saved_ids": [],  # v1.0 spec field (not implemented in MVP)
         }
     else:
         return {
             "success": False,
             "plugin_id": plugin_id,
-            "error": result.get("error", "Execution failed")
+            "error": result.get("error", "Execution failed"),
         }
 
 
@@ -244,7 +689,7 @@ async def trigger_plugin(plugin_id: str, request: Optional[PluginTriggerRequest]
 async def query_raw_data(
     plugin_id: Optional[str] = Query(None, description="Filter by plugin ID"),
     limit: int = Query(20, ge=1, le=100, description="Maximum items to return"),
-    offset: int = Query(0, ge=0, description="Offset for pagination")
+    offset: int = Query(0, ge=0, description="Offset for pagination"),
 ):
     """
     Query raw data.
@@ -285,13 +730,15 @@ async def query_raw_data(
     items = []
     for row in cursor.fetchall():
         data = json.loads(row["data"]) if row["data"] else {}
-        items.append({
-            "id": row["id"],
-            "plugin_id": row["plugin_id"],
-            "source": row["source"],
-            "data": data,
-            "created_at": row["created_at"]
-        })
+        items.append(
+            {
+                "id": row["id"],
+                "plugin_id": row["plugin_id"],
+                "source": row["source"],
+                "data": data,
+                "created_at": row["created_at"],
+            }
+        )
 
     conn.close()
 
@@ -299,7 +746,7 @@ async def query_raw_data(
         "total": total,
         "limit": limit,
         "offset": offset,
-        "data": items  # Match v1.0 API spec: use "data" not "items"
+        "data": items,  # Match v1.0 API spec: use "data" not "items"
     }
 
 
@@ -308,7 +755,7 @@ async def query_normalized_data(
     plugin_id: Optional[str] = Query(None, description="Filter by plugin ID"),
     event_type: Optional[str] = Query(None, description="Filter by event type"),
     limit: int = Query(20, ge=1, le=100, description="Maximum items to return"),
-    offset: int = Query(0, ge=0, description="Offset for pagination")
+    offset: int = Query(0, ge=0, description="Offset for pagination"),
 ):
     """
     Query normalized data.
@@ -357,18 +804,20 @@ async def query_normalized_data(
         entity = json.loads(row["entity"]) if row["entity"] else []
         payload = json.loads(row["payload"]) if row["payload"] else {}
 
-        items.append({
-            "id": row["id"],
-            "plugin_id": row["plugin_id"],
-            "event_type": row["event_type"],
-            "event_source": row["event_source"],
-            "entity": entity,
-            "event_timestamp": row["event_timestamp"],
-            "unique_key": row["unique_key"],
-            "payload": payload,
-            "confidence": row["confidence"],
-            "created_at": row["created_at"]
-        })
+        items.append(
+            {
+                "id": row["id"],
+                "plugin_id": row["plugin_id"],
+                "event_type": row["event_type"],
+                "event_source": row["event_source"],
+                "entity": entity,
+                "event_timestamp": row["event_timestamp"],
+                "unique_key": row["unique_key"],
+                "payload": payload,
+                "confidence": row["confidence"],
+                "created_at": row["created_at"],
+            }
+        )
 
     conn.close()
 
@@ -376,7 +825,7 @@ async def query_normalized_data(
         "total": total,
         "limit": limit,
         "offset": offset,
-        "data": items  # Match v1.0 API spec: use "data" not "items"
+        "data": items,  # Match v1.0 API spec: use "data" not "items"
     }
 
 
@@ -416,14 +865,14 @@ async def get_stats():
         "plugins": plugin_count,
         "raw_data": raw_count,
         "normalized_data": norm_count,
-        "task_stats": task_stats
+        "task_stats": task_stats,
     }
 
 
 @app.get("/feed/rss", response_class=PlainTextResponse)
 async def get_rss_feed(
     tag: Optional[str] = Query(None, description="Filter by plugin tag"),
-    limit: int = Query(50, ge=1, le=200, description="Number of items to return")
+    limit: int = Query(50, ge=1, le=200, description="Number of items to return"),
 ):
     """
     RSS Feed endpoint.
@@ -445,8 +894,7 @@ async def get_rss_feed(
         if tag:
             # Get plugins with the specified tag
             cursor = conn.execute(
-                "SELECT plugin_id FROM plugin_tags WHERE tag = ?",
-                (tag,)
+                "SELECT plugin_id FROM plugin_tags WHERE tag = ?", (tag,)
             )
             plugin_ids = [row["plugin_id"] for row in cursor.fetchall()]
 
@@ -521,7 +969,9 @@ async def get_rss_feed(
             if not desc_text and payload.get("content"):
                 desc_text = payload.get("content", "")[:500]
             if not desc_text:
-                desc_text = f"Event type: {row['event_type']}, Source: {row['event_source']}"
+                desc_text = (
+                    f"Event type: {row['event_type']}, Source: {row['event_source']}"
+                )
             item_desc.text = desc_text
 
             # Pub date
@@ -532,7 +982,9 @@ async def get_rss_feed(
                     if isinstance(row["event_timestamp"], str):
                         item_pub.text = row["event_timestamp"]
                     else:
-                        item_pub.text = row["event_timestamp"].strftime("%a, %d %b %Y %H:%M:%S GMT")
+                        item_pub.text = row["event_timestamp"].strftime(
+                            "%a, %d %b %Y %H:%M:%S GMT"
+                        )
                 except:
                     item_pub.text = row["created_at"]
             else:
@@ -554,8 +1006,7 @@ async def get_rss_feed(
         xml_string = reparsed.toprettyxml(indent="  ", encoding="utf-8").decode("utf-8")
 
         return PlainTextResponse(
-            content=xml_string,
-            media_type="application/rss+xml; charset=utf-8"
+            content=xml_string, media_type="application/rss+xml; charset=utf-8"
         )
 
     finally:
@@ -586,11 +1037,13 @@ async def websocket_stream(websocket: WebSocket):
 
     try:
         # Send welcome message
-        await websocket.send_json({
-            "type": "connected",
-            "client_id": client_id,
-            "message": "Connected to Data Collector Hub stream"
-        })
+        await websocket.send_json(
+            {
+                "type": "connected",
+                "client_id": client_id,
+                "message": "Connected to Data Collector Hub stream",
+            }
+        )
 
         # Handle incoming messages
         while True:
@@ -622,6 +1075,7 @@ async def websocket_stats():
 
 # MCP Endpoints
 
+
 @app.get("/mcp")
 async def mcp_discovery():
     """
@@ -639,7 +1093,7 @@ async def mcp_discovery():
     return {
         "version": "1.0.0",
         "description": "Data Collector Hub MCP Tool Interface",
-        "tools": list(TOOL_SCHEMAS.values())
+        "tools": list(TOOL_SCHEMAS.values()),
     }
 
 
@@ -667,16 +1121,15 @@ async def mcp_call(request: MCPToolCallRequest):
             detail={
                 "success": False,
                 "error": f"Unknown tool: {tool_name}",
-                "available_tools": list(TOOL_SCHEMAS.keys())
-            }
+                "available_tools": list(TOOL_SCHEMAS.keys()),
+            },
         )
 
     try:
         # Route to appropriate tool
         if tool_name == "list_plugins":
             result = mcp_tools.list_plugins(
-                enabled_only=params.get("enabled_only", False),
-                tag=params.get("tag")
+                enabled_only=params.get("enabled_only", False), tag=params.get("tag")
             )
 
         elif tool_name == "query_data":
@@ -685,7 +1138,7 @@ async def mcp_call(request: MCPToolCallRequest):
                 plugin_id=params.get("plugin_id"),
                 event_type=params.get("event_type"),
                 limit=params.get("limit", 20),
-                offset=params.get("offset", 0)
+                offset=params.get("offset", 0),
             )
 
         elif tool_name == "trigger_plugin":
@@ -694,36 +1147,30 @@ async def mcp_call(request: MCPToolCallRequest):
                     status_code=400,
                     detail={
                         "success": False,
-                        "error": "Missing required parameter: plugin_id"
-                    }
+                        "error": "Missing required parameter: plugin_id",
+                    },
                 )
             result = await mcp_tools.trigger_plugin(
-                plugin_id=params["plugin_id"],
-                config=params.get("config", {})
+                plugin_id=params["plugin_id"], config=params.get("config", {})
             )
 
         else:
             raise HTTPException(
                 status_code=400,
-                detail={"success": False, "error": f"Tool not implemented: {tool_name}"}
+                detail={
+                    "success": False,
+                    "error": f"Tool not implemented: {tool_name}",
+                },
             )
 
-        return {
-            "success": True,
-            "tool": tool_name,
-            "result": result
-        }
+        return {"success": True, "tool": tool_name, "result": result}
 
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail={
-                "success": False,
-                "tool": tool_name,
-                "error": str(e)
-            }
+            detail={"success": False, "tool": tool_name, "error": str(e)},
         )
 
 
@@ -739,16 +1186,18 @@ async def root():
             "/api/data",
             "/api/data/normalized",
             "/api/stats",
+            "/ingestion/v1/events",
             "/feed/rss",
             "/ws/stream",
             "/ws/stats",
             "/mcp",
-            "/mcp/call"
-        ]
+            "/mcp/call",
+        ],
     }
 
 
 # For direct execution
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host="0.0.0.0", port=8000)

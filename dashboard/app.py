@@ -1,12 +1,13 @@
 """
 Streamlit Dashboard for Data Collector Hub v1.0
 
-A simple read-only dashboard for viewing:
+A simple dashboard for viewing and managing:
 - Plugin status
 - Raw data
 - Normalized data
 - Task statistics
 - Logs
+- Runtime plugin configuration
 
 Usage:
     streamlit run dashboard/app.py
@@ -15,7 +16,6 @@ Usage:
 import json
 import sqlite3
 import sys
-from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -23,6 +23,9 @@ import streamlit as st
 
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from core.plugin_config_validator import validate_plugin_runtime_config
+from storage.sqlite_store import SQLiteStore
 
 # Page config
 st.set_page_config(
@@ -65,6 +68,18 @@ def get_plugin_list():
 
 
 @st.cache_data(ttl=5)
+def get_plugin_runtime_config(plugin_id):
+    """Get plugin runtime config through the shared store layer."""
+    runtime = SQLiteStore(DB_PATH).get_plugin_runtime_config(plugin_id)
+    return runtime["config"]
+
+
+def save_plugin_runtime_config(plugin_id, config):
+    """Save plugin runtime config through the shared store layer."""
+    SQLiteStore(DB_PATH).save_plugin_runtime_config(plugin_id, config)
+
+
+@st.cache_data(ttl=5)
 def get_counts():
     """Get table counts (cached)"""
     conn = get_connection()
@@ -75,6 +90,9 @@ def get_counts():
 
         cursor = conn.execute("SELECT COUNT(*) as count FROM raw_data")
         result['raw_data'] = cursor.fetchone()['count']
+
+        cursor = conn.execute("SELECT COUNT(*) as count FROM raw_events")
+        result['raw_events'] = cursor.fetchone()['count']
 
         cursor = conn.execute("SELECT COUNT(*) as count FROM normalized_data")
         result['normalized_data'] = cursor.fetchone()['count']
@@ -124,6 +142,48 @@ def get_raw_data(plugin_filter, limit):
                 LIMIT ?
             """, (plugin_filter, limit))
         return [dict(row) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
+@st.cache_data(ttl=5)
+def get_raw_events(dataset_filter, limit):
+    """Get raw SourceEvent rows (cached)."""
+    conn = get_connection()
+    try:
+        if dataset_filter == "All":
+            cursor = conn.execute("""
+                SELECT id, dataset_key, collection, page_name, api_name, source_file,
+                       occurred_at, collected_at, source_system, source_record_id,
+                       source_record_hash, source_record_key, raw_event_key
+                FROM raw_events
+                ORDER BY id DESC
+                LIMIT ?
+            """, (limit,))
+        else:
+            cursor = conn.execute("""
+                SELECT id, dataset_key, collection, page_name, api_name, source_file,
+                       occurred_at, collected_at, source_system, source_record_id,
+                       source_record_hash, source_record_key, raw_event_key
+                FROM raw_events
+                WHERE dataset_key = ?
+                ORDER BY id DESC
+                LIMIT ?
+            """, (dataset_filter, limit))
+        return [dict(row) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
+@st.cache_data(ttl=5)
+def get_raw_event_dataset_keys():
+    """Get distinct raw event dataset keys."""
+    conn = get_connection()
+    try:
+        cursor = conn.execute(
+            "SELECT DISTINCT dataset_key FROM raw_events WHERE dataset_key IS NOT NULL ORDER BY dataset_key"
+        )
+        return [row["dataset_key"] for row in cursor.fetchall()]
     finally:
         conn.close()
 
@@ -217,7 +277,7 @@ def get_event_types():
 
 # Sidebar
 st.sidebar.title("📊 Data Collector Hub")
-st.sidebar.caption("v1.0 - Read-only Dashboard")
+st.sidebar.caption("v1.0 Dashboard")
 
 # Check database exists
 if not DB_PATH.exists():
@@ -229,7 +289,7 @@ if not DB_PATH.exists():
 # Navigation
 page = st.sidebar.radio(
     "Navigation",
-    ["🏠 Home", "🔌 Plugins", "📄 Raw Data", "📋 Normalized Data", "📈 Statistics", "📝 Logs"]
+    ["🏠 Home", "🔌 Plugins", "📄 Raw Data", "🧾 Raw Events", "📋 Normalized Data", "📈 Statistics", "📝 Logs"]
 )
 
 # Home Page
@@ -240,7 +300,7 @@ if page == "🏠 Home":
     # Summary metrics
     counts = get_counts()
 
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns(5)
 
     with col1:
         st.metric("Plugins", counts.get('plugins', 0))
@@ -249,9 +309,12 @@ if page == "🏠 Home":
         st.metric("Raw Data", counts.get('raw_data', 0))
 
     with col3:
-        st.metric("Normalized Data", counts.get('normalized_data', 0))
+        st.metric("Raw Events", counts.get('raw_events', 0))
 
     with col4:
+        st.metric("Normalized Data", counts.get('normalized_data', 0))
+
+    with col5:
         st.metric("Logs", counts.get('logs', 0))
 
     st.markdown("---")
@@ -306,9 +369,37 @@ elif page == "🔌 Plugins":
                     st.write("**Config Schema:**")
                     st.json(plugin['config_schema'])
 
+                runtime_config = get_plugin_runtime_config(plugin['id'])
+                st.write("**Runtime Config:**")
+                config_text = st.text_area(
+                    "Runtime Config JSON",
+                    value=json.dumps(runtime_config, ensure_ascii=False, indent=2),
+                    height=260,
+                    key=f"runtime_config_{plugin['id']}"
+                )
+                if st.button("Save Config", key=f"save_config_{plugin['id']}"):
+                    try:
+                        parsed_config = json.loads(config_text)
+                        if not isinstance(parsed_config, dict):
+                            st.error("Runtime config must be a JSON object.")
+                        else:
+                            errors = validate_plugin_runtime_config(plugin['id'], parsed_config)
+                            if errors:
+                                st.error("Runtime config validation failed:")
+                                for error in errors:
+                                    st.error(error)
+                            else:
+                                save_plugin_runtime_config(plugin['id'], parsed_config)
+                                st.cache_data.clear()
+                                st.success("Runtime config saved.")
+                                st.rerun()
+                    except json.JSONDecodeError as exc:
+                        st.error(f"Invalid JSON: {exc}")
+
 # Raw Data Page
 elif page == "📄 Raw Data":
     st.title("📄 Raw Data")
+    st.info("raw_data stores embedded pipeline collector output. raw_events stores SourceEvent ingestion payloads.")
     st.markdown("---")
 
     # Filter by plugin
@@ -350,6 +441,24 @@ elif page == "📄 Raw Data":
                     st.json(data)
 
                 st.markdown("---")
+
+# Raw Events Page
+elif page == "🧾 Raw Events":
+    st.title("🧾 Raw Events")
+    st.markdown("---")
+
+    dataset_options = ["All"] + get_raw_event_dataset_keys()
+    selected_dataset = st.selectbox("Filter by Dataset", dataset_options)
+    limit = st.slider("Limit", 10, 100, 20)
+
+    rows = get_raw_events(selected_dataset, limit)
+
+    if not rows:
+        st.info("No raw events available.")
+    else:
+        st.write(f"Showing {len(rows)} raw events:")
+        df = pd.DataFrame(rows)
+        st.dataframe(df, use_container_width=True)
 
 # Normalized Data Page
 elif page == "📋 Normalized Data":

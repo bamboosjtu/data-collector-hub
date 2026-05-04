@@ -9,6 +9,7 @@ Assumptions:
 """
 
 from abc import ABC, abstractmethod
+from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -61,6 +62,17 @@ class BaseAdapter(ABC):
     dependencies: List[str] = []  # MVP: must be empty
     collection_mode: str = "full"  # "full" or "incremental"
 
+    def _deep_merge_config(
+        self, defaults: Dict[str, Any], overrides: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        merged = deepcopy(defaults)
+        for key, value in overrides.items():
+            if isinstance(value, dict) and isinstance(merged.get(key), dict):
+                merged[key] = self._deep_merge_config(merged[key], value)
+            else:
+                merged[key] = deepcopy(value)
+        return merged
+
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         """
         Initialize adapter with configuration.
@@ -69,11 +81,11 @@ class BaseAdapter(ABC):
             config: Plugin configuration dictionary
         """
         defaults = {
-            field_name: schema["default"]
+            field_name: deepcopy(schema["default"])
             for field_name, schema in self.config_schema.items()
             if "default" in schema
         }
-        self.config = {**defaults, **(config or {})}
+        self.config = self._deep_merge_config(defaults, config or {})
 
         # Validate dependencies (MVP requirement)
         if self.dependencies:
