@@ -15,6 +15,7 @@ Assumptions:
 """
 
 import json
+import subprocess
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -159,6 +160,22 @@ class ProcessingJobRequest(BaseModel):
     dataset_key: str
     mode: str = "incremental"
     batch_size: int = 1000
+
+
+class ExternalCollectionJobRequest(BaseModel):
+    """Background external downloader collection job request."""
+
+    plugin_id: str = "dcp"
+    profile: Optional[str] = None
+    dataset_keys: Optional[List[str]] = None
+    mode: str = "incremental"
+    processing_mode: Optional[str] = None
+    recent_days: Optional[int] = None
+    since_date: Optional[str] = None
+    until_date: Optional[str] = None
+    include_existing: Optional[bool] = None
+    force: Optional[bool] = None
+    due_only: Optional[bool] = None
 
 
 # MCP Models
@@ -398,6 +415,270 @@ def _resolve_and_validate_ingestion_dataset(event: Dict[str, Any]) -> tuple[Opti
     return dataset_key, []
 
 
+def extract_last_json_object(stdout: str) -> dict | None:
+    """Extract the last JSON object printed in subprocess stdout."""
+    text = stdout or ""
+    for start in range(len(text) - 1, -1, -1):
+        if text[start] != "{":
+            continue
+        candidate = text[start:].strip()
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return None
+
+
+def _profile_value(
+    request_value: Any,
+    profile_config: dict[str, Any],
+    profile_key: str,
+    default: Any,
+) -> Any:
+    if request_value is not None:
+        return request_value
+    if profile_key in profile_config:
+        return profile_config[profile_key]
+    return default
+
+
+def _resolve_external_collection_request(
+    request: ExternalCollectionJobRequest,
+) -> dict[str, Any]:
+    if request.plugin_id != "dcp":
+        raise HTTPException(
+            status_code=400,
+            detail={"error": f"unsupported plugin_id: {request.plugin_id}"},
+        )
+
+    try:
+        runtime_config = store.get_plugin_runtime_config("dcp")["config"]
+    except Exception as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": f"failed to load dcp runtime config: {exc}"},
+        )
+
+    profile_config: dict[str, Any] = {}
+    if request.profile:
+        profiles = runtime_config.get("collection_profiles") or {}
+        if not isinstance(profiles, dict) or request.profile not in profiles:
+            raise HTTPException(
+                status_code=400,
+                detail={"error": f"unknown collection profile: {request.profile}"},
+            )
+        profile_value = profiles.get(request.profile) or {}
+        if not isinstance(profile_value, dict):
+            raise HTTPException(
+                status_code=400,
+                detail={"error": f"collection profile must be an object: {request.profile}"},
+            )
+        profile_config = profile_value
+
+    dataset_keys = _profile_value(
+        request.dataset_keys,
+        profile_config,
+        "datasets",
+        None,
+    )
+    if not dataset_keys:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "dataset_keys is required when profile has no datasets"},
+        )
+    if not isinstance(dataset_keys, list):
+        raise HTTPException(status_code=400, detail={"error": "dataset_keys must be a list"})
+    dataset_keys = [str(dataset_key) for dataset_key in dataset_keys]
+
+    enabled_datasets = runtime_config.get("enabled_datasets") or []
+    datasets_config = runtime_config.get("datasets") or {}
+    unsupported = [dataset_key for dataset_key in dataset_keys if dataset_key not in enabled_datasets]
+    if unsupported:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "dataset_keys must be listed in dcp enabled_datasets",
+                "unsupported": unsupported,
+                "enabled_datasets": enabled_datasets,
+            },
+        )
+    disabled = [
+        dataset_key
+        for dataset_key in dataset_keys
+        if (datasets_config.get(dataset_key) or {}).get("enabled") is not True
+    ]
+    if disabled:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "dataset_keys contains disabled dataset", "disabled": disabled},
+        )
+
+    processing_mode = str(
+        _profile_value(request.processing_mode, profile_config, "processing_mode", "none")
+    )
+    if processing_mode not in {"none", "sync", "async"}:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "processing_mode must be one of: none, sync, async"},
+        )
+
+    recent_days = _profile_value(request.recent_days, profile_config, "recent_days", None)
+    if recent_days is not None and int(recent_days) <= 0:
+        raise HTTPException(status_code=400, detail={"error": "recent_days must be positive"})
+    recent_days = int(recent_days) if recent_days is not None else None
+
+    downloader_config = runtime_config.get("downloader") or {}
+    if not isinstance(downloader_config, dict):
+        downloader_config = {}
+    cwd = str(downloader_config.get("cwd") or "")
+    if not cwd:
+        raise HTTPException(status_code=400, detail={"error": "dcp downloader.cwd is required"})
+
+    datahub_url = str(
+        downloader_config.get("default_datahub_url") or "http://127.0.0.1:8000"
+    )
+    since_date = _profile_value(request.since_date, profile_config, "since_date", None)
+    until_date = _profile_value(request.until_date, profile_config, "until_date", None)
+    include_existing = bool(
+        _profile_value(request.include_existing, profile_config, "include_existing", False)
+    )
+    force = bool(_profile_value(request.force, profile_config, "force", False))
+    due_only = bool(_profile_value(request.due_only, profile_config, "due_only", False))
+
+    command = build_downloader_command(
+        downloader_config=downloader_config,
+        dataset_keys=dataset_keys,
+        datahub_url=datahub_url,
+        processing_mode=processing_mode,
+        recent_days=recent_days,
+        since_date=since_date,
+        until_date=until_date,
+        include_existing=include_existing,
+        force=force,
+        due_only=due_only,
+    )
+
+    return {
+        "runtime_config": runtime_config,
+        "dataset_keys": dataset_keys,
+        "mode": _profile_value(request.mode, profile_config, "mode", "incremental"),
+        "processing_mode": processing_mode,
+        "recent_days": recent_days,
+        "since_date": since_date,
+        "until_date": until_date,
+        "include_existing": include_existing,
+        "force": force,
+        "due_only": due_only,
+        "cwd": cwd,
+        "datahub_url": datahub_url,
+        "command": command,
+    }
+
+
+def build_downloader_command(
+    *,
+    downloader_config: dict[str, Any],
+    dataset_keys: list[str],
+    datahub_url: str,
+    processing_mode: str,
+    recent_days: int | None = None,
+    since_date: str | None = None,
+    until_date: str | None = None,
+    include_existing: bool = False,
+    force: bool = False,
+    due_only: bool = False,
+) -> list[str]:
+    uv_command = str(downloader_config.get("uv_command") or "uv")
+    python_module = str(
+        downloader_config.get("python_module") or "app.commands.dcp_datahub"
+    )
+    command = [
+        uv_command,
+        "run",
+        "python",
+        "-m",
+        python_module,
+        "collect-sync",
+        *dataset_keys,
+        "--datahub-url",
+        datahub_url,
+        "--dataset-mode",
+        "enabled",
+        "--processing-mode",
+        processing_mode,
+    ]
+    if recent_days is not None:
+        command.extend(["--recent-days", str(recent_days)])
+    if since_date:
+        command.extend(["--since-date", since_date])
+    if until_date:
+        command.extend(["--until-date", until_date])
+    if include_existing:
+        command.append("--include-existing")
+    if force:
+        command.append("--force")
+    if due_only:
+        command.append("--due-only")
+    return command
+
+
+def _run_external_collection_job(
+    *,
+    job_id: str,
+    command: list[str],
+    cwd: str,
+    timeout_seconds: int = 21600,
+) -> None:
+    """Run a downloader CLI job using a fresh SQLiteStore connection."""
+    job_store = SQLiteStore(db_path=DEFAULT_DB_PATH)
+    stdout = ""
+    stderr = ""
+    try:
+        job_store.init_schema()
+        job_store.mark_external_collection_job_running(job_id)
+        completed = subprocess.run(
+            command,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=timeout_seconds,
+        )
+        stdout = completed.stdout or ""
+        stderr = completed.stderr or ""
+        if completed.returncode == 0:
+            job_store.mark_external_collection_job_succeeded(
+                job_id,
+                completed.returncode,
+                stdout,
+                stderr,
+                extract_last_json_object(stdout),
+            )
+        else:
+            job_store.mark_external_collection_job_failed(
+                job_id,
+                completed.returncode,
+                stdout,
+                stderr,
+                f"downloader exited with code {completed.returncode}",
+            )
+    except Exception as exc:
+        try:
+            job_store.mark_external_collection_job_failed(
+                job_id,
+                None,
+                stdout,
+                stderr,
+                str(exc),
+            )
+        except Exception:
+            pass
+    finally:
+        job_store.close()
+
+
 @app.post("/ingestion/v1/events", response_model=IngestionResponse)
 async def ingest_source_events(body: Any = Body(...)):
     """
@@ -497,6 +778,81 @@ async def run_processing(request: ProcessingRunRequest):
             },
         )
     return NormalizerRunner(store).run(dataset_key=request.dataset_key, mode=request.mode)
+
+
+@app.post("/collection/v1/jobs", status_code=202)
+async def create_external_collection_job(
+    request: ExternalCollectionJobRequest,
+    background_tasks: BackgroundTasks,
+):
+    """Queue a local subprocess-backed external collection job."""
+    resolved = _resolve_external_collection_request(request)
+    active_job = store.get_active_external_collection_job(
+        request.plugin_id,
+        resolved["dataset_keys"],
+    )
+    if active_job:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "external collection job already active for overlapping dataset_keys",
+                "job": active_job,
+            },
+        )
+
+    job_id = f"collect_{uuid.uuid4().hex}"
+    job = store.create_external_collection_job(
+        job_id=job_id,
+        plugin_id=request.plugin_id,
+        profile=request.profile,
+        dataset_keys=resolved["dataset_keys"],
+        mode=resolved["mode"],
+        command=resolved["command"],
+        cwd=resolved["cwd"],
+        datahub_url=resolved["datahub_url"],
+        processing_mode=resolved["processing_mode"],
+        recent_days=resolved["recent_days"],
+        since_date=resolved["since_date"],
+        until_date=resolved["until_date"],
+        include_existing=resolved["include_existing"],
+        force=resolved["force"],
+        due_only=resolved["due_only"],
+    )
+    background_tasks.add_task(
+        _run_external_collection_job,
+        job_id=job_id,
+        command=resolved["command"],
+        cwd=resolved["cwd"],
+    )
+    return job
+
+
+@app.get("/collection/v1/jobs/{job_id}")
+async def get_external_collection_job(job_id: str):
+    """Get external collection job status."""
+    job = store.get_external_collection_job(job_id)
+    if not job:
+        raise HTTPException(
+            status_code=404,
+            detail=f"external collection job not found: {job_id}",
+        )
+    return job
+
+
+@app.get("/collection/v1/jobs")
+async def list_external_collection_jobs(
+    plugin_id: Optional[str] = Query(None),
+    status: Optional[str] = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+):
+    """List external collection jobs."""
+    return {
+        "jobs": store.list_external_collection_jobs(
+            plugin_id=plugin_id,
+            status=status,
+            limit=limit,
+        )
+    }
 
 
 def _run_processing_job(

@@ -55,6 +55,40 @@ class DcpExternalCollectorAdapter(BaseAdapter):
             "description": "SourceEvent ingestion endpoint",
             "default": "/ingestion/v1/events",
         },
+        "downloader": {
+            "type": "object",
+            "required": False,
+            "description": "本机 vibe-downloader CLI 调用配置",
+            "default": {
+                "cwd": "D:/vibe-coding/vibe-workspace/vibe-downloader/src",
+                "python_module": "app.commands.dcp_datahub",
+                "uv_command": "uv",
+                "default_datahub_url": "http://127.0.0.1:8000",
+            },
+        },
+        "collection_profiles": {
+            "type": "object",
+            "required": False,
+            "description": "外部采集 job profile；schedule_cron 当前只配置不自动启用",
+            "default": {
+                "monitor_daily": {
+                    "datasets": ["daily_meeting"],
+                    "recent_days": 3,
+                    "processing_mode": "async",
+                    "schedule_cron": "0 8,18 * * *",
+                },
+                "spatial_snapshot": {
+                    "datasets": ["tower", "station", "line_section"],
+                    "processing_mode": "async",
+                    "schedule_cron": "0 2 * * 0",
+                },
+                "planning_snapshot": {
+                    "datasets": ["year_progress"],
+                    "processing_mode": "none",
+                    "schedule_cron": "0 7 * * *",
+                },
+            },
+        },
         "schedule_cron": {
             "type": "string",
             "required": False,

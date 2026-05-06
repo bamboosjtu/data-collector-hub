@@ -138,6 +138,34 @@ CREATE TABLE IF NOT EXISTS processing_jobs (
     error TEXT
 );
 
+-- External collector subprocess jobs.
+CREATE TABLE IF NOT EXISTS external_collection_jobs (
+    job_id TEXT PRIMARY KEY,
+    plugin_id TEXT NOT NULL,
+    profile TEXT,
+    dataset_keys TEXT NOT NULL,
+    mode TEXT NOT NULL DEFAULT 'incremental',
+    status TEXT NOT NULL,
+    command TEXT NOT NULL,
+    cwd TEXT NOT NULL,
+    datahub_url TEXT NOT NULL,
+    processing_mode TEXT NOT NULL DEFAULT 'none',
+    recent_days INTEGER,
+    since_date TEXT,
+    until_date TEXT,
+    include_existing INTEGER DEFAULT 0,
+    force INTEGER DEFAULT 0,
+    due_only INTEGER DEFAULT 0,
+    exit_code INTEGER,
+    stdout TEXT,
+    stderr TEXT,
+    result TEXT,
+    error TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    started_at TIMESTAMP,
+    finished_at TIMESTAMP
+);
+
 -- Normalized data table (semi-structured layer)
 CREATE TABLE IF NOT EXISTS normalized_data (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -159,6 +187,8 @@ CREATE INDEX IF NOT EXISTS idx_normalized_plugin ON normalized_data(plugin_id);
 CREATE INDEX IF NOT EXISTS idx_normalized_event_type ON normalized_data(event_type);
 CREATE INDEX IF NOT EXISTS idx_normalized_entity ON normalized_data(entity);
 CREATE INDEX IF NOT EXISTS idx_normalized_timestamp ON normalized_data(event_timestamp);
+CREATE INDEX IF NOT EXISTS idx_external_collection_jobs_plugin_status ON external_collection_jobs(plugin_id, status);
+CREATE INDEX IF NOT EXISTS idx_external_collection_jobs_created_at ON external_collection_jobs(created_at);
 
 -- Task execution stats table
 CREATE TABLE IF NOT EXISTS task_stats (
@@ -285,6 +315,26 @@ class SQLiteStore:
             self._ensure_column(conn, "processing_jobs", "finished_at", "TIMESTAMP")
             self._ensure_column(conn, "processing_jobs", "result", "TEXT")
             self._ensure_column(conn, "processing_jobs", "error", "TEXT")
+            self._ensure_column(conn, "external_collection_jobs", "profile", "TEXT")
+            self._ensure_column(conn, "external_collection_jobs", "dataset_keys", "TEXT NOT NULL DEFAULT '[]'")
+            self._ensure_column(conn, "external_collection_jobs", "mode", "TEXT NOT NULL DEFAULT 'incremental'")
+            self._ensure_column(conn, "external_collection_jobs", "command", "TEXT NOT NULL DEFAULT '[]'")
+            self._ensure_column(conn, "external_collection_jobs", "cwd", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(conn, "external_collection_jobs", "datahub_url", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(conn, "external_collection_jobs", "processing_mode", "TEXT NOT NULL DEFAULT 'none'")
+            self._ensure_column(conn, "external_collection_jobs", "recent_days", "INTEGER")
+            self._ensure_column(conn, "external_collection_jobs", "since_date", "TEXT")
+            self._ensure_column(conn, "external_collection_jobs", "until_date", "TEXT")
+            self._ensure_column(conn, "external_collection_jobs", "include_existing", "INTEGER DEFAULT 0")
+            self._ensure_column(conn, "external_collection_jobs", "force", "INTEGER DEFAULT 0")
+            self._ensure_column(conn, "external_collection_jobs", "due_only", "INTEGER DEFAULT 0")
+            self._ensure_column(conn, "external_collection_jobs", "exit_code", "INTEGER")
+            self._ensure_column(conn, "external_collection_jobs", "stdout", "TEXT")
+            self._ensure_column(conn, "external_collection_jobs", "stderr", "TEXT")
+            self._ensure_column(conn, "external_collection_jobs", "result", "TEXT")
+            self._ensure_column(conn, "external_collection_jobs", "error", "TEXT")
+            self._ensure_column(conn, "external_collection_jobs", "started_at", "TIMESTAMP")
+            self._ensure_column(conn, "external_collection_jobs", "finished_at", "TIMESTAMP")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_canonical_entities_type ON canonical_entities(entity_type)"
             )
@@ -296,6 +346,12 @@ class SQLiteStore:
             )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_processing_jobs_dataset_status ON processing_jobs(dataset_key, status)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_external_collection_jobs_plugin_status ON external_collection_jobs(plugin_id, status)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_external_collection_jobs_created_at ON external_collection_jobs(created_at)"
             )
             conn.commit()
             print(f"[SQLiteStore] Schema initialized at {self.db_path}")
@@ -1301,6 +1357,233 @@ class SQLiteStore:
                 (dataset_key,),
             )
             return self._deserialize_processing_job(cursor.fetchone())
+        finally:
+            conn.close()
+
+    # --- External collection job operations ---
+
+    def _deserialize_external_collection_job(
+        self, row: sqlite3.Row | None
+    ) -> Optional[Dict[str, Any]]:
+        if not row:
+            return None
+        job = dict(row)
+        job["dataset_keys"] = (
+            json.loads(job["dataset_keys"]) if job.get("dataset_keys") else []
+        )
+        job["command"] = json.loads(job["command"]) if job.get("command") else []
+        job["result"] = json.loads(job["result"]) if job.get("result") else None
+        for field in ("include_existing", "force", "due_only"):
+            job[field] = bool(job.get(field))
+        return job
+
+    def create_external_collection_job(
+        self,
+        *,
+        job_id: str,
+        plugin_id: str,
+        profile: Optional[str],
+        dataset_keys: List[str],
+        mode: str,
+        command: List[str],
+        cwd: str,
+        datahub_url: str,
+        processing_mode: str = "none",
+        recent_days: Optional[int] = None,
+        since_date: Optional[str] = None,
+        until_date: Optional[str] = None,
+        include_existing: bool = False,
+        force: bool = False,
+        due_only: bool = False,
+    ) -> Dict[str, Any]:
+        conn = self._get_connection()
+        try:
+            conn.execute(
+                """
+                INSERT INTO external_collection_jobs (
+                    job_id, plugin_id, profile, dataset_keys, mode, status,
+                    command, cwd, datahub_url, processing_mode, recent_days,
+                    since_date, until_date, include_existing, force, due_only,
+                    created_at
+                )
+                VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    job_id,
+                    plugin_id,
+                    profile,
+                    json.dumps(dataset_keys, ensure_ascii=False),
+                    mode,
+                    json.dumps(command, ensure_ascii=False),
+                    cwd,
+                    datahub_url,
+                    processing_mode,
+                    recent_days,
+                    since_date,
+                    until_date,
+                    1 if include_existing else 0,
+                    1 if force else 0,
+                    1 if due_only else 0,
+                    datetime.now(),
+                ),
+            )
+            conn.commit()
+            job = self.get_external_collection_job(job_id)
+            if job is None:
+                raise RuntimeError(f"failed to create external collection job: {job_id}")
+            return job
+        finally:
+            conn.close()
+
+    def mark_external_collection_job_running(self, job_id: str) -> None:
+        conn = self._get_connection()
+        try:
+            conn.execute(
+                """
+                UPDATE external_collection_jobs
+                SET status = 'running', started_at = ?
+                WHERE job_id = ?
+                """,
+                (datetime.now(), job_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def mark_external_collection_job_succeeded(
+        self,
+        job_id: str,
+        exit_code: int,
+        stdout: str,
+        stderr: str,
+        result: Optional[Dict[str, Any]],
+    ) -> None:
+        conn = self._get_connection()
+        try:
+            conn.execute(
+                """
+                UPDATE external_collection_jobs
+                SET status = 'succeeded',
+                    finished_at = ?,
+                    exit_code = ?,
+                    stdout = ?,
+                    stderr = ?,
+                    result = ?,
+                    error = NULL
+                WHERE job_id = ?
+                """,
+                (
+                    datetime.now(),
+                    exit_code,
+                    stdout,
+                    stderr,
+                    (
+                        json.dumps(result, ensure_ascii=False, default=str)
+                        if result is not None
+                        else None
+                    ),
+                    job_id,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def mark_external_collection_job_failed(
+        self,
+        job_id: str,
+        exit_code: Optional[int],
+        stdout: str,
+        stderr: str,
+        error: str,
+    ) -> None:
+        conn = self._get_connection()
+        try:
+            conn.execute(
+                """
+                UPDATE external_collection_jobs
+                SET status = 'failed',
+                    finished_at = ?,
+                    exit_code = ?,
+                    stdout = ?,
+                    stderr = ?,
+                    error = ?
+                WHERE job_id = ?
+                """,
+                (datetime.now(), exit_code, stdout, stderr, error, job_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def get_external_collection_job(
+        self, job_id: str
+    ) -> Optional[Dict[str, Any]]:
+        conn = self._get_connection()
+        try:
+            cursor = conn.execute(
+                "SELECT * FROM external_collection_jobs WHERE job_id = ?",
+                (job_id,),
+            )
+            return self._deserialize_external_collection_job(cursor.fetchone())
+        finally:
+            conn.close()
+
+    def list_external_collection_jobs(
+        self,
+        plugin_id: Optional[str] = None,
+        status: Optional[str] = None,
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        conn = self._get_connection()
+        try:
+            where = ["1=1"]
+            params: list[Any] = []
+            if plugin_id:
+                where.append("plugin_id = ?")
+                params.append(plugin_id)
+            if status:
+                where.append("status = ?")
+                params.append(status)
+            params.append(limit)
+            cursor = conn.execute(
+                f"""
+                SELECT * FROM external_collection_jobs
+                WHERE {' AND '.join(where)}
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                params,
+            )
+            return [
+                job
+                for row in cursor.fetchall()
+                if (job := self._deserialize_external_collection_job(row)) is not None
+            ]
+        finally:
+            conn.close()
+
+    def get_active_external_collection_job(
+        self, plugin_id: str, dataset_keys: List[str]
+    ) -> Optional[Dict[str, Any]]:
+        requested = set(dataset_keys)
+        if not requested:
+            return None
+        conn = self._get_connection()
+        try:
+            cursor = conn.execute(
+                """
+                SELECT * FROM external_collection_jobs
+                WHERE plugin_id = ? AND status IN ('queued', 'running')
+                ORDER BY created_at ASC
+                """,
+                (plugin_id,),
+            )
+            for row in cursor.fetchall():
+                job = self._deserialize_external_collection_job(row)
+                if job and requested.intersection(set(job["dataset_keys"])):
+                    return job
+            return None
         finally:
             conn.close()
 
