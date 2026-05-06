@@ -1,7 +1,7 @@
 # Data Collector Hub v1.0 已知问题清单
 
-> 生成时间: 2026-03-24
-> 版本: v1.0 RC-1
+> 生成时间: 2026-05-06
+> 版本: v1.1
 
 ---
 
@@ -66,9 +66,11 @@ curl -s http://localhost:8000/feed/rss | head -20
 | 1 | 单节点部署 | v1.0 设计约束 |
 | 2 | SQLite 唯一存储 | v1.0 设计约束 |
 | 3 | 无认证/权限 | v1.0 设计约束 |
-| 4 | 弱 schema | normalized_data 为半结构化，符合设计 |
+| 4 | 弱 schema | normalized_data / canonical_entities 为半结构化，符合设计 |
 | 5 | 无插件依赖 | 插件间无法调用，符合设计 |
 | 6 | 日志仅本地 | 无远程收集，符合设计 |
+| 7 | 无上游事件自动清理 | raw_events 保留策略需手动执行 |
+| 8 | 无实体数据版本历史 | canonical_entities 为 UPSERT 语义，仅保留最新状态 |
 
 ---
 
@@ -80,9 +82,13 @@ curl -s http://localhost:8000/feed/rss | head -20
 | Pipeline | ✅ 通过 | 100% |
 | Scheduler | ✅ 通过 | 100% |
 | REST API | ✅ 通过 | 100% |
+| Ingestion API | ✅ 通过 | 100% |
+| Processing API | ✅ 通过 | 100% |
+| Sandbox API | ✅ 通过 | 100% |
 | RSS Feed | ✅ 通过 | 100% |
 | WebSocket | ✅ 通过 | 100% |
 | MCP | ✅ 通过 | 100% |
+| Normalizer Runner | ⚠️ 需补充 | - |
 
 ---
 
@@ -90,23 +96,28 @@ curl -s http://localhost:8000/feed/rss | head -20
 
 以下改进**不在 v1.0 范围内**，仅作记录：
 
-1. **健康检查端点** `/health` - 用于负载均衡检查
-2. **配置热重载** - 无需重启修改配置
-3. **更多 RSS 源** - 支持更多新闻源
-4. **数据导出** - CSV/JSON 导出功能
-5. **Web UI** - 除 Streamlit 外的原生 Web 界面
-6. **插件市场** - 远程插件安装
-7. **告警通知** - Webhook/Email 告警
+### 高优先级
+
+1. **API Key 认证** - 为 Ingestion API 和 Sandbox API 添加 API Key 认证
+2. **上游事件自动清理** - 实现 raw_events 的自动过期清理策略
+3. **Normalizer 监控** - 添加归一化处理的可观测性指标
+4. **下游数据质量检查** - 添加 canonical_entities 数据完整性校验
+
+### 中优先级
+
+5. **健康检查端点** `/health` - 用于负载均衡检查
+6. **配置热重载** - 无需重启修改配置
+7. **更多 RSS 源** - 支持更多新闻源
+8. **数据导出** - CSV/JSON 导出功能
+
+### 低优先级
+
+9. **Web UI** - 除 Streamlit 外的原生 Web 界面
+10. **插件市场** - 远程插件安装
+11. **告警通知** - Webhook/Email 告警
+12. **PostgreSQL 支持** - 替代 SQLite 用于生产环境
 
 ---
 
-## 结论
-
-**v1.0 RC-1 状态**: ✅ **READY**
-
-- 无严重问题
-- 轻微问题已修复或无需修复
-- 所有设计约束符合 v1.0 规范
-- 集成测试 7/7 通过
-
-系统已达到 v1.0 Release Candidate 标准。
+*文档版本: v1.1*
+*最后更新: 2026-05-06*

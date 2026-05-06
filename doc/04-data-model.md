@@ -4,33 +4,40 @@
 
 ## 1. 数据层架构
 
-### 1.1 三层数据架构
+### 1.1 多层数据架构
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  Layer 3.1: raw_data                                        │
-│  - 原始采集数据，保留完整性                                  │
+│  Layer: raw_data                                            │
+│  - 插件采集的原始数据，保留完整性                           │
 │  - 支持数据溯源                                             │
 │  - JSON格式存储                                             │
 ├─────────────────────────────────────────────────────────────┤
-│  Layer 3.2: normalized_data (MVP核心)                       │
-│  - 轻量级规范化，提取关键字段                                │
+│  Layer: raw_events                                          │
+│  - 上游系统推送的标准化 SourceEvent                         │
+│  - 支持幂等性（idempotency_key）                            │
+│  - 保留上游溯源字段                                         │
+├─────────────────────────────────────────────────────────────┤
+│  Layer: normalized_data                                     │
+│  - 插件规范化数据（轻量级提取）                             │
 │  - event_type, event_source, entity, unique_key             │
 │  - payload保留原始状态                                      │
-│  - 下游分析系统需求不确定，不做严格schema限定                │
 ├─────────────────────────────────────────────────────────────┤
-│  Layer 3.3: feature_data (未来扩展)                         │
-│  - 特征工程数据                                             │
-│  - 用于机器学习、关系图谱等高级分析                          │
+│  Layer: canonical_entities                                  │
+│  - 归一化处理后的实体数据                                   │
+│  - 面向下游应用的标准化数据                                 │
+│  - UPSERT 语义，保留最新状态                                │
 └─────────────────────────────────────────────────────────────┘
 ```
 
 ### 1.2 设计原则
 
 1. **原始层保留完整性**：不丢失任何采集数据
-2. **规范化层轻量提取**：只做基础实体提取和去重键生成
-3. **不严格限定schema**：下游需求不确定，payload保留原始状态
-4. **支持增量采集**：plugin_state表存储采集状态
+2. **标准化接入**：上游系统通过 SourceEvent 协议统一接入
+3. **规范化层轻量提取**：只做基础实体提取和去重键生成
+4. **实体层面向下游**：canonical_entities 为下游应用提供标准化数据
+5. **不严格限定schema**：下游需求不确定，payload保留原始状态
+6. **支持增量采集**：plugin_state表存储采集状态，normalizer_state存储处理进度
 
 ---
 
@@ -53,6 +60,11 @@ CREATE TABLE IF NOT EXISTS plugins (
     last_health_check TIMESTAMP,            -- 最后健康检查时间
     dependencies TEXT,                      -- JSON数组（MVP必须为空[]）
 
+    -- 扩展字段
+    collection_mode TEXT DEFAULT 'full',    -- "full"全量 | "incremental"增量
+    plugin_kind TEXT DEFAULT 'embedded',    -- "embedded"嵌入式 | "external"外部
+    execution_mode TEXT DEFAULT 'embedded_pipeline', -- 执行模式
+
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -61,6 +73,8 @@ CREATE TABLE IF NOT EXISTS plugins (
 **说明**：
 - `dependencies`：MVP阶段必须为空，插件之间不允许依赖
 - `health_status`：健康检查状态，用于监控
+- `plugin_kind`：插件类型，嵌入式（直接采集）或外部（控制外部采集器）
+- `execution_mode`：执行模式，如 `embedded_pipeline` 或 `external_job`
 
 ### 2.2 插件标签表 (plugin_tags)
 
@@ -77,7 +91,19 @@ CREATE INDEX IF NOT EXISTS idx_plugin_tags_tag ON plugin_tags(tag);
 
 **说明**：多对多关系，支持按标签筛选插件
 
-### 2.3 原始数据表 (raw_data)
+### 2.3 插件运行时配置表 (plugin_runtime_configs)
+
+```sql
+CREATE TABLE IF NOT EXISTS plugin_runtime_configs (
+    plugin_id TEXT PRIMARY KEY,
+    config TEXT NOT NULL,  -- JSON格式运行时配置
+    FOREIGN KEY (plugin_id) REFERENCES plugins(id) ON DELETE CASCADE
+);
+```
+
+**说明**：存储插件的运行时配置，支持动态修改
+
+### 2.4 原始数据表 (raw_data)
 
 ```sql
 CREATE TABLE IF NOT EXISTS raw_data (
@@ -95,10 +121,61 @@ CREATE INDEX IF NOT EXISTS idx_raw_data_source ON raw_data(source);
 ```
 
 **说明**：
-- 保留原始采集数据完整性
+- 保留插件采集的原始数据完整性
 - 支持数据溯源
 
-### 2.4 规范化数据表 (normalized_data)
+### 2.5 上游事件表 (raw_events)
+
+**定位**：上游系统推送的标准化 SourceEvent 存储
+
+```sql
+CREATE TABLE IF NOT EXISTS raw_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    source_record_key TEXT NOT NULL,
+    raw_event_key TEXT NOT NULL,
+    source_system TEXT NOT NULL,           -- 上游系统名称（如 "dcp"）
+    source_event_type TEXT NOT NULL,
+    event_granularity TEXT NOT NULL,
+    source_record_id TEXT,
+    source_record_hash TEXT,
+    occurred_at_epoch REAL,
+    collected_at_epoch REAL,
+    dataset_key TEXT,                      -- 数据集标识，用于路由 normalizer
+    collection TEXT,
+    page_name TEXT,
+    api_name TEXT,
+    source_file TEXT,
+    occurred_at TIMESTAMP,
+    collected_at TIMESTAMP NOT NULL,
+    payload TEXT NOT NULL,                 -- 原始数据载荷（JSON）
+    source_ref TEXT NOT NULL,
+    event TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_raw_events_dataset_key ON raw_events(dataset_key);
+CREATE INDEX IF NOT EXISTS idx_raw_events_collection ON raw_events(collection);
+CREATE INDEX IF NOT EXISTS idx_raw_events_page_name ON raw_events(page_name);
+CREATE INDEX IF NOT EXISTS idx_raw_events_api_name ON raw_events(api_name);
+CREATE INDEX IF NOT EXISTS idx_raw_events_source_system ON raw_events(source_system);
+```
+
+**字段说明**：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `event_id` | TEXT | 事件唯一标识 |
+| `idempotency_key` | TEXT | 幂等键，防止重复接入 |
+| `source_system` | TEXT | 上游系统名称（如 "dcp"） |
+| `source_record_key` | TEXT | 上游记录键 |
+| `dataset_key` | TEXT | 数据集标识，用于路由到对应的 normalizer |
+| `payload` | TEXT | 原始数据载荷（JSON） |
+| `occurred_at` | TIMESTAMP | 事件发生时间 |
+| `collected_at` | TIMESTAMP | 数据采集时间 |
+
+### 2.6 规范化数据表 (normalized_data)
 
 **定位：半结构化数据层（Semi-Structured Data Layer）**
 
@@ -113,7 +190,7 @@ normalized_data 是"半结构化数据层"：
 - 在"完全结构化"和"完全灵活"之间取得平衡
 - 提供基础查询能力（事件类型、时间范围、实体模糊匹配）
 - 保留原始数据完整性（payload字段）
-- 支持渐进式schema演进（见第7章）
+- 支持渐进式schema演进（见第8章）
 
 ```sql
 CREATE TABLE IF NOT EXISTS normalized_data (
@@ -123,12 +200,12 @@ CREATE TABLE IF NOT EXISTS normalized_data (
 
     -- 事件基础信息（轻量级提取）
     event_type TEXT,                      -- news/social/finance/alert
-    event_source TEXT,                    -- 微博/知乎/东方财富等
+    event_source TEXT,                    -- 事件来源
     entity TEXT,                          -- 核心实体（JSON数组，可选）
     event_timestamp TIMESTAMP,            -- 事件时间
 
     -- 去重关键字段
-    unique_key TEXT NOT NULL,             -- hash(event_source + title + event_timestamp)
+    unique_key TEXT NOT NULL,             -- hash(plugin_id + event_source + title + event_timestamp)
 
     -- 数据载荷（保留原始状态）
     payload TEXT NOT NULL,                -- 标准化容器（JSON）
@@ -152,13 +229,86 @@ CREATE INDEX IF NOT EXISTS idx_normalized_timestamp ON normalized_data(event_tim
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `event_type` | TEXT | 事件类型：news/social/finance/alert |
-| `event_source` | TEXT | 事件来源，区别于plugin_id（如：微博/知乎） |
-| `entity` | TEXT | JSON数组，提取的实体：["公司A", "人物B"] |
+| `event_source` | TEXT | 事件来源，区别于plugin_id |
+| `entity` | TEXT | JSON数组，提取的实体 |
 | `event_timestamp` | TIMESTAMP | 事件发生时间，区别于created_at |
 | `unique_key` | TEXT | 去重键，同一plugin_id下唯一 |
 | `payload` | TEXT | 标准化容器，保留原始采集状态 |
 
-### 2.5 任务执行统计表 (task_stats)
+### 2.7 实体数据表 (canonical_entities)
+
+**定位**：归一化处理后的实体数据，面向下游应用消费
+
+```sql
+CREATE TABLE IF NOT EXISTS canonical_entities (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity_type TEXT NOT NULL,             -- 实体类型（如 "station", "tower"）
+    entity_key TEXT NOT NULL,              -- 实体唯一标识
+    entity_date TEXT,                      -- 实体日期
+    dataset_key TEXT NOT NULL,             -- 数据集标识
+    source_system TEXT NOT NULL,           -- 来源系统
+    source_record_key TEXT NOT NULL,       -- 来源记录键
+    latest_raw_event_id INTEGER NOT NULL,  -- 关联的最新 raw_event
+    latest_collected_at TIMESTAMP,         -- 最新采集时间
+    latest_collected_at_epoch REAL,        -- 最新采集时间（epoch）
+    latest_source_record_hash TEXT,        -- 最新来源记录哈希
+    source_refs TEXT NOT NULL DEFAULT '[]', -- 来源引用列表（JSON）
+    attributes TEXT NOT NULL,              -- 实体属性（JSON）
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(entity_type, entity_key)        -- 实体唯一约束（UPSERT）
+);
+```
+
+**字段说明**：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `entity_type` | TEXT | 实体类型（如 "station", "tower", "meeting"） |
+| `entity_key` | TEXT | 实体唯一标识 |
+| `dataset_key` | TEXT | 数据集标识，关联 raw_events |
+| `source_system` | TEXT | 来源系统（如 "dcp"） |
+| `attributes` | TEXT | 实体属性（JSON），包含实体完整数据 |
+| `source_refs` | TEXT | 来源引用列表（JSON数组） |
+
+**设计特点**：
+- UPSERT 语义：同一实体类型+实体键组合唯一，新数据覆盖旧数据
+- 面向下游：数据结构贴合下游应用需求
+- 保留溯源：通过 `latest_raw_event_id` 关联原始事件
+
+### 2.8 归一化状态表 (normalizer_state)
+
+```sql
+CREATE TABLE IF NOT EXISTS normalizer_state (
+    dataset_key TEXT PRIMARY KEY,          -- 数据集标识
+    last_raw_event_id INTEGER DEFAULT 0,   -- 上次处理的 raw_event ID
+    normalizer_version TEXT,               -- normalizer 版本
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+**说明**：支持增量归一化处理，记录每个数据集的处理进度
+
+### 2.9 处理作业表 (processing_jobs)
+
+```sql
+CREATE TABLE IF NOT EXISTS processing_jobs (
+    job_id TEXT PRIMARY KEY,               -- 作业唯一标识
+    dataset_key TEXT NOT NULL,             -- 数据集标识
+    mode TEXT NOT NULL DEFAULT 'incremental', -- "incremental" | "full"
+    batch_size INTEGER NOT NULL DEFAULT 1000, -- 批处理大小
+    status TEXT NOT NULL,                  -- pending / running / completed / failed
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    started_at TIMESTAMP,                  -- 开始时间
+    finished_at TIMESTAMP,                 -- 完成时间
+    result TEXT,                           -- 处理结果（JSON）
+    error TEXT                             -- 错误信息
+);
+```
+
+**说明**：记录归一化处理作业的状态和结果
+
+### 2.10 任务执行统计表 (task_stats)
 
 ```sql
 CREATE TABLE IF NOT EXISTS task_stats (
@@ -173,7 +323,7 @@ CREATE TABLE IF NOT EXISTS task_stats (
 
 **说明**：用于监控告警和统计分析
 
-### 2.6 插件状态表 (plugin_state)
+### 2.11 插件状态表 (plugin_state)
 
 ```sql
 CREATE TABLE IF NOT EXISTS plugin_state (
@@ -189,7 +339,7 @@ CREATE TABLE IF NOT EXISTS plugin_state (
 
 **说明**：支持增量采集，存储上次采集位置
 
-### 2.7 采集日志表 (logs)
+### 2.12 采集日志表 (logs)
 
 ```sql
 CREATE TABLE IF NOT EXISTS logs (
@@ -233,7 +383,7 @@ def generate_unique_key(plugin_id: str, event_source: str, title: str, event_tim
 
 **输入字段**（由插件提供）：
 - `plugin_id`：插件ID
-- `event_source`：事件来源（如微博、知乎）
+- `event_source`：事件来源
 - `title`：内容标识（取前50字符）
 - `event_timestamp`：时间戳精确到秒
 
@@ -260,20 +410,35 @@ def save_normalized_data(...):
 UNIQUE(plugin_id, unique_key)
 ```
 
+### 3.3 上游事件幂等性
+
+**通过 `idempotency_key` 实现**：
+
+```python
+def save_raw_event(...):
+    try:
+        INSERT INTO raw_events (idempotency_key, ...)
+        VALUES (...)
+    except Exception as e:
+        if "UNIQUE constraint failed" in str(e):
+            return -1  # 重复事件，忽略
+        raise
+```
+
 ---
 
 ## 4. 增量采集设计
 
-### 4.1 状态存储
+### 4.1 插件采集状态存储
 
 ```python
 # 保存状态
 def save_plugin_state(
     plugin_id: str,
-    last_cursor: str = None,      # 游标
-    last_timestamp: datetime = None,  # 时间戳
-    last_offset: int = None,      # 偏移量
-    state_data: Dict = None       # 扩展状态
+    last_cursor: str = None,      -- 游标
+    last_timestamp: datetime = None,  -- 时间戳
+    last_offset: int = None,      -- 偏移量
+    state_data: Dict = None       -- 扩展状态
 ):
     """保存插件采集状态"""
 
@@ -288,7 +453,27 @@ def get_plugin_state(plugin_id: str) -> Optional[Dict]:
     }
 ```
 
-### 4.2 增量采集示例
+### 4.2 归一化处理状态存储
+
+```python
+# 保存 normalizer 状态
+def save_normalizer_state(
+    dataset_key: str,
+    last_raw_event_id: int,
+    normalizer_version: str = None
+):
+    """保存归一化处理进度"""
+
+# 获取 normalizer 状态
+def get_normalizer_state(dataset_key: str) -> Optional[Dict]:
+    """获取归一化处理进度"""
+    return {
+        "last_raw_event_id": int,
+        "normalizer_version": str
+    }
+```
+
+### 4.3 增量采集示例（插件）
 
 ```python
 class IncrementalAdapter(BaseAdapter):
@@ -315,7 +500,35 @@ class IncrementalAdapter(BaseAdapter):
         return items
 ```
 
-### 4.3 状态类型选择
+### 4.4 增量归一化示例
+
+```python
+def run_normalizer(dataset_key: str):
+    # 获取上次处理位置
+    state = store.get_normalizer_state(dataset_key)
+    last_id = state["last_raw_event_id"] if state else 0
+
+    # 查询未处理的 raw_events
+    events = store.query_raw_events(
+        dataset_key=dataset_key,
+        id_after=last_id,
+        limit=1000
+    )
+
+    # 处理并写入 canonical_entities
+    for event in events:
+        entity = normalizer.transform(event)
+        store.upsert_canonical_entity(entity)
+
+    # 更新处理进度
+    if events:
+        store.save_normalizer_state(
+            dataset_key,
+            last_raw_event_id=events[-1]["id"]
+        )
+```
+
+### 4.5 状态类型选择
 
 | 采集方式 | 状态类型 | 说明 |
 |----------|----------|------|
@@ -323,12 +536,13 @@ class IncrementalAdapter(BaseAdapter):
 | 游标型 | `last_cursor` | 有ID或页码的数据源（如分页API） |
 | 偏移型 | `last_offset` | 固定分页的数据源 |
 | 自定义 | `state_data` | 复杂状态（JSON存储） |
+| 归一化 | `last_raw_event_id` | 按 raw_event ID 递增处理 |
 
 ---
 
 ## 5. 数据操作流程
 
-### 5.1 采集流程
+### 5.1 插件采集流程
 
 ```
 1. Scheduler触发任务
@@ -358,23 +572,54 @@ class IncrementalAdapter(BaseAdapter):
 9. 更新task_stats统计
 ```
 
-### 5.2 查询流程
+### 5.2 上游接入流程
+
+```
+1. 上游系统推送 SourceEvent
+   │ POST /ingestion/v1/events
+   ▼
+2. 校验 SourceEvent 格式
+   │
+   ▼
+3. 检查 idempotency_key 是否重复
+   │
+   ▼
+4. 保存到 raw_events
+   │
+   ▼
+5. （可选）Normalizer 处理
+   │
+   ▼
+6. 生成/更新 canonical_entities（UPSERT）
+   │
+   ▼
+7. 更新 normalizer_state
+```
+
+### 5.3 查询流程
 
 ```
 下游工具查询:
    │
    ├── REST API ──┬── raw_data查询（原始数据）
-   │              └── normalized_data查询（规范化数据）
+   │              ├── raw_events查询（上游事件）
+   │              ├── normalized_data查询（规范化数据）
+   │              └── canonical_entities查询（实体数据）
    │
    ├── RSS Feed ──► 按标签筛选，XML输出
    │
    ├── WebSocket ─► 单轮询广播，实时推送
    │
-   └── MCP Server ─► 复用 normalized_data / raw_data 查询能力
-                    （LLM工具调用，不引入新存储路径）
+   ├── MCP Server ─► 复用 normalized_data / raw_data 查询能力
+   │                 （LLM工具调用，不引入新存储路径）
+   │
+   └── Sandbox API ─► 下游应用专用数据接口（如数字沙盘）
+                     查询 canonical_entities，返回标准化 DTO
 ```
 
-**说明**：MCP Server 作为新的查询入口，不引入新的存储模型，只复用现有数据层的查询路径。
+**说明**：
+- MCP Server 作为新的查询入口，不引入新的存储模型，只复用现有数据层的查询路径
+- Sandbox API 面向特定下游应用，返回标准化 DTO，不暴露原始字段
 
 ---
 
@@ -383,35 +628,102 @@ class IncrementalAdapter(BaseAdapter):
 | 数据表 | 保留策略 | 说明 |
 |--------|----------|------|
 | raw_data | 30天 | 原始数据用于溯源，过期可清理 |
+| raw_events | 30天 | 上游事件用于溯源，过期可清理 |
 | normalized_data | 90天 | 规范化数据用于分析 |
+| canonical_entities | 长期 | 实体数据需长期保留 |
 | logs | 7天 | 日志保留短期即可 |
 | task_stats | 长期 | 统计信息不删除 |
 | plugin_state | 长期 | 状态信息必须保留 |
+| normalizer_state | 长期 | 处理进度必须保留 |
+| processing_jobs | 90天 | 作业历史保留中期 |
 
 **注意**：MVP阶段不实现自动清理，需手动或外部脚本处理。
 
 ---
 
-## 7. 未来演进（Schema Evolution）
+## 7. 数据流关系
 
-### 7.1 演进原则
+### 7.1 插件采集数据流
 
-当前 `normalized_data` 采用**松散的JSON存储**（`payload`字段），这是**有意的设计决策**：
+```
+plugins/xxx.py
+      │
+      │ fetch()
+      ▼
+  raw_data
+      │
+      │ normalize() (optional)
+      ▼
+  normalized_data
+```
 
+### 7.2 上游接入数据流
+
+```
+上游系统（如 DCP）
+      │
+      │ POST /ingestion/v1/events
+      ▼
+  raw_events
+      │
+      │ Normalizer 处理
+      ▼
+  canonical_entities
+      │
+      │ Sandbox API 查询
+      ▼
+  下游应用（如数字沙盘）
+```
+
+### 7.3 数据表关系图
+
+```
+┌─────────────┐     ┌─────────────┐     ┌─────────────────┐
+│   plugins   │◄────┤ plugin_tags │     │ plugin_runtime_ │
+│             │     │             │     │    configs      │
+└──────┬──────┘     └─────────────┘     └─────────────────┘
+       │
+       │ 1:N
+       ▼
+┌─────────────┐     ┌─────────────────┐
+│  raw_data   │────►│ normalized_data │
+│             │     │                 │
+└─────────────┘     └─────────────────┘
+
+┌─────────────┐     ┌───────────────────┐     ┌─────────────────┐
+│ raw_events  │────►│  normalizer_state │◄────│ processing_jobs │
+│             │     │                   │     │                 │
+└──────┬──────┘     └───────────────────┘     └─────────────────┘
+       │
+       │ Normalizer
+       ▼
+┌─────────────────┐
+│canonical_entities│
+│                 │
+└─────────────────┘
+```
+
+---
+
+## 8. 未来演进（Schema Evolution）
+
+### 8.1 演进原则
+
+当前 `normalized_data` 和 `canonical_entities` 采用**松散的JSON存储**（`payload`/`attributes`字段），这是**有意的设计决策**：
 - **原因**：下游分析系统需求不确定，避免过早固化schema
 - **目标**：在需求明确后，逐步结构化
 
-### 7.2 演进路径
+### 8.2 演进路径
 
 | 阶段 | 演进内容 | 触发条件 |
 |------|----------|----------|
-| **MVP** | `payload` JSON存储 | 当前状态，需求不确定 |
+| **MVP** | `payload`/`attributes` JSON存储 | 当前状态，需求不确定 |
 | **V1.1** | `entity` 拆分为结构化表 | 实体分析需求明确，需要关联查询 |
-| **V1.2** | `event_type` 分层 | 事件类型增多，需要层级分类（如 `news.article`、`news.video`） |
-| **V1.3** | `payload` 逐步结构化 | 核心字段提取为独立列，剩余部分仍存JSON |
+| **V1.2** | `event_type` 分层 | 事件类型增多，需要层级分类 |
+| **V1.3** | `payload` 逐步结构化 | 核心字段提取为独立列 |
 | **V2.0** | 完整结构化 schema | 需求完全明确，所有字段独立存储 |
 
-### 7.3 具体演进方案
+### 8.3 具体演进方案
 
 #### Phase 1: entity 结构化（V1.1）
 
@@ -480,7 +792,7 @@ payload TEXT  -- 缩减后的JSON
 4. 查询逐步切换到新列
 5. 稳定后清理JSON中冗余字段
 
-### 7.4 升级兼容性保障
+### 8.4 升级兼容性保障
 
 | 策略 | 说明 |
 |------|------|
@@ -489,7 +801,7 @@ payload TEXT  -- 缩减后的JSON
 | **API兼容** | API层做字段映射，对下游透明 |
 | **版本标记** | 数据记录schema版本，支持混合查询 |
 
-### 7.5 何时开始演进？
+### 8.5 何时开始演进？
 
 **触发信号**：
 - 下游工具反馈JSON查询效率低
@@ -504,5 +816,5 @@ payload TEXT  -- 缩减后的JSON
 
 ---
 
-*文档版本: v1.0*
-*最后更新: 2026-03-23*
+*文档版本: v1.1*
+*最后更新: 2026-05-06*
