@@ -101,10 +101,20 @@ async def test_dcp_plugin_is_external_control_only():
     assert adapter.config["source_system"] == "dcp"
     assert adapter.config["ingestion_endpoint"] == "/ingestion/v1/events"
     assert adapter.config["monitor_datasets"] == ["daily_meeting", "tower", "station"]
-    assert adapter.config["enabled_datasets"] == ["daily_meeting", "tower", "station"]
+    assert adapter.config["enabled_datasets"] == [
+        "daily_meeting",
+        "tower",
+        "station",
+        "line_section",
+        "year_progress",
+    ]
     assert adapter.config["datasets"]["tower"]["page_name"] == "杆塔信息"
-    assert adapter.config["datasets"]["line_section"]["enabled"] is False
-    assert adapter.config["datasets"]["year_progress"]["enabled"] is False
+    assert adapter.config["datasets"]["line_section"]["enabled"] is True
+    assert adapter.config["datasets"]["line_section"]["expose_to_monitor"] is False
+    assert adapter.config["datasets"]["line_section"]["processing_supported"] is False
+    assert adapter.config["datasets"]["year_progress"]["enabled"] is True
+    assert adapter.config["datasets"]["year_progress"]["expose_to_monitor"] is False
+    assert adapter.config["datasets"]["year_progress"]["processing_supported"] is False
     assert adapter.get_default_schedule() is None
     assert await adapter.fetch() == []
 

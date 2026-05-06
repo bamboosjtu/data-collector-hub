@@ -411,6 +411,42 @@ class SQLiteStore:
                 )
         return merged
 
+    def _reconcile_dcp_runtime_config(
+        self,
+        default_config: dict[str, Any],
+        runtime_config: dict[str, Any],
+        merged_config: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Keep old DCP runtime configs compatible with newly required datasets.
+
+        Runtime configs persisted before line_section/year_progress existed often
+        contain enabled_datasets with only the original three Monitor datasets.
+        If those datasets are absent from the persisted runtime dataset map, treat
+        them as newly introduced defaults and enable ingestion for them.
+        """
+        if not isinstance(merged_config.get("datasets"), dict):
+            return merged_config
+        if not isinstance(merged_config.get("enabled_datasets"), list):
+            return merged_config
+
+        runtime_datasets = runtime_config.get("datasets") or {}
+        if not isinstance(runtime_datasets, dict):
+            runtime_datasets = {}
+
+        default_enabled = default_config.get("enabled_datasets") or []
+        for dataset_key in default_enabled:
+            if dataset_key in runtime_datasets:
+                continue
+            dataset_config = merged_config["datasets"].get(dataset_key)
+            if (
+                isinstance(dataset_config, dict)
+                and dataset_config.get("enabled") is True
+                and dataset_key not in merged_config["enabled_datasets"]
+            ):
+                merged_config["enabled_datasets"].append(dataset_key)
+
+        return merged_config
+
     def _timestamp_epoch(self, value: Any) -> Optional[float]:
         if value in (None, ""):
             return None
@@ -434,9 +470,16 @@ class SQLiteStore:
             row = cursor.fetchone()
             if row:
                 runtime_config = json.loads(row["config_json"])
+                merged_config = self._deep_merge_config(default_config, runtime_config)
+                if plugin_id == "dcp":
+                    merged_config = self._reconcile_dcp_runtime_config(
+                        default_config,
+                        runtime_config,
+                        merged_config,
+                    )
                 return {
                     "plugin_id": plugin_id,
-                    "config": self._deep_merge_config(default_config, runtime_config),
+                    "config": merged_config,
                     "updated_at": row["updated_at"],
                     "source": "runtime+defaults",
                 }

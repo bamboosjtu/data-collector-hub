@@ -41,6 +41,8 @@ def test_dcp_default_runtime_config_targets_monitor_mvp_datasets():
         "daily_meeting",
         "tower",
         "station",
+        "line_section",
+        "year_progress",
     ]
     assert config["monitor_datasets"] == ["daily_meeting", "tower", "station"]
     assert config["datasets"]["daily_meeting"]["enabled"] is True
@@ -49,6 +51,7 @@ def test_dcp_default_runtime_config_targets_monitor_mvp_datasets():
     assert config["datasets"]["daily_meeting"]["page_name"] == "meetingListAdmin"
     assert config["datasets"]["daily_meeting"]["page_aliases"] == ["站班会"]
     assert config["datasets"]["daily_meeting"]["expose_to_monitor"] is True
+    assert config["datasets"]["daily_meeting"]["processing_supported"] is True
     assert config["datasets"]["tower"]["enabled"] is True
     assert config["datasets"]["tower"]["collection"] == "projectPages"
     assert config["datasets"]["tower"]["scope"] == "project_single"
@@ -58,6 +61,7 @@ def test_dcp_default_runtime_config_targets_monitor_mvp_datasets():
         "tower_details",
     ]
     assert config["datasets"]["tower"]["expose_to_monitor"] is True
+    assert config["datasets"]["tower"]["processing_supported"] is True
     assert config["datasets"]["station"]["enabled"] is True
     assert config["datasets"]["station"]["collection"] == "projectPages"
     assert config["datasets"]["station"]["scope"] == "project_single"
@@ -67,7 +71,8 @@ def test_dcp_default_runtime_config_targets_monitor_mvp_datasets():
         "substation_coordinates",
     ]
     assert config["datasets"]["station"]["expose_to_monitor"] is True
-    assert config["datasets"]["line_section"]["enabled"] is False
+    assert config["datasets"]["station"]["processing_supported"] is True
+    assert config["datasets"]["line_section"]["enabled"] is True
     assert config["datasets"]["line_section"]["collection"] == "projectPages"
     assert config["datasets"]["line_section"]["scope"] == "project_single"
     assert config["datasets"]["line_section"]["page_name"] == "区段划分"
@@ -76,11 +81,15 @@ def test_dcp_default_runtime_config_targets_monitor_mvp_datasets():
         "section_details",
     ]
     assert config["datasets"]["line_section"]["expose_to_monitor"] is False
-    assert config["datasets"]["year_progress"]["enabled"] is False
+    assert config["datasets"]["line_section"]["processing_supported"] is False
+    assert config["datasets"]["line_section"]["normalizer"] is None
+    assert config["datasets"]["year_progress"]["enabled"] is True
     assert config["datasets"]["year_progress"]["collection"] == "planPages"
     assert config["datasets"]["year_progress"]["scope"] == "snapshot"
     assert config["datasets"]["year_progress"]["page_name"] == "年度进度计划分析"
     assert config["datasets"]["year_progress"]["expose_to_monitor"] is False
+    assert config["datasets"]["year_progress"]["processing_supported"] is False
+    assert config["datasets"]["year_progress"]["normalizer"] is None
 
 
 def test_old_runtime_config_is_deep_merged_with_schema_defaults():
@@ -118,6 +127,13 @@ def test_old_runtime_config_is_deep_merged_with_schema_defaults():
     assert runtime["source"] == "runtime+defaults"
     assert "line_section" in config["datasets"]
     assert "year_progress" in config["datasets"]
+    assert config["enabled_datasets"] == [
+        "daily_meeting",
+        "tower",
+        "station",
+        "line_section",
+        "year_progress",
+    ]
     assert config["datasets"]["daily_meeting"]["output_policy"]["partition_by"] == "work_date"
     assert config["datasets"]["daily_meeting"]["page_aliases"] == ["站班会"]
     assert config["downloader_profile"] == "dcp_monitor_mvp"
@@ -179,6 +195,19 @@ def test_put_plugin_config_rejects_unknown_enabled_dataset():
     assert "enabled_datasets contains unknown datasets" in str(response.json()["detail"])
 
 
+def test_put_plugin_config_rejects_missing_required_enabled_dataset():
+    store = _make_registered_store()
+    client = _client(store)
+
+    response = client.put(
+        "/api/plugins/dcp/config",
+        json={"config": {"enabled_datasets": ["daily_meeting", "tower", "station"]}},
+    )
+
+    assert response.status_code == 400
+    assert "enabled_datasets missing required DCP datasets" in str(response.json()["detail"])
+
+
 def test_put_plugin_config_rejects_monitor_dataset_not_exposed():
     store = _make_registered_store()
     client = _client(store)
@@ -200,7 +229,13 @@ def test_put_plugin_config_rejects_enabled_dataset_marked_disabled():
         "/api/plugins/dcp/config",
         json={
             "config": {
-                "enabled_datasets": ["daily_meeting", "tower", "station", "line_section"],
+                "enabled_datasets": [
+                    "daily_meeting",
+                    "tower",
+                    "station",
+                    "line_section",
+                    "year_progress",
+                ],
                 "datasets": {
                     "line_section": {
                         "enabled": False,
@@ -254,6 +289,27 @@ def test_put_plugin_config_rejects_invalid_scope():
 
     assert response.status_code == 400
     assert "datasets.tower.scope" in str(response.json()["detail"])
+
+
+def test_put_plugin_config_rejects_invalid_processing_supported():
+    store = _make_registered_store()
+    client = _client(store)
+
+    response = client.put(
+        "/api/plugins/dcp/config",
+        json={
+            "config": {
+                "datasets": {
+                    "line_section": {
+                        "processing_supported": "no",
+                    }
+                }
+            }
+        },
+    )
+
+    assert response.status_code == 400
+    assert "datasets.line_section.processing_supported" in str(response.json()["detail"])
 
 
 def test_deep_merge_keeps_nested_output_policy_fields():

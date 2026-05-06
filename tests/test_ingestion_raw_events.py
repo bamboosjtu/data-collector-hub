@@ -236,10 +236,10 @@ def test_ingest_station_source_event_sets_dataset_key() -> None:
     assert saved["dataset_key"] == "station"
 
 
-def test_line_section_default_disabled_fails_ingestion() -> None:
+def test_line_section_default_ingests_successfully() -> None:
     store = _make_store()
     event = _event_for_source_ref(
-        "line-section",
+        "line-section-default",
         "projectPages",
         "区段划分",
         "section_details",
@@ -248,11 +248,56 @@ def test_line_section_default_disabled_fails_ingestion() -> None:
     response = _client(store).post("/ingestion/v1/events", json={"events": [event]})
 
     assert response.status_code == 200
-    body = response.json()
-    assert body["accepted"] == 0
-    assert body["failed"] == 1
-    assert "dataset_key=line_section" in body["errors"][0]["error"]
-    assert store.count_raw_events() == 0
+    assert response.json()["accepted"] == 1
+    saved = store.get_raw_event_by_idempotency_key(event["idempotency_key"])
+    assert saved["dataset_key"] == "line_section"
+
+
+def test_line_section_ingests_with_old_three_dataset_runtime_config() -> None:
+    store = _make_store()
+    store.save_plugin_runtime_config(
+        "dcp",
+        {
+            "enabled_datasets": ["daily_meeting", "tower", "station"],
+            "monitor_datasets": ["daily_meeting", "tower", "station"],
+            "datasets": {
+                "daily_meeting": {
+                    "enabled": True,
+                    "collection": "safePages",
+                    "scope": "date_partitioned",
+                    "page_name": "meetingListAdmin",
+                    "api_names": ["queryToolBoxTalkListPagePc"],
+                },
+                "tower": {
+                    "enabled": True,
+                    "collection": "projectPages",
+                    "scope": "project_single",
+                    "page_name": "杆塔信息",
+                    "api_names": ["tower_details"],
+                },
+                "station": {
+                    "enabled": True,
+                    "collection": "projectPages",
+                    "scope": "project_single",
+                    "page_name": "变电站坐标",
+                    "api_names": ["substation_coordinates"],
+                },
+            },
+        },
+    )
+    event = _event_for_source_ref(
+        "line-section-old-runtime",
+        "projectPages",
+        "区段划分",
+        "section_details",
+    )
+
+    response = _client(store).post("/ingestion/v1/events", json={"events": [event]})
+
+    assert response.status_code == 200
+    assert response.json()["accepted"] == 1
+    saved = store.get_raw_event_by_idempotency_key(event["idempotency_key"])
+    assert saved["dataset_key"] == "line_section"
 
 
 def test_ingest_daily_meeting_source_event_sets_dataset_key() -> None:
@@ -444,10 +489,10 @@ def test_line_section_not_in_enabled_datasets_fails_ingestion() -> None:
     assert store.count_raw_events() == 0
 
 
-def test_year_progress_default_disabled_fails_ingestion() -> None:
+def test_year_progress_default_ingests_successfully() -> None:
     store = _make_store()
     event = _event_for_source_ref(
-        "year-progress-disabled",
+        "year-progress-default",
         "planPages",
         "年度进度计划分析",
         "yearly_progress_analysis",
@@ -455,11 +500,57 @@ def test_year_progress_default_disabled_fails_ingestion() -> None:
 
     response = _client(store).post("/ingestion/v1/events", json={"events": [event]})
 
-    body = response.json()
-    assert body["accepted"] == 0
-    assert body["failed"] == 1
-    assert "dataset_key=year_progress" in body["errors"][0]["error"]
-    assert store.count_raw_events() == 0
+    assert response.status_code == 200
+    assert response.json()["accepted"] == 1
+    saved = store.get_raw_event_by_idempotency_key(event["idempotency_key"])
+    assert saved["dataset_key"] == "year_progress"
+
+
+def test_year_progress_ingests_with_old_three_dataset_runtime_config() -> None:
+    store = _make_store()
+    store.save_plugin_runtime_config(
+        "dcp",
+        {
+            "enabled_datasets": ["daily_meeting", "tower", "station"],
+            "monitor_datasets": ["daily_meeting", "tower", "station"],
+            "datasets": {
+                "daily_meeting": {
+                    "enabled": True,
+                    "collection": "safePages",
+                    "scope": "date_partitioned",
+                    "page_name": "meetingListAdmin",
+                    "api_names": ["queryToolBoxTalkListPagePc"],
+                },
+                "tower": {
+                    "enabled": True,
+                    "collection": "projectPages",
+                    "scope": "project_single",
+                    "page_name": "杆塔信息",
+                    "api_names": ["tower_details"],
+                },
+                "station": {
+                    "enabled": True,
+                    "collection": "projectPages",
+                    "scope": "project_single",
+                    "page_name": "变电站坐标",
+                    "api_names": ["substation_coordinates"],
+                },
+            },
+        },
+    )
+    event = _event_for_source_ref(
+        "year-progress-old-runtime",
+        "planPages",
+        "年度进度计划分析",
+        "yearly_progress_analysis",
+    )
+
+    response = _client(store).post("/ingestion/v1/events", json={"events": [event]})
+
+    assert response.status_code == 200
+    assert response.json()["accepted"] == 1
+    saved = store.get_raw_event_by_idempotency_key(event["idempotency_key"])
+    assert saved["dataset_key"] == "year_progress"
 
 
 def test_unknown_source_ref_dataset_key_fails_dcp_ingestion() -> None:

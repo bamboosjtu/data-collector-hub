@@ -18,6 +18,13 @@ VALID_CHECKPOINT_MODES = {
     "date_partition",
     "mixed",
 }
+REQUIRED_DCP_ENABLED_DATASETS = {
+    "daily_meeting",
+    "tower",
+    "station",
+    "line_section",
+    "year_progress",
+}
 SENSITIVE_CONFIG_KEYS = {
     "account",
     "username",
@@ -80,6 +87,11 @@ def validate_plugin_runtime_config(plugin_id: str, config: dict[str, Any]) -> li
             errors.append(
                 f"enabled_datasets contains unknown datasets: {sorted(unknown)}"
             )
+        missing_required = REQUIRED_DCP_ENABLED_DATASETS - set(enabled_datasets)
+        if missing_required:
+            errors.append(
+                f"enabled_datasets missing required DCP datasets: {sorted(missing_required)}"
+            )
         for dataset_key in enabled_datasets:
             dataset = datasets.get(dataset_key)
             if isinstance(dataset, dict) and dataset.get("enabled") is not True:
@@ -139,5 +151,10 @@ def validate_plugin_runtime_config(plugin_id: str, config: dict[str, Any]) -> li
             dataset["expose_to_monitor"], bool
         ):
             errors.append(f"datasets.{dataset_key}.expose_to_monitor must be boolean")
+
+        if "processing_supported" in dataset and not isinstance(
+            dataset["processing_supported"], bool
+        ):
+            errors.append(f"datasets.{dataset_key}.processing_supported must be boolean")
 
     return errors
