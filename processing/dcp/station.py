@@ -22,6 +22,22 @@ def _float_value(value: Any) -> float | None:
     return parsed if math.isfinite(parsed) else None
 
 
+def _source_context(raw_event: dict[str, Any]) -> dict[str, Any]:
+    source_ref = raw_event.get("source_ref") or {}
+    context = source_ref.get("context") if isinstance(source_ref, dict) else None
+    return context if isinstance(context, dict) else {}
+
+
+def _first_present(raw: dict[str, Any], context: dict[str, Any], raw_key: str, context_key: str) -> Any:
+    value = raw.get(raw_key)
+    if value not in (None, ""):
+        return value
+    value = context.get(context_key)
+    if value not in (None, ""):
+        return value
+    return None
+
+
 def normalize_station(raw_event: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
     """Normalize one station raw event into a canonical entity payload."""
     if raw_event.get("dataset_key") != "station":
@@ -39,8 +55,16 @@ def normalize_station(raw_event: dict[str, Any]) -> tuple[dict[str, Any] | None,
     if not isinstance(raw, dict):
         return None, "payload.raw must be an object"
 
+    context = _source_context(raw_event)
     dcp_coordinate_id = raw.get("id")
-    station_identity = raw.get("singleProjectCode") or dcp_coordinate_id
+    project_code = _first_present(raw, context, "prjCode", "project_code")
+    single_project_code = _first_present(
+        raw, context, "singleProjectCode", "single_project_code"
+    )
+    bidding_section_code = _first_present(
+        raw, context, "biddingSectionCode", "bidding_section_code"
+    )
+    station_identity = single_project_code or dcp_coordinate_id
     if station_identity in (None, ""):
         return None, "missing station identity"
 
@@ -52,9 +76,9 @@ def normalize_station(raw_event: dict[str, Any]) -> tuple[dict[str, Any] | None,
         return None, "coordinate outside hunan range"
 
     attributes = {
-        "project_code": raw.get("prjCode"),
-        "single_project_code": raw.get("singleProjectCode"),
-        "bidding_section_code": raw.get("biddingSectionCode"),
+        "project_code": project_code,
+        "single_project_code": single_project_code,
+        "bidding_section_code": bidding_section_code,
         "dcp_coordinate_id": dcp_coordinate_id,
         "longitude": longitude,
         "latitude": latitude,

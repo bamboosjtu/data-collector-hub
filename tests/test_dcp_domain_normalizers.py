@@ -27,6 +27,7 @@ def _event(
     page_name: str,
     api_name: str,
     raw: dict,
+    context: dict | None = None,
 ) -> dict:
     return {
         "schema_version": "source_event.v1",
@@ -50,6 +51,7 @@ def _event(
             "record_index": 0,
             "record_path": "raw_data[0].records[0]",
             "source_file": f"projectPages/{page_name}/{suffix}.json",
+            **({"context": context} if context else {}),
         },
     }
 
@@ -174,6 +176,71 @@ def test_section_details_missing_context_marks_known_issue_without_fake_hierarch
     assert line_section["attributes"]["known_issues"]
     assert store.list_canonical_entities(entity_type="single_project") == []
     assert store.list_canonical_entities(entity_type="bidding_section") == []
+
+
+def test_section_details_uses_source_context_for_scoped_tower_relationships() -> None:
+    store = _make_store()
+    event = _event(
+        suffix="section-details-context",
+        dataset_key="line_section",
+        page_name="区段划分",
+        api_name="section_details",
+        raw={
+            "id": "LS-CTX",
+            "sectionName": "三区段",
+            "sectionVo": {"towerNoList": [{"towerNo": "G1"}]},
+        },
+        context={
+            "project_code": "PRJ-CTX",
+            "single_project_code": "SP-CTX",
+            "bidding_section_code": "BS-CTX",
+            "line_section_id": "LS-CTX",
+            "line_section_name": "三区段",
+        },
+    )
+    store.save_raw_event(event, dataset_key="line_section")
+
+    result = NormalizerRunner(store).run("line_section")
+
+    assert result["processed"] == 1
+    line_section = store.list_canonical_entities(entity_type="line_section")[0]
+    assert "known_issues" not in line_section["attributes"]
+    assert line_section["attributes"]["single_project_code"] == "SP-CTX"
+    assert line_section["attributes"]["bidding_section_code"] == "BS-CTX"
+    relationships = store.list_canonical_relationships(limit=10)
+    assert {
+        (item["relationship_type"], item["to_entity_key"])
+        for item in relationships
+    } == {
+        ("HAS_LINE_SECTION", "dcp:line_section:LS-CTX"),
+        ("HAS_TOWER_SEQUENCE", "dcp:tower:SP-CTX:BS-CTX:G1"),
+    }
+
+
+def test_flat_hierarchy_can_use_source_context_when_raw_lacks_codes() -> None:
+    store = _make_store()
+    event = _event(
+        suffix="flat-context",
+        dataset_key="tower",
+        page_name="杆塔信息",
+        api_name="tower_details",
+        raw={"id": "TOWER-CTX", "towerNo": "G88"},
+        context={
+            "project_code": "PRJ-FLAT",
+            "single_project_code": "SP-FLAT",
+            "bidding_section_code": "BS-FLAT",
+        },
+    )
+    store.save_raw_event(event, dataset_key="tower")
+
+    result = NormalizerRunner(store).run("project_hierarchy")
+
+    assert result["failed"] == 0
+    entity_types = {
+        item["entity_type"]
+        for item in store.list_canonical_entities(dataset_key="tower", limit=10)
+    }
+    assert {"project", "single_project", "bidding_section"}.issubset(entity_types)
 
 
 def test_year_progress_generates_project_progress_and_project_relationship() -> None:

@@ -29,6 +29,11 @@ def _source_ref(raw_event: dict[str, Any]) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _source_context(raw_event: dict[str, Any]) -> dict[str, Any]:
+    value = _source_ref(raw_event).get("context")
+    return value if isinstance(value, dict) else {}
+
+
 def _api_name(raw_event: dict[str, Any]) -> str:
     return str(raw_event.get("api_name") or _source_ref(raw_event).get("api_name") or "")
 
@@ -103,19 +108,60 @@ def _relationship(
     }
 
 
-def _project_entity(raw_event: dict[str, Any], dataset_key: str, raw: dict[str, Any]) -> dict[str, Any] | None:
-    prj_code = raw.get("prjCode")
-    if prj_code in (None, ""):
+def _first_present(raw: dict[str, Any], context: dict[str, Any], raw_key: str, context_key: str) -> Any:
+    value = raw.get(raw_key)
+    if value not in (None, ""):
+        return value
+    value = context.get(context_key)
+    if value not in (None, ""):
+        return value
+    return None
+
+
+def _string_value(value: Any) -> str | None:
+    return None if value in (None, "") else str(value)
+
+
+def _codes_from_raw_and_context(raw: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "project_code": _string_value(_first_present(raw, context, "prjCode", "project_code")),
+        "project_name": _first_present(raw, context, "prjName", "project_name"),
+        "single_project_code": _string_value(
+            _first_present(raw, context, "singleProjectCode", "single_project_code")
+        ),
+        "single_project_name": _first_present(
+            raw, context, "singleProjectName", "single_project_name"
+        ),
+        "bidding_section_code": _string_value(
+            _first_present(raw, context, "biddingSectionCode", "bidding_section_code")
+        ),
+        "bidding_section_name": _first_present(
+            raw, context, "biddingSectionName", "bidding_section_name"
+        ),
+        "line_section_id": _string_value(_first_present(raw, context, "id", "line_section_id")),
+        "line_section_name": _first_present(
+            raw, context, "sectionName", "line_section_name"
+        ),
+    }
+
+
+def _project_entity(
+    raw_event: dict[str, Any],
+    dataset_key: str,
+    raw: dict[str, Any],
+    context: dict[str, Any],
+) -> dict[str, Any] | None:
+    codes = _codes_from_raw_and_context(raw, context)
+    if codes["project_code"] is None:
         return None
-    prj_code = str(prj_code)
     return _entity(
         entity_type="project",
-        entity_key=f"dcp:project:{prj_code}",
+        entity_key=f"dcp:project:{codes['project_code']}",
         dataset_key=dataset_key,
         raw_event=raw_event,
         attributes={
-            "project_code": prj_code,
-            "project_name": raw.get("prjName"),
+            "project_code": codes["project_code"],
+            "project_name": codes["project_name"],
         },
     )
 
@@ -124,22 +170,22 @@ def _single_project_entity(
     raw_event: dict[str, Any],
     dataset_key: str,
     raw: dict[str, Any],
+    context: dict[str, Any],
     *,
     project_code: str | None,
 ) -> dict[str, Any] | None:
-    single_code = raw.get("singleProjectCode")
-    if single_code in (None, ""):
+    codes = _codes_from_raw_and_context(raw, context)
+    if codes["single_project_code"] is None:
         return None
-    single_code = str(single_code)
     return _entity(
         entity_type="single_project",
-        entity_key=f"dcp:single_project:{single_code}",
+        entity_key=f"dcp:single_project:{codes['single_project_code']}",
         dataset_key=dataset_key,
         raw_event=raw_event,
         attributes={
             "project_code": project_code,
-            "single_project_code": single_code,
-            "single_project_name": raw.get("singleProjectName"),
+            "single_project_code": codes["single_project_code"],
+            "single_project_name": codes["single_project_name"],
         },
     )
 
@@ -148,24 +194,24 @@ def _bidding_section_entity(
     raw_event: dict[str, Any],
     dataset_key: str,
     raw: dict[str, Any],
+    context: dict[str, Any],
     *,
     project_code: str | None,
     single_project_code: str | None,
 ) -> dict[str, Any] | None:
-    bidding_code = raw.get("biddingSectionCode")
-    if bidding_code in (None, ""):
+    codes = _codes_from_raw_and_context(raw, context)
+    if codes["bidding_section_code"] is None:
         return None
-    bidding_code = str(bidding_code)
     return _entity(
         entity_type="bidding_section",
-        entity_key=f"dcp:bidding_section:{bidding_code}",
+        entity_key=f"dcp:bidding_section:{codes['bidding_section_code']}",
         dataset_key=dataset_key,
         raw_event=raw_event,
         attributes={
             "project_code": project_code,
             "single_project_code": single_project_code,
-            "bidding_section_code": bidding_code,
-            "bidding_section_name": raw.get("biddingSectionName"),
+            "bidding_section_code": codes["bidding_section_code"],
+            "bidding_section_name": codes["bidding_section_name"],
         },
     )
 
@@ -175,11 +221,12 @@ def extract_preconstruction_results_detail(
 ) -> dict[str, list[dict[str, Any]]]:
     """Extract hierarchy from 项目前期成果/preconstruction_results_detail."""
     dataset_key = str(raw_event.get("dataset_key") or "project_preconstruction")
+    context = _source_context(raw_event)
+    codes = _codes_from_raw_and_context(raw, context)
     entities: list[dict[str, Any]] = []
     relationships: list[dict[str, Any]] = []
 
-    project = _project_entity(raw_event, dataset_key, raw)
-    project_code = str(raw["prjCode"]) if raw.get("prjCode") not in (None, "") else None
+    project = _project_entity(raw_event, dataset_key, raw, context)
     project_key = project["entity_key"] if project else None
     if project:
         entities.append(project)
@@ -195,13 +242,10 @@ def extract_preconstruction_results_detail(
             raw_event,
             dataset_key,
             single,
-            project_code=project_code,
+            context,
+            project_code=codes["project_code"],
         )
-        single_code = (
-            str(single["singleProjectCode"])
-            if single.get("singleProjectCode") not in (None, "")
-            else None
-        )
+        single_codes = _codes_from_raw_and_context(single, context)
         single_key = single_entity["entity_key"] if single_entity else None
         if single_entity:
             entities.append(single_entity)
@@ -228,8 +272,9 @@ def extract_preconstruction_results_detail(
                 raw_event,
                 dataset_key,
                 bidding_section,
-                project_code=project_code,
-                single_project_code=single_code,
+                context,
+                project_code=codes["project_code"],
+                single_project_code=single_codes["single_project_code"],
             )
             if not bidding_entity:
                 continue
@@ -255,9 +300,10 @@ def extract_yearly_progress_analysis(
 ) -> dict[str, list[dict[str, Any]]]:
     """Extract project progress from 年度进度计划分析/yearly_progress_analysis."""
     dataset_key = "year_progress"
-    project = _project_entity(raw_event, dataset_key, raw)
-    project_code = str(raw["prjCode"]) if raw.get("prjCode") not in (None, "") else None
-    if not project or not project_code:
+    context = _source_context(raw_event)
+    codes = _codes_from_raw_and_context(raw, context)
+    project = _project_entity(raw_event, dataset_key, raw, context)
+    if not project or not codes["project_code"]:
         return {
             "entities": [],
             "relationships": [],
@@ -267,7 +313,7 @@ def extract_yearly_progress_analysis(
             },
         }
 
-    progress_id = raw.get("id") or project_code
+    progress_id = raw.get("id") or codes["project_code"]
     progress_key = f"dcp:project_progress:{progress_id}"
     entities = [
         project,
@@ -277,8 +323,8 @@ def extract_yearly_progress_analysis(
             dataset_key=dataset_key,
             raw_event=raw_event,
             attributes={
-                "project_code": project_code,
-                "project_name": raw.get("prjName"),
+                "project_code": codes["project_code"],
+                "project_name": codes["project_name"],
                 "raw": raw,
             },
         ),
@@ -304,7 +350,8 @@ def extract_yearly_progress_analysis(
                 raw_event,
                 dataset_key,
                 single,
-                project_code=project_code,
+                context,
+                project_code=codes["project_code"],
             )
             if not single_entity:
                 continue
@@ -329,6 +376,8 @@ def extract_section_single_projects(
 ) -> dict[str, list[dict[str, Any]]]:
     """Extract line-section single project and bidding sections."""
     dataset_key = "line_section"
+    context = _source_context(raw_event)
+    codes = _codes_from_raw_and_context(raw, context)
     entities: list[dict[str, Any]] = []
     relationships: list[dict[str, Any]] = []
 
@@ -336,12 +385,8 @@ def extract_section_single_projects(
         raw_event,
         dataset_key,
         raw,
-        project_code=str(raw["prjCode"]) if raw.get("prjCode") not in (None, "") else None,
-    )
-    single_code = (
-        str(raw["singleProjectCode"])
-        if raw.get("singleProjectCode") not in (None, "")
-        else None
+        context,
+        project_code=codes["project_code"],
     )
     if single_entity:
         entities.append(single_entity)
@@ -355,8 +400,9 @@ def extract_section_single_projects(
                 raw_event,
                 dataset_key,
                 section,
-                project_code=None,
-                single_project_code=single_code,
+                context,
+                project_code=codes["project_code"],
+                single_project_code=codes["single_project_code"],
             )
             if not bidding_entity:
                 continue
@@ -382,23 +428,39 @@ def extract_section_details(
 ) -> dict[str, list[dict[str, Any]]]:
     """Extract line_section and tower sequence from section_details."""
     dataset_key = "line_section"
+    context = _source_context(raw_event)
+    codes = _codes_from_raw_and_context(raw, context)
     entities: list[dict[str, Any]] = []
     relationships: list[dict[str, Any]] = []
 
-    section_id = raw.get("id")
-    section_name = raw.get("sectionName")
-    if section_id in (None, "") and section_name in (None, ""):
+    if codes["line_section_id"] is None and codes["line_section_name"] in (None, ""):
         return {"entities": [], "relationships": []}
 
-    single_project_code = raw.get("singleProjectCode")
-    bidding_section_code = raw.get("biddingSectionCode")
-    identity = section_id or f"{single_project_code or 'unknown'}:{bidding_section_code or 'unknown'}:{section_name}"
+    identity = codes["line_section_id"] or (
+        f"{codes['single_project_code'] or 'unknown'}:"
+        f"{codes['bidding_section_code'] or 'unknown'}:"
+        f"{codes['line_section_name']}"
+    )
     line_section_key = f"dcp:line_section:{identity}"
     known_issues: list[str] = []
-    if not single_project_code or not bidding_section_code:
+    if not codes["single_project_code"] or not codes["bidding_section_code"]:
         known_issues.append(
-            "section_details SourceEvent lacks request context for singleProjectCode/biddingSectionCode; downloader should add source_ref.context with singleProjectCode and biddingSectionCode"
+            "section_details SourceEvent lacks request context for singleProjectCode/biddingSectionCode; downloader should add source_ref.context with single_project_code and bidding_section_code"
         )
+
+    attributes = {
+        "project_code": codes["project_code"],
+        "project_name": codes["project_name"],
+        "single_project_code": codes["single_project_code"],
+        "single_project_name": codes["single_project_name"],
+        "bidding_section_code": codes["bidding_section_code"],
+        "bidding_section_name": codes["bidding_section_name"],
+        "line_section_id": codes["line_section_id"],
+        "line_section_name": codes["line_section_name"],
+        "raw": raw,
+    }
+    if known_issues:
+        attributes["known_issues"] = known_issues
 
     entities.append(
         _entity(
@@ -406,16 +468,22 @@ def extract_section_details(
             entity_key=line_section_key,
             dataset_key=dataset_key,
             raw_event=raw_event,
-            attributes={
-                "line_section_id": section_id,
-                "line_section_name": section_name,
-                "single_project_code": single_project_code,
-                "bidding_section_code": bidding_section_code,
-                "known_issues": known_issues,
-                "raw": raw,
-            },
+            attributes=attributes,
         )
     )
+
+    if codes["bidding_section_code"]:
+        relationships.append(
+            _relationship(
+                relationship_type="HAS_LINE_SECTION",
+                from_entity_type="bidding_section",
+                from_entity_key=f"dcp:bidding_section:{codes['bidding_section_code']}",
+                to_entity_type="line_section",
+                to_entity_key=line_section_key,
+                dataset_key=dataset_key,
+                raw_event=raw_event,
+            )
+        )
 
     section_vo = raw.get("sectionVo") if isinstance(raw.get("sectionVo"), dict) else {}
     tower_list = section_vo.get("towerNoList")
@@ -425,8 +493,8 @@ def extract_section_details(
             if tower_no in (None, ""):
                 continue
             tower_key = (
-                f"dcp:tower:{single_project_code}:{bidding_section_code}:{tower_no}"
-                if single_project_code and bidding_section_code
+                f"dcp:tower:{codes['single_project_code']}:{codes['bidding_section_code']}:{tower_no}"
+                if codes["single_project_code"] and codes["bidding_section_code"]
                 else f"dcp:tower:{tower_no}"
             )
             relationships.append(
@@ -450,11 +518,12 @@ def extract_flat_hierarchy(
 ) -> dict[str, list[dict[str, Any]]]:
     """Auxiliary extractor for flat tower/station records with top-level DCP codes."""
     dataset_key = str(raw_event.get("dataset_key") or "dcp")
+    context = _source_context(raw_event)
+    codes = _codes_from_raw_and_context(raw, context)
     entities: list[dict[str, Any]] = []
     relationships: list[dict[str, Any]] = []
 
-    project = _project_entity(raw_event, dataset_key, raw)
-    project_code = str(raw["prjCode"]) if raw.get("prjCode") not in (None, "") else None
+    project = _project_entity(raw_event, dataset_key, raw, context)
     project_key = project["entity_key"] if project else None
     if project:
         entities.append(project)
@@ -463,7 +532,8 @@ def extract_flat_hierarchy(
         raw_event,
         dataset_key,
         raw,
-        project_code=project_code,
+        context,
+        project_code=codes["project_code"],
     )
     single_key = single_entity["entity_key"] if single_entity else None
     if single_entity:
@@ -485,8 +555,9 @@ def extract_flat_hierarchy(
         raw_event,
         dataset_key,
         raw,
-        project_code=project_code,
-        single_project_code=str(raw["singleProjectCode"]) if raw.get("singleProjectCode") not in (None, "") else None,
+        context,
+        project_code=codes["project_code"],
+        single_project_code=codes["single_project_code"],
     )
     if bidding_entity:
         entities.append(bidding_entity)
@@ -512,6 +583,8 @@ def normalize_project_hierarchy(raw_event: dict[str, Any]) -> tuple[dict[str, An
         return None, "payload.raw must be an object"
 
     api_name = _api_name(raw_event)
+    context = _source_context(raw_event)
+    codes = _codes_from_raw_and_context(raw, context)
     if api_name == "preconstruction_results_detail":
         payload = extract_preconstruction_results_detail(raw_event, raw)
     elif api_name == "yearly_progress_analysis":
@@ -519,8 +592,8 @@ def normalize_project_hierarchy(raw_event: dict[str, Any]) -> tuple[dict[str, An
     elif api_name == "section_single_projects":
         payload = extract_section_single_projects(raw_event, raw)
     elif api_name in {"tower_details", "substation_coordinates"} or any(
-        raw.get(field) not in (None, "")
-        for field in ("prjCode", "singleProjectCode", "biddingSectionCode")
+        codes[field] not in (None, "")
+        for field in ("project_code", "single_project_code", "bidding_section_code")
     ):
         payload = extract_flat_hierarchy(raw_event, raw)
     else:

@@ -22,6 +22,22 @@ def _float_value(value: Any) -> float | None:
     return parsed if math.isfinite(parsed) else None
 
 
+def _source_context(raw_event: dict[str, Any]) -> dict[str, Any]:
+    source_ref = raw_event.get("source_ref") or {}
+    context = source_ref.get("context") if isinstance(source_ref, dict) else None
+    return context if isinstance(context, dict) else {}
+
+
+def _first_present(raw: dict[str, Any], context: dict[str, Any], raw_key: str, context_key: str) -> Any:
+    value = raw.get(raw_key)
+    if value not in (None, ""):
+        return value
+    value = context.get(context_key)
+    if value not in (None, ""):
+        return value
+    return None
+
+
 def normalize_tower(
     raw_event: dict[str, Any],
 ) -> tuple[dict[str, Any] | None, str | None]:
@@ -41,9 +57,15 @@ def normalize_tower(
     if not isinstance(raw, dict):
         return None, "payload.raw must be an object"
 
+    context = _source_context(raw_event)
     tower_id = raw.get("id")
-    single_project_code = raw.get("singleProjectCode")
-    bidding_section_code = raw.get("biddingSectionCode")
+    project_code = _first_present(raw, context, "prjCode", "project_code")
+    single_project_code = _first_present(
+        raw, context, "singleProjectCode", "single_project_code"
+    )
+    bidding_section_code = _first_present(
+        raw, context, "biddingSectionCode", "bidding_section_code"
+    )
     tower_no = raw.get("towerNo")
     if tower_id not in (None, ""):
         entity_key = f"dcp:tower:{tower_id}"
@@ -65,7 +87,7 @@ def normalize_tower(
 
     attributes = {
         "tower_id": tower_id,
-        "project_code": raw.get("prjCode"),
+        "project_code": project_code,
         "single_project_code": single_project_code,
         "bidding_section_code": bidding_section_code,
         "tower_no": tower_no,

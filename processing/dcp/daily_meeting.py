@@ -66,6 +66,27 @@ def _first_present(raw: dict[str, Any], *keys: str) -> Any:
     return None
 
 
+def _source_context(raw_event: dict[str, Any]) -> dict[str, Any]:
+    source_ref = raw_event.get("source_ref") or {}
+    context = source_ref.get("context") if isinstance(source_ref, dict) else None
+    return context if isinstance(context, dict) else {}
+
+
+def _first_present_raw_or_context(
+    raw: dict[str, Any],
+    context: dict[str, Any],
+    raw_keys: tuple[str, ...],
+    context_key: str,
+) -> Any:
+    value = _first_present(raw, *raw_keys)
+    if value not in (None, ""):
+        return value
+    value = context.get(context_key)
+    if value not in (None, ""):
+        return value
+    return None
+
+
 _SOURCE_FILE_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
@@ -198,12 +219,15 @@ def normalize_daily_meeting(
     if not isinstance(raw, dict):
         return None, "payload.raw must be an object"
 
+    context = _source_context(raw_event)
     longitude = _float_value(raw.get("toolBoxTalkLongitude"))
     latitude = _float_value(raw.get("toolBoxTalkLatitude"))
     if longitude is None or latitude is None:
         return None, "invalid toolBoxTalkLongitude/toolBoxTalkLatitude"
     if not _is_valid_coordinate(longitude, latitude):
         return None, "invalid coordinate"
+    if not _is_hunan_coordinate(longitude, latitude):
+        return None, "coordinate outside hunan range"
 
     work_point_id = _first_present(
         raw,
@@ -235,9 +259,15 @@ def normalize_daily_meeting(
     )
 
     attributes = {
-        "project_code": _first_present(raw, "prjCode", "projectCode"),
-        "single_project_code": _first_present(raw, "singleProjectCode", "singlePrjCode"),
-        "bidding_section_code": _first_present(raw, "biddingSectionCode", "bidSectCode"),
+        "project_code": _first_present_raw_or_context(
+            raw, context, ("prjCode", "projectCode"), "project_code"
+        ),
+        "single_project_code": _first_present_raw_or_context(
+            raw, context, ("singleProjectCode", "singlePrjCode"), "single_project_code"
+        ),
+        "bidding_section_code": _first_present_raw_or_context(
+            raw, context, ("biddingSectionCode", "bidSectCode"), "bidding_section_code"
+        ),
         "project_name": _first_present(raw, "projectName", "prjName", "project_name"),
         "longitude": longitude,
         "latitude": latitude,

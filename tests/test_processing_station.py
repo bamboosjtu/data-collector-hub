@@ -993,6 +993,72 @@ def test_station_entity_key_falls_back_to_coordinate_id_without_single_project_c
     assert entities[0]["attributes"]["dcp_coordinate_id"] == "coord-fallback"
 
 
+def test_station_context_can_supply_project_scoping_when_raw_lacks_codes():
+    store = _make_store()
+    event = _station_event(suffix="context-station", station_id="coord-context")
+    del event["payload"]["raw"]["singleProjectCode"]
+    del event["payload"]["raw"]["prjCode"]
+    event["source_ref"]["context"] = {
+        "project_code": "PRJ-CTX",
+        "single_project_code": "SP-CTX",
+        "bidding_section_code": "BS-CTX",
+    }
+    store.save_raw_event(event, dataset_key="station")
+
+    result = NormalizerRunner(store).run("station")
+
+    assert result["processed"] == 1
+    entity = store.list_canonical_entities(entity_type="station", dataset_key="station")[0]
+    assert entity["entity_key"] == "dcp:station:SP-CTX"
+    assert entity["attributes"]["project_code"] == "PRJ-CTX"
+    assert entity["attributes"]["single_project_code"] == "SP-CTX"
+    assert entity["attributes"]["bidding_section_code"] == "BS-CTX"
+
+
+def test_tower_context_can_supply_scoped_identity_when_raw_lacks_codes():
+    store = _make_store()
+    event = _tower_event(suffix="context-tower", include_id=False)
+    del event["payload"]["raw"]["singleProjectCode"]
+    del event["payload"]["raw"]["biddingSectionCode"]
+    event["source_ref"]["context"] = {
+        "project_code": "PRJ-TOWER-CTX",
+        "single_project_code": "SP-TOWER-CTX",
+        "bidding_section_code": "BS-TOWER-CTX",
+    }
+    store.save_raw_event(event, dataset_key="tower")
+
+    result = NormalizerRunner(store).run("tower")
+
+    assert result["processed"] == 1
+    entity = store.list_canonical_entities(entity_type="tower", dataset_key="tower")[0]
+    assert entity["entity_key"] == "dcp:tower:SP-TOWER-CTX:BS-TOWER-CTX:T-context-tower"
+    assert entity["attributes"]["project_code"] == "PRJ-TOWER-CTX"
+    assert entity["attributes"]["single_project_code"] == "SP-TOWER-CTX"
+    assert entity["attributes"]["bidding_section_code"] == "BS-TOWER-CTX"
+
+
+def test_daily_meeting_context_can_supply_missing_hierarchy_codes():
+    store = _make_store()
+    event = _daily_meeting_event("context-daily")
+    event["payload"]["raw"].pop("prjCode", None)
+    event["payload"]["raw"].pop("singleProjectCode", None)
+    event["payload"]["raw"].pop("biddingSectionCode", None)
+    event["source_ref"]["context"] = {
+        "project_code": "PRJ-DAILY-CTX",
+        "single_project_code": "SP-DAILY-CTX",
+        "bidding_section_code": "BS-DAILY-CTX",
+    }
+    store.save_raw_event(event, dataset_key="daily_meeting")
+
+    result = NormalizerRunner(store).run("daily_meeting")
+
+    assert result["processed"] == 1
+    entity = store.list_canonical_entities(entity_type="work_point", dataset_key="daily_meeting")[0]
+    assert entity["attributes"]["project_code"] == "PRJ-DAILY-CTX"
+    assert entity["attributes"]["single_project_code"] == "SP-DAILY-CTX"
+    assert entity["attributes"]["bidding_section_code"] == "BS-DAILY-CTX"
+
+
 def test_station_normalizer_processes_more_than_default_page_size():
     store = _make_store()
     for index in range(1001):
