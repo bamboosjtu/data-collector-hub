@@ -15,9 +15,12 @@ Assumptions:
 """
 
 import json
+import asyncio
 import subprocess
-from datetime import datetime
+import threading
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
+from zoneinfo import ZoneInfo
 
 from fastapi import (
     BackgroundTasks,
@@ -202,12 +205,15 @@ plugin_manager: Optional[PluginManager] = None
 scheduler: Optional[TaskScheduler] = None
 ws_manager: Optional[WebSocketBroadcastManager] = None
 mcp_tools: Optional[MCPTools] = None
+collection_scheduler_task: Optional[asyncio.Task] = None
+collection_scheduler_stop_event: Optional[asyncio.Event] = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager."""
     global store, plugin_manager, scheduler, ws_manager, mcp_tools
+    global collection_scheduler_task, collection_scheduler_stop_event
 
     # Startup
     print("[API] Starting up...")
@@ -229,6 +235,17 @@ async def lifespan(app: FastAPI):
     default_job_count = scheduler.register_default_jobs()
     print(f"[API] Registered {default_job_count} default scheduled job(s)")
 
+    try:
+        _sync_default_collection_schedules("dcp")
+        collection_scheduler_stop_event = asyncio.Event()
+        if _collection_scheduler_runtime_enabled():
+            collection_scheduler_task = asyncio.create_task(
+                _collection_scheduler_loop(collection_scheduler_stop_event)
+            )
+            print("[API] Collection scheduler loop started")
+    except Exception as exc:
+        print(f"[API] Collection scheduler init skipped: {exc}")
+
     # Initialize MCP tools (reuses existing services)
     mcp_tools = MCPTools(store, plugin_manager, scheduler)
 
@@ -242,6 +259,13 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     print("[API] Shutting down...")
+    if collection_scheduler_stop_event:
+        collection_scheduler_stop_event.set()
+    if collection_scheduler_task:
+        try:
+            await collection_scheduler_task
+        except Exception:
+            pass
     if ws_manager:
         await ws_manager.stop()
     if scheduler:
@@ -429,6 +453,312 @@ def extract_last_json_object(stdout: str) -> dict | None:
         if isinstance(parsed, dict):
             return parsed
     return None
+
+
+def _parse_timestamp(value: Any) -> datetime | None:
+    if value in (None, ""):
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _timezone(name: str) -> ZoneInfo:
+    try:
+        return ZoneInfo(name)
+    except Exception:
+        return ZoneInfo("Asia/Shanghai")
+
+
+def _matches_cron_field(value: int, field: str, *, minimum: int, maximum: int) -> bool:
+    if field == "*":
+        return True
+    for part in str(field).split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if part == "*":
+            return True
+        if part.startswith("*/"):
+            step = int(part[2:])
+            if step > 0 and (value - minimum) % step == 0:
+                return True
+            continue
+        if "-" in part:
+            start_text, end_text = part.split("-", 1)
+            start = int(start_text)
+            end = int(end_text)
+            if start <= value <= end:
+                return True
+            continue
+        parsed = int(part)
+        if minimum <= parsed <= maximum and parsed == value:
+            return True
+    return False
+
+
+def _cron_matches(schedule_cron: str, dt: datetime) -> bool:
+    fields = str(schedule_cron).split()
+    if len(fields) != 5:
+        raise ValueError(f"unsupported cron expression: {schedule_cron}")
+    minute, hour, day_of_month, month, day_of_week = fields
+    cron_weekday = (dt.weekday() + 1) % 7
+    return (
+        _matches_cron_field(dt.minute, minute, minimum=0, maximum=59)
+        and _matches_cron_field(dt.hour, hour, minimum=0, maximum=23)
+        and _matches_cron_field(dt.day, day_of_month, minimum=1, maximum=31)
+        and _matches_cron_field(dt.month, month, minimum=1, maximum=12)
+        and _matches_cron_field(cron_weekday, day_of_week, minimum=0, maximum=6)
+    )
+
+
+def _next_cron_run(
+    schedule_cron: str,
+    *,
+    now: datetime,
+    timezone_name: str,
+) -> datetime:
+    tz = _timezone(timezone_name)
+    current = now.astimezone(tz).replace(second=0, microsecond=0)
+    probe = current + timedelta(minutes=1)
+    for _ in range(366 * 24 * 60):
+        if _cron_matches(schedule_cron, probe):
+            return probe
+        probe += timedelta(minutes=1)
+    raise ValueError(f"unable to resolve next run for cron: {schedule_cron}")
+
+
+def _schedule_id(plugin_id: str, profile: str) -> str:
+    return f"{plugin_id}:{profile}"
+
+
+def _profile_default_request(plugin_id: str, profile: str, profile_config: dict[str, Any]) -> dict[str, Any]:
+    request: dict[str, Any] = {
+        "plugin_id": plugin_id,
+        "profile": profile,
+        "dataset_keys": list(profile_config.get("datasets") or []),
+        "processing_mode": str(profile_config.get("processing_mode") or "none"),
+    }
+    for key in (
+        "mode",
+        "recent_days",
+        "since_date",
+        "until_date",
+        "include_existing",
+        "force",
+        "due_only",
+    ):
+        if key in profile_config:
+            request[key] = profile_config[key]
+    return request
+
+
+def _sync_default_collection_schedules(plugin_id: str = "dcp") -> list[dict[str, Any]]:
+    runtime_config = store.get_plugin_runtime_config(plugin_id)["config"]
+    profiles = runtime_config.get("collection_profiles") or {}
+    if not isinstance(profiles, dict):
+        return []
+    schedules: list[dict[str, Any]] = []
+    now = datetime.now(_timezone("Asia/Shanghai"))
+    for profile, profile_config in profiles.items():
+        if not isinstance(profile_config, dict):
+            continue
+        schedule_cron = str(profile_config.get("schedule_cron") or "").strip()
+        if not schedule_cron:
+            continue
+        timezone_name = str(profile_config.get("timezone") or "Asia/Shanghai")
+        next_run_at = _next_cron_run(
+            schedule_cron,
+            now=now,
+            timezone_name=timezone_name,
+        ).isoformat()
+        schedules.append(
+            store.create_or_update_collection_schedule(
+                schedule_id=_schedule_id(plugin_id, profile),
+                plugin_id=plugin_id,
+                profile=profile,
+                schedule_cron=schedule_cron,
+                timezone=timezone_name,
+                default_request=_profile_default_request(
+                    plugin_id, profile, profile_config
+                ),
+                enabled=None,
+                next_run_at=next_run_at,
+            )
+        )
+    return schedules
+
+
+def _collection_scheduler_runtime_enabled() -> bool:
+    runtime_config = store.get_plugin_runtime_config("dcp")["config"]
+    scheduler_config = runtime_config.get("scheduler") or {}
+    return bool(scheduler_config.get("enabled"))
+
+
+def _collection_scheduler_tick_interval_seconds() -> int:
+    runtime_config = store.get_plugin_runtime_config("dcp")["config"]
+    scheduler_config = runtime_config.get("scheduler") or {}
+    value = scheduler_config.get("tick_interval_seconds", 60)
+    return int(value) if int(value) > 0 else 60
+
+
+def _start_external_collection_job(job_id: str, command: list[str], cwd: str) -> None:
+    thread = threading.Thread(
+        target=_run_external_collection_job,
+        kwargs={"job_id": job_id, "command": command, "cwd": cwd},
+        daemon=True,
+    )
+    thread.start()
+
+
+def _queue_external_collection_job_background(
+    *,
+    background_tasks: BackgroundTasks | None,
+    job_id: str,
+    command: list[str],
+    cwd: str,
+) -> None:
+    if background_tasks is not None:
+        background_tasks.add_task(
+            _run_external_collection_job,
+            job_id=job_id,
+            command=command,
+            cwd=cwd,
+        )
+        return
+    _start_external_collection_job(job_id, command, cwd)
+
+
+def _create_external_collection_job_from_request(
+    request: ExternalCollectionJobRequest,
+    *,
+    background_tasks: BackgroundTasks | None = None,
+) -> dict[str, Any]:
+    resolved = _resolve_external_collection_request(request)
+    active_job = store.get_active_external_collection_job(
+        request.plugin_id,
+        resolved["dataset_keys"],
+    )
+    if active_job:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "external collection job already active for overlapping dataset_keys",
+                "job": active_job,
+            },
+        )
+
+    job_id = f"collect_{uuid.uuid4().hex}"
+    job = store.create_external_collection_job(
+        job_id=job_id,
+        plugin_id=request.plugin_id,
+        profile=request.profile,
+        dataset_keys=resolved["dataset_keys"],
+        mode=resolved["mode"],
+        command=resolved["command"],
+        cwd=resolved["cwd"],
+        datahub_url=resolved["datahub_url"],
+        processing_mode=resolved["processing_mode"],
+        recent_days=resolved["recent_days"],
+        since_date=resolved["since_date"],
+        until_date=resolved["until_date"],
+        include_existing=resolved["include_existing"],
+        force=resolved["force"],
+        due_only=resolved["due_only"],
+    )
+    _queue_external_collection_job_background(
+        background_tasks=background_tasks,
+        job_id=job_id,
+        command=resolved["command"],
+        cwd=resolved["cwd"],
+    )
+    return job
+
+
+def collection_scheduler_tick_once(*, now: datetime | None = None) -> dict[str, Any]:
+    _sync_default_collection_schedules("dcp")
+    now = now or datetime.now(_timezone("Asia/Shanghai"))
+    schedules = store.list_collection_schedules(plugin_id="dcp", enabled=True, limit=200)
+    triggered: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    created_job_ids: list[str] = []
+
+    for schedule in schedules:
+        next_run_at = _parse_timestamp(schedule.get("next_run_at"))
+        if next_run_at is None or next_run_at > now:
+            continue
+        default_request = schedule.get("default_request") or {}
+        dataset_keys = list(default_request.get("dataset_keys") or [])
+        active_job = store.get_active_external_collection_job(
+            schedule["plugin_id"], dataset_keys
+        )
+        if active_job:
+            skipped.append(
+                {
+                    "schedule_id": schedule["schedule_id"],
+                    "profile": schedule["profile"],
+                    "reason": "active overlapping external collection job exists",
+                    "job_id": active_job["job_id"],
+                }
+            )
+            continue
+
+        try:
+            request = ExternalCollectionJobRequest(**default_request)
+            job = _create_external_collection_job_from_request(
+                request,
+                background_tasks=None,
+            )
+        except HTTPException as exc:
+            skipped.append(
+                {
+                    "schedule_id": schedule["schedule_id"],
+                    "profile": schedule["profile"],
+                    "reason": exc.detail,
+                }
+            )
+            continue
+        next_due = _next_cron_run(
+            schedule["schedule_cron"],
+            now=now,
+            timezone_name=str(schedule.get("timezone") or "Asia/Shanghai"),
+        ).isoformat()
+        store.mark_collection_schedule_triggered(
+            schedule["schedule_id"],
+            job_id=job["job_id"],
+            next_run_at=next_due,
+        )
+        triggered.append(
+            {
+                "schedule_id": schedule["schedule_id"],
+                "profile": schedule["profile"],
+                "job_id": job["job_id"],
+            }
+        )
+        created_job_ids.append(job["job_id"])
+
+    return {
+        "triggered": triggered,
+        "skipped": skipped,
+        "created_job_ids": created_job_ids,
+        "tick_at": now.isoformat(),
+    }
+
+
+async def _collection_scheduler_loop(stop_event: asyncio.Event) -> None:
+    while not stop_event.is_set():
+        try:
+            collection_scheduler_tick_once()
+        except Exception as exc:
+            print(f"[API] Collection scheduler tick failed: {exc}")
+        try:
+            await asyncio.wait_for(
+                stop_event.wait(),
+                timeout=_collection_scheduler_tick_interval_seconds(),
+            )
+        except asyncio.TimeoutError:
+            continue
 
 
 def _profile_value(
@@ -786,45 +1116,10 @@ async def create_external_collection_job(
     background_tasks: BackgroundTasks,
 ):
     """Queue a local subprocess-backed external collection job."""
-    resolved = _resolve_external_collection_request(request)
-    active_job = store.get_active_external_collection_job(
-        request.plugin_id,
-        resolved["dataset_keys"],
+    return _create_external_collection_job_from_request(
+        request,
+        background_tasks=background_tasks,
     )
-    if active_job:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "error": "external collection job already active for overlapping dataset_keys",
-                "job": active_job,
-            },
-        )
-
-    job_id = f"collect_{uuid.uuid4().hex}"
-    job = store.create_external_collection_job(
-        job_id=job_id,
-        plugin_id=request.plugin_id,
-        profile=request.profile,
-        dataset_keys=resolved["dataset_keys"],
-        mode=resolved["mode"],
-        command=resolved["command"],
-        cwd=resolved["cwd"],
-        datahub_url=resolved["datahub_url"],
-        processing_mode=resolved["processing_mode"],
-        recent_days=resolved["recent_days"],
-        since_date=resolved["since_date"],
-        until_date=resolved["until_date"],
-        include_existing=resolved["include_existing"],
-        force=resolved["force"],
-        due_only=resolved["due_only"],
-    )
-    background_tasks.add_task(
-        _run_external_collection_job,
-        job_id=job_id,
-        command=resolved["command"],
-        cwd=resolved["cwd"],
-    )
-    return job
 
 
 @app.get("/collection/v1/jobs/{job_id}")
@@ -853,6 +1148,53 @@ async def list_external_collection_jobs(
             limit=limit,
         )
     }
+
+
+@app.get("/collection/v1/schedules")
+async def list_collection_schedules(
+    plugin_id: Optional[str] = Query("dcp"),
+    enabled: Optional[bool] = Query(None),
+    limit: int = Query(100, ge=1, le=500),
+):
+    """List collection schedules synchronized from plugin runtime profiles."""
+    if plugin_id == "dcp":
+        _sync_default_collection_schedules("dcp")
+    return {
+        "schedules": store.list_collection_schedules(
+            plugin_id=plugin_id,
+            enabled=enabled,
+            limit=limit,
+        )
+    }
+
+
+@app.post("/collection/v1/schedules/{schedule_id}/enable")
+async def enable_collection_schedule(schedule_id: str):
+    schedule = store.get_collection_schedule(schedule_id)
+    if not schedule:
+        raise HTTPException(status_code=404, detail=f"schedule not found: {schedule_id}")
+    next_run_at = _next_cron_run(
+        schedule["schedule_cron"],
+        now=datetime.now(_timezone(str(schedule.get("timezone") or "Asia/Shanghai"))),
+        timezone_name=str(schedule.get("timezone") or "Asia/Shanghai"),
+    ).isoformat()
+    store.update_collection_schedule_enabled(schedule_id, True, next_run_at=next_run_at)
+    return store.get_collection_schedule(schedule_id)
+
+
+@app.post("/collection/v1/schedules/{schedule_id}/disable")
+async def disable_collection_schedule(schedule_id: str):
+    schedule = store.get_collection_schedule(schedule_id)
+    if not schedule:
+        raise HTTPException(status_code=404, detail=f"schedule not found: {schedule_id}")
+    store.update_collection_schedule_enabled(schedule_id, False)
+    return store.get_collection_schedule(schedule_id)
+
+
+@app.post("/collection/v1/scheduler/tick")
+async def scheduler_tick():
+    """Evaluate enabled due schedules and queue matching collection jobs."""
+    return collection_scheduler_tick_once()
 
 
 def _run_processing_job(
@@ -1159,6 +1501,8 @@ async def update_plugin_config(plugin_id: str, request: PluginConfigUpdateReques
         raise HTTPException(status_code=400, detail=errors)
 
     store.save_plugin_runtime_config(plugin_id, config)
+    if plugin_id == "dcp":
+        _sync_default_collection_schedules("dcp")
 
     return {
         "plugin_id": plugin_id,

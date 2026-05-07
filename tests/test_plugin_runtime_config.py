@@ -107,6 +107,10 @@ def test_dcp_default_runtime_config_targets_monitor_mvp_datasets():
         "station",
         "line_section",
     ]
+    assert config["scheduler"] == {
+        "enabled": False,
+        "tick_interval_seconds": 60,
+    }
 
 
 def test_old_runtime_config_is_deep_merged_with_schema_defaults():

@@ -129,6 +129,42 @@ def validate_plugin_runtime_config(plugin_id: str, config: dict[str, Any]) -> li
             f"checkpoint_mode must be one of: {sorted(VALID_CHECKPOINT_MODES)}"
         )
 
+    scheduler = config.get("scheduler")
+    if scheduler is not None:
+        if not isinstance(scheduler, dict):
+            errors.append("scheduler must be an object")
+        else:
+            if "enabled" in scheduler and not isinstance(scheduler["enabled"], bool):
+                errors.append("scheduler.enabled must be boolean")
+            if "tick_interval_seconds" in scheduler:
+                tick_interval = scheduler["tick_interval_seconds"]
+                if not isinstance(tick_interval, int) or tick_interval <= 0:
+                    errors.append(
+                        "scheduler.tick_interval_seconds must be a positive integer"
+                    )
+
+    collection_profiles = config.get("collection_profiles")
+    if collection_profiles is not None:
+        if not isinstance(collection_profiles, dict):
+            errors.append("collection_profiles must be an object")
+        else:
+            for profile_name, profile in collection_profiles.items():
+                if not isinstance(profile, dict):
+                    errors.append(
+                        f"collection_profiles.{profile_name} must be an object"
+                    )
+                    continue
+                if "datasets" in profile and not isinstance(profile["datasets"], list):
+                    errors.append(
+                        f"collection_profiles.{profile_name}.datasets must be an array"
+                    )
+                if "schedule_cron" in profile and not isinstance(
+                    profile["schedule_cron"], str
+                ):
+                    errors.append(
+                        f"collection_profiles.{profile_name}.schedule_cron must be a string"
+                    )
+
     for dataset_key, dataset in datasets.items():
         if not isinstance(dataset, dict):
             errors.append(f"datasets.{dataset_key} must be an object")

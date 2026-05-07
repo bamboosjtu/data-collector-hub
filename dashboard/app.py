@@ -17,6 +17,7 @@ import json
 import sqlite3
 import sys
 from pathlib import Path
+from urllib import error, request
 
 import pandas as pd
 import streamlit as st
@@ -77,6 +78,27 @@ def get_plugin_runtime_config(plugin_id):
 def save_plugin_runtime_config(plugin_id, config):
     """Save plugin runtime config through the shared store layer."""
     SQLiteStore(DB_PATH).save_plugin_runtime_config(plugin_id, config)
+
+
+def _api_json(method: str, path: str, payload: dict | None = None) -> tuple[int, dict]:
+    base_url = st.session_state.get("api_base_url", "http://127.0.0.1:8000").rstrip("/")
+    body = None
+    headers = {"Content-Type": "application/json"}
+    if payload is not None:
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    req = request.Request(f"{base_url}{path}", data=body, method=method, headers=headers)
+    try:
+        with request.urlopen(req, timeout=30) as resp:
+            text = resp.read().decode("utf-8")
+            return resp.status, json.loads(text) if text else {}
+    except error.HTTPError as exc:
+        text = exc.read().decode("utf-8")
+        try:
+            return exc.code, json.loads(text) if text else {}
+        except json.JSONDecodeError:
+            return exc.code, {"detail": text}
+    except Exception as exc:
+        return 0, {"detail": str(exc)}
 
 
 @st.cache_data(ttl=5)
@@ -275,9 +297,79 @@ def get_event_types():
         conn.close()
 
 
+@st.cache_data(ttl=5)
+def get_collection_job_summary(plugin_id: str):
+    conn = get_connection()
+    try:
+        where = ""
+        params: list[object] = []
+        if plugin_id != "All":
+            where = "WHERE plugin_id = ?"
+            params.append(plugin_id)
+        cursor = conn.execute(
+            f"""
+            SELECT
+                SUM(CASE WHEN status = 'queued' THEN 1 ELSE 0 END) AS queued,
+                SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) AS running,
+                SUM(CASE WHEN status = 'succeeded' THEN 1 ELSE 0 END) AS succeeded,
+                SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed,
+                MAX(created_at) AS last_job_at
+            FROM external_collection_jobs
+            {where}
+            """,
+            params,
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else {}
+    finally:
+        conn.close()
+
+
+@st.cache_data(ttl=5)
+def get_collection_jobs(plugin_id: str, status_filter: str, profile_filter: str, limit: int):
+    jobs = SQLiteStore(DB_PATH).list_external_collection_jobs(
+        plugin_id=None if plugin_id == "All" else plugin_id,
+        status=None if status_filter == "All" else status_filter,
+        limit=limit,
+    )
+    if profile_filter != "All":
+        jobs = [job for job in jobs if (job.get("profile") or "") == profile_filter]
+    return jobs
+
+
+@st.cache_data(ttl=5)
+def get_collection_job_profiles():
+    conn = get_connection()
+    try:
+        cursor = conn.execute(
+            """
+            SELECT DISTINCT profile
+            FROM external_collection_jobs
+            WHERE profile IS NOT NULL AND profile != ''
+            ORDER BY profile
+            """
+        )
+        return [row["profile"] for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
+@st.cache_data(ttl=5)
+def get_collection_schedules(plugin_id: str, enabled_filter):
+    return SQLiteStore(DB_PATH).list_collection_schedules(
+        plugin_id=None if plugin_id == "All" else plugin_id,
+        enabled=enabled_filter,
+        limit=200,
+    )
+
+
 # Sidebar
 st.sidebar.title("📊 Data Collector Hub")
 st.sidebar.caption("v1.0 Dashboard")
+st.session_state["api_base_url"] = st.sidebar.text_input(
+    "API Base URL",
+    value=st.session_state.get("api_base_url", "http://127.0.0.1:8000"),
+)
 
 # Check database exists
 if not DB_PATH.exists():
@@ -289,7 +381,16 @@ if not DB_PATH.exists():
 # Navigation
 page = st.sidebar.radio(
     "Navigation",
-    ["🏠 Home", "🔌 Plugins", "📄 Raw Data", "🧾 Raw Events", "📋 Normalized Data", "📈 Statistics", "📝 Logs"]
+    [
+        "🏠 Home",
+        "🔌 Plugins",
+        "📄 Raw Data",
+        "🧾 Raw Events",
+        "📋 Normalized Data",
+        "🚚 Collection Jobs",
+        "📈 Statistics",
+        "📝 Logs",
+    ]
 )
 
 # Home Page
@@ -509,6 +610,212 @@ elif page == "📋 Normalized Data":
                     st.json(payload)
 
                 st.markdown("---")
+
+# Collection Jobs Page
+elif page == "🚚 Collection Jobs":
+    st.title("🚚 Collection Jobs")
+    st.markdown("---")
+
+    refresh_col, tick_col = st.columns([1, 1])
+    with refresh_col:
+        if st.button("Refresh Jobs"):
+            st.cache_data.clear()
+            st.rerun()
+    with tick_col:
+        if st.button("Run Scheduler Tick Now"):
+            status_code, body = _api_json("POST", "/collection/v1/scheduler/tick")
+            if status_code == 200:
+                st.success(f"Scheduler tick completed. created_job_ids={body.get('created_job_ids', [])}")
+                st.cache_data.clear()
+                st.rerun()
+            else:
+                st.error(f"Scheduler tick failed: {body}")
+
+    job_plugin = st.selectbox("Plugin", ["dcp", "All"], index=0, key="collection_jobs_plugin")
+    summary = get_collection_job_summary(job_plugin)
+    col1, col2, col3, col4, col5 = st.columns(5)
+    col1.metric("Queued", summary.get("queued") or 0)
+    col2.metric("Running", summary.get("running") or 0)
+    col3.metric("Succeeded", summary.get("succeeded") or 0)
+    col4.metric("Failed", summary.get("failed") or 0)
+    col5.metric("Last Job", summary.get("last_job_at") or "-")
+
+    st.subheader("Manual Trigger")
+    dcp_runtime = get_plugin_runtime_config("dcp")
+    profiles = dcp_runtime.get("collection_profiles") or {}
+    profile_names = list(profiles.keys())
+    selected_profile = st.selectbox("Profile", profile_names, key="collection_profile")
+    selected_profile_config = profiles.get(selected_profile) or {}
+    default_datasets = list(selected_profile_config.get("datasets") or [])
+    all_datasets = list(dcp_runtime.get("enabled_datasets") or [])
+    with st.form("manual_collection_trigger"):
+        dataset_keys = st.multiselect(
+            "Dataset Keys",
+            options=all_datasets,
+            default=default_datasets,
+        )
+        processing_mode = st.selectbox(
+            "Processing Mode",
+            ["none", "sync", "async"],
+            index=["none", "sync", "async"].index(
+                str(selected_profile_config.get("processing_mode") or "none")
+            ),
+        )
+        recent_days_default = selected_profile_config.get("recent_days")
+        recent_days = st.number_input(
+            "Recent Days",
+            min_value=0,
+            step=1,
+            value=int(recent_days_default or 0),
+        )
+        since_date = st.text_input("Since Date", value=str(selected_profile_config.get("since_date") or ""))
+        until_date = st.text_input("Until Date", value=str(selected_profile_config.get("until_date") or ""))
+        include_existing = st.checkbox(
+            "Include Existing",
+            value=bool(selected_profile_config.get("include_existing", False)),
+        )
+        force = st.checkbox("Force", value=bool(selected_profile_config.get("force", False)))
+        due_only = st.checkbox("Due Only", value=bool(selected_profile_config.get("due_only", False)))
+        submitted = st.form_submit_button("Create Collection Job")
+        if submitted:
+            payload = {
+                "plugin_id": "dcp",
+                "profile": selected_profile,
+                "dataset_keys": dataset_keys,
+                "processing_mode": processing_mode,
+                "recent_days": int(recent_days) or None,
+                "since_date": since_date or None,
+                "until_date": until_date or None,
+                "include_existing": include_existing,
+                "force": force,
+                "due_only": due_only,
+            }
+            status_code, body = _api_json("POST", "/collection/v1/jobs", payload)
+            if status_code == 202:
+                st.success(f"Created job: {body.get('job_id')}")
+                st.cache_data.clear()
+                st.rerun()
+            elif status_code == 409:
+                st.warning("已有重叠 dataset 的 queued/running job")
+                st.json(body)
+            else:
+                st.error(f"Create job failed: {body}")
+
+    st.subheader("Jobs")
+    status_filter = st.selectbox(
+        "Status",
+        ["All", "queued", "running", "succeeded", "failed"],
+        key="collection_jobs_status",
+    )
+    profile_filter = st.selectbox(
+        "Profile Filter",
+        ["All"] + get_collection_job_profiles(),
+        key="collection_jobs_profile",
+    )
+    limit = st.slider("Job Limit", 10, 200, 50, key="collection_jobs_limit")
+    jobs = get_collection_jobs(job_plugin, status_filter, profile_filter, limit)
+    if not jobs:
+        st.info("No collection jobs found.")
+    else:
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "job_id": job["job_id"],
+                        "plugin_id": job["plugin_id"],
+                        "profile": job.get("profile"),
+                        "dataset_keys": ", ".join(job.get("dataset_keys") or []),
+                        "status": job["status"],
+                        "mode": job.get("mode"),
+                        "processing_mode": job.get("processing_mode"),
+                        "created_at": job.get("created_at"),
+                        "started_at": job.get("started_at"),
+                        "finished_at": job.get("finished_at"),
+                        "exit_code": job.get("exit_code"),
+                        "error": job.get("error"),
+                    }
+                    for job in jobs
+                ]
+            ),
+            use_container_width=True,
+        )
+        for job in jobs:
+            label = f"{job['job_id']} [{job['status']}] {', '.join(job.get('dataset_keys') or [])}"
+            with st.expander(label):
+                st.write(f"**Command:** `{json.dumps(job.get('command') or [], ensure_ascii=False)}`")
+                st.write(f"**CWD:** `{job.get('cwd')}`")
+                st.write(f"**DataHub URL:** `{job.get('datahub_url')}`")
+                st.write(f"**Dataset Keys:** {job.get('dataset_keys')}")
+                if job.get("stdout"):
+                    st.text_area("stdout tail", value=str(job["stdout"])[-4000:], height=180, key=f"stdout_{job['job_id']}")
+                if job.get("stderr"):
+                    st.text_area("stderr tail", value=str(job["stderr"])[-4000:], height=180, key=f"stderr_{job['job_id']}")
+                if job.get("result") is not None:
+                    st.write("**Result JSON:**")
+                    st.json(job["result"])
+                if job.get("error"):
+                    st.write("**Error:**")
+                    st.code(str(job["error"]))
+
+    st.subheader("Schedules")
+    schedules = get_collection_schedules(job_plugin, enabled_filter=None)
+    if not schedules:
+        st.info("No collection schedules found.")
+    else:
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "schedule_id": schedule["schedule_id"],
+                        "plugin_id": schedule["plugin_id"],
+                        "profile": schedule["profile"],
+                        "enabled": schedule["enabled"],
+                        "schedule_cron": schedule["schedule_cron"],
+                        "next_run_at": schedule.get("next_run_at"),
+                        "last_triggered_at": schedule.get("last_triggered_at"),
+                        "last_job_id": schedule.get("last_job_id"),
+                    }
+                    for schedule in schedules
+                ]
+            ),
+            use_container_width=True,
+        )
+        for schedule in schedules:
+            cols = st.columns([3, 1, 1, 1])
+            cols[0].write(
+                f"**{schedule['schedule_id']}** | cron=`{schedule['schedule_cron']}` | next_run_at={schedule.get('next_run_at') or '-'}"
+            )
+            if cols[1].button(
+                "Enable" if not schedule["enabled"] else "Disable",
+                key=f"toggle_schedule_{schedule['schedule_id']}",
+            ):
+                path = (
+                    f"/collection/v1/schedules/{schedule['schedule_id']}/enable"
+                    if not schedule["enabled"]
+                    else f"/collection/v1/schedules/{schedule['schedule_id']}/disable"
+                )
+                status_code, body = _api_json("POST", path)
+                if status_code == 200:
+                    st.cache_data.clear()
+                    st.rerun()
+                else:
+                    st.error(body)
+            if cols[2].button("Trigger Profile Now", key=f"trigger_profile_{schedule['schedule_id']}"):
+                status_code, body = _api_json("POST", "/collection/v1/jobs", schedule["default_request"])
+                if status_code == 202:
+                    st.success(f"Created job: {body.get('job_id')}")
+                    st.cache_data.clear()
+                    st.rerun()
+                else:
+                    st.error(body)
+            if cols[3].button("Tick", key=f"tick_schedule_{schedule['schedule_id']}"):
+                status_code, body = _api_json("POST", "/collection/v1/scheduler/tick")
+                if status_code == 200:
+                    st.success(body)
+                    st.cache_data.clear()
+                    st.rerun()
+                else:
+                    st.error(body)
 
 # Statistics Page
 elif page == "📈 Statistics":

@@ -94,6 +94,15 @@ class DcpExternalCollectorAdapter(BaseAdapter):
                 },
             },
         },
+        "scheduler": {
+            "type": "object",
+            "required": False,
+            "description": "轻量 collection scheduler 配置；默认关闭",
+            "default": {
+                "enabled": False,
+                "tick_interval_seconds": 60,
+            },
+        },
         "schedule_cron": {
             "type": "string",
             "required": False,

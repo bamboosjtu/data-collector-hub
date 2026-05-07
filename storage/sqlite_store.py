@@ -184,6 +184,22 @@ CREATE TABLE IF NOT EXISTS external_collection_jobs (
     finished_at TIMESTAMP
 );
 
+-- Collection schedules for external collection profiles.
+CREATE TABLE IF NOT EXISTS collection_schedules (
+    schedule_id TEXT PRIMARY KEY,
+    plugin_id TEXT NOT NULL,
+    profile TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 0,
+    schedule_cron TEXT NOT NULL,
+    timezone TEXT NOT NULL DEFAULT 'Asia/Shanghai',
+    default_request TEXT NOT NULL,
+    last_triggered_at TIMESTAMP,
+    next_run_at TIMESTAMP,
+    last_job_id TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Normalized data table (semi-structured layer)
 CREATE TABLE IF NOT EXISTS normalized_data (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -207,6 +223,8 @@ CREATE INDEX IF NOT EXISTS idx_normalized_entity ON normalized_data(entity);
 CREATE INDEX IF NOT EXISTS idx_normalized_timestamp ON normalized_data(event_timestamp);
 CREATE INDEX IF NOT EXISTS idx_external_collection_jobs_plugin_status ON external_collection_jobs(plugin_id, status);
 CREATE INDEX IF NOT EXISTS idx_external_collection_jobs_created_at ON external_collection_jobs(created_at);
+CREATE INDEX IF NOT EXISTS idx_collection_schedules_plugin_enabled ON collection_schedules(plugin_id, enabled);
+CREATE INDEX IF NOT EXISTS idx_collection_schedules_next_run_at ON collection_schedules(next_run_at);
 CREATE INDEX IF NOT EXISTS idx_canonical_relationships_type ON canonical_relationships(relationship_type);
 CREATE INDEX IF NOT EXISTS idx_canonical_relationships_from ON canonical_relationships(from_entity_type, from_entity_key);
 CREATE INDEX IF NOT EXISTS idx_canonical_relationships_to ON canonical_relationships(to_entity_type, to_entity_key);
@@ -368,6 +386,16 @@ class SQLiteStore:
             self._ensure_column(conn, "external_collection_jobs", "error", "TEXT")
             self._ensure_column(conn, "external_collection_jobs", "started_at", "TIMESTAMP")
             self._ensure_column(conn, "external_collection_jobs", "finished_at", "TIMESTAMP")
+            self._ensure_column(conn, "collection_schedules", "plugin_id", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(conn, "collection_schedules", "profile", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(conn, "collection_schedules", "enabled", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(conn, "collection_schedules", "schedule_cron", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(conn, "collection_schedules", "timezone", "TEXT NOT NULL DEFAULT 'Asia/Shanghai'")
+            self._ensure_column(conn, "collection_schedules", "default_request", "TEXT NOT NULL DEFAULT '{}'")
+            self._ensure_column(conn, "collection_schedules", "last_triggered_at", "TIMESTAMP")
+            self._ensure_column(conn, "collection_schedules", "next_run_at", "TIMESTAMP")
+            self._ensure_column(conn, "collection_schedules", "last_job_id", "TEXT")
+            self._ensure_column(conn, "collection_schedules", "updated_at", "TIMESTAMP")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_canonical_entities_type ON canonical_entities(entity_type)"
             )
@@ -400,6 +428,12 @@ class SQLiteStore:
             )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_external_collection_jobs_created_at ON external_collection_jobs(created_at)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_collection_schedules_plugin_enabled ON collection_schedules(plugin_id, enabled)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_collection_schedules_next_run_at ON collection_schedules(next_run_at)"
             )
             conn.commit()
             print(f"[SQLiteStore] Schema initialized at {self.db_path}")
@@ -1804,6 +1838,171 @@ class SQLiteStore:
                 if job and requested.intersection(set(job["dataset_keys"])):
                     return job
             return None
+        finally:
+            conn.close()
+
+    # --- Collection schedule operations ---
+
+    def _deserialize_collection_schedule(
+        self, row: sqlite3.Row | None
+    ) -> Optional[Dict[str, Any]]:
+        if not row:
+            return None
+        schedule = dict(row)
+        schedule["default_request"] = (
+            json.loads(schedule["default_request"])
+            if schedule.get("default_request")
+            else {}
+        )
+        schedule["enabled"] = bool(schedule.get("enabled"))
+        return schedule
+
+    def create_or_update_collection_schedule(
+        self,
+        *,
+        schedule_id: str,
+        plugin_id: str,
+        profile: str,
+        schedule_cron: str,
+        default_request: Dict[str, Any],
+        timezone: str = "Asia/Shanghai",
+        enabled: Optional[bool] = None,
+        next_run_at: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        existing = self.get_collection_schedule(schedule_id)
+        effective_enabled = (
+            existing["enabled"] if existing is not None and enabled is None else bool(enabled)
+        )
+        conn = self._get_connection()
+        try:
+            conn.execute(
+                """
+                INSERT INTO collection_schedules (
+                    schedule_id, plugin_id, profile, enabled, schedule_cron,
+                    timezone, default_request, next_run_at, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(schedule_id) DO UPDATE SET
+                    plugin_id = excluded.plugin_id,
+                    profile = excluded.profile,
+                    enabled = excluded.enabled,
+                    schedule_cron = excluded.schedule_cron,
+                    timezone = excluded.timezone,
+                    default_request = excluded.default_request,
+                    next_run_at = COALESCE(collection_schedules.next_run_at, excluded.next_run_at),
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    schedule_id,
+                    plugin_id,
+                    profile,
+                    1 if effective_enabled else 0,
+                    schedule_cron,
+                    timezone,
+                    json.dumps(default_request, ensure_ascii=False, default=str),
+                    next_run_at,
+                    datetime.now(),
+                    datetime.now(),
+                ),
+            )
+            conn.commit()
+            schedule = self.get_collection_schedule(schedule_id)
+            if schedule is None:
+                raise RuntimeError(
+                    f"failed to create or update collection schedule: {schedule_id}"
+                )
+            return schedule
+        finally:
+            conn.close()
+
+    def list_collection_schedules(
+        self,
+        *,
+        plugin_id: Optional[str] = None,
+        enabled: Optional[bool] = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        conn = self._get_connection()
+        try:
+            where = ["1=1"]
+            params: list[Any] = []
+            if plugin_id:
+                where.append("plugin_id = ?")
+                params.append(plugin_id)
+            if enabled is not None:
+                where.append("enabled = ?")
+                params.append(1 if enabled else 0)
+            params.append(limit)
+            cursor = conn.execute(
+                f"""
+                SELECT * FROM collection_schedules
+                WHERE {' AND '.join(where)}
+                ORDER BY plugin_id ASC, profile ASC
+                LIMIT ?
+                """,
+                params,
+            )
+            return [
+                schedule
+                for row in cursor.fetchall()
+                if (schedule := self._deserialize_collection_schedule(row)) is not None
+            ]
+        finally:
+            conn.close()
+
+    def get_collection_schedule(self, schedule_id: str) -> Optional[Dict[str, Any]]:
+        conn = self._get_connection()
+        try:
+            cursor = conn.execute(
+                "SELECT * FROM collection_schedules WHERE schedule_id = ?",
+                (schedule_id,),
+            )
+            return self._deserialize_collection_schedule(cursor.fetchone())
+        finally:
+            conn.close()
+
+    def update_collection_schedule_enabled(
+        self,
+        schedule_id: str,
+        enabled: bool,
+        *,
+        next_run_at: Optional[str] = None,
+    ) -> None:
+        conn = self._get_connection()
+        try:
+            conn.execute(
+                """
+                UPDATE collection_schedules
+                SET enabled = ?, next_run_at = COALESCE(?, next_run_at), updated_at = ?
+                WHERE schedule_id = ?
+                """,
+                (1 if enabled else 0, next_run_at, datetime.now(), schedule_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def mark_collection_schedule_triggered(
+        self,
+        schedule_id: str,
+        *,
+        job_id: str,
+        next_run_at: Optional[str],
+    ) -> None:
+        conn = self._get_connection()
+        try:
+            conn.execute(
+                """
+                UPDATE collection_schedules
+                SET last_triggered_at = ?,
+                    last_job_id = ?,
+                    next_run_at = ?,
+                    updated_at = ?
+                WHERE schedule_id = ?
+                """,
+                (datetime.now(), job_id, next_run_at, datetime.now(), schedule_id),
+            )
+            conn.commit()
         finally:
             conn.close()
 
