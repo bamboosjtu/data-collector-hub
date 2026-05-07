@@ -65,6 +65,7 @@ def normalize_tower(
 
     attributes = {
         "tower_id": tower_id,
+        "project_code": raw.get("prjCode"),
         "single_project_code": single_project_code,
         "bidding_section_code": bidding_section_code,
         "tower_no": tower_no,

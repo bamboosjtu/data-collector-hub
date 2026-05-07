@@ -2,6 +2,7 @@ from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
+import pytest
 from fastapi.testclient import TestClient
 
 import api.server as server
@@ -791,6 +792,28 @@ def test_processing_job_create_returns_queued_job(monkeypatch):
     assert body["status"] == "queued"
 
 
+@pytest.mark.parametrize(
+    "dataset_key",
+    ["project_preconstruction", "line_section", "year_progress"],
+)
+def test_processing_job_create_supports_domain_normalizers(dataset_key, monkeypatch):
+    store = _make_store()
+    client = _client(store)
+
+    monkeypatch.setattr(server, "_run_processing_job", lambda **_kwargs: None)
+
+    response = client.post(
+        "/processing/v1/jobs",
+        json={"dataset_key": dataset_key, "mode": "incremental"},
+    )
+
+    assert response.status_code == 202
+    body = response.json()
+    assert body["job_id"].startswith("proc_")
+    assert body["dataset_key"] == dataset_key
+    assert body["status"] == "queued"
+
+
 def test_processing_job_get_returns_job(monkeypatch):
     store = _make_store()
     client = _client(store)
@@ -819,7 +842,15 @@ def test_processing_job_unsupported_dataset_returns_400():
     assert response.status_code == 400
     detail = response.json()["detail"]
     assert detail["error"] == "unsupported dataset_key: unknown_dataset"
-    assert set(detail["supported_datasets"]) == {"daily_meeting", "tower", "station"}
+    assert set(detail["supported_datasets"]) == {
+        "daily_meeting",
+        "tower",
+        "station",
+        "project_hierarchy",
+        "project_preconstruction",
+        "line_section",
+        "year_progress",
+    }
 
 
 def test_processing_job_conflicts_when_dataset_already_active():

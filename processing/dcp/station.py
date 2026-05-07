@@ -54,6 +54,7 @@ def normalize_station(raw_event: dict[str, Any]) -> tuple[dict[str, Any] | None,
     attributes = {
         "project_code": raw.get("prjCode"),
         "single_project_code": raw.get("singleProjectCode"),
+        "bidding_section_code": raw.get("biddingSectionCode"),
         "dcp_coordinate_id": dcp_coordinate_id,
         "longitude": longitude,
         "latitude": latitude,

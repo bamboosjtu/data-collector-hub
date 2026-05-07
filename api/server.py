@@ -888,7 +888,7 @@ async def create_processing_job(
     background_tasks: BackgroundTasks,
 ):
     """Queue a background normalizer job for a supported dataset."""
-    supported = supported_datasets()
+    supported = supported_datasets(include_domain=True)
     if request.dataset_key not in supported:
         raise HTTPException(
             status_code=400,

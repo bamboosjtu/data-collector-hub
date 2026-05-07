@@ -53,6 +53,9 @@ def resolve_dataset_key(
     if collection == "projectPages" and page_name == "区段划分":
         return "line_section"
 
+    if collection == "projectPages" and page_name == "项目前期成果":
+        return "project_preconstruction"
+
     if api_name in {"tower_single_projects", "tower_details"}:
         return "tower"
 
@@ -61,6 +64,9 @@ def resolve_dataset_key(
 
     if api_name in {"section_single_projects", "section_details"}:
         return "line_section"
+
+    if api_name == "preconstruction_results_detail":
+        return "project_preconstruction"
 
     return None
 

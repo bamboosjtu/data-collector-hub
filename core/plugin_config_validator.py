@@ -9,6 +9,7 @@ VALID_DCP_SCOPES = {
     "snapshot",
     "date_partitioned",
     "project",
+    "project_snapshot",
     "project_single",
 }
 VALID_CHECKPOINT_MODES = {
@@ -23,6 +24,7 @@ REQUIRED_DCP_ENABLED_DATASETS = {
     "tower",
     "station",
     "line_section",
+    "project_preconstruction",
     "year_progress",
 }
 SENSITIVE_CONFIG_KEYS = {

@@ -79,9 +79,25 @@
   - `raw_events`：上游系统推送的标准化 SourceEvent
   - `normalized_data`：轻量级规范化数据
   - `canonical_entities`：下游应用消费的实体数据
+  - `canonical_relationships`：DCP 等领域实体之间的当前关系
 - **自动去重**：基于 MD5 unique_key 的重复检测
 - **增量采集**：支持状态保存的增量模式
-- **归一化处理**：可配置的 normalizer 将 raw_events 转换为 canonical_entities
+- **归一化处理**：可配置的 normalizer 将 raw_events 转换为 canonical_entities / canonical_relationships
+
+### DCP 领域模型
+
+P3 起，DCP normalizer 支持一个 raw_event 产出多个领域实体和关系：
+
+- 实体：`project`、`single_project`、`bidding_section`、`line_section`、`project_progress`
+- 关系：`HAS_SINGLE_PROJECT`、`HAS_BIDDING_SECTION`、`HAS_TOWER_SEQUENCE`、`HAS_PROJECT_PROGRESS`
+- Monitor MVP 仍只消费既有 Sandbox API；`line_section` / `year_progress` 不暴露给 Monitor。
+
+Known issue：部分 `section_details` SourceEvent 只有响应记录，缺少请求上下文中的 `prjCode`、`singleProjectCode`、`biddingSectionCode`。DataHub 不会硬猜这类关系，只会在 `line_section.attributes.known_issues` 标记。downloader 后续应在 `source_ref.context` 中补齐：
+
+- `prjCode`
+- `singleProjectCode`
+- `biddingSectionCode`
+- 如可用，`sectionId` / `sectionName`
 
 ### 任务调度
 - **APScheduler**：可靠的定时任务调度

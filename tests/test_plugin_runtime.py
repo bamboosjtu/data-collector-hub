@@ -58,6 +58,7 @@ def test_adapter_deep_merges_nested_config_override():
         "tower",
         "station",
         "line_section",
+        "project_preconstruction",
         "year_progress",
     }
     assert adapter.config["datasets"]["tower"]["page_name"] == "杆塔信息"
@@ -106,15 +107,19 @@ async def test_dcp_plugin_is_external_control_only():
         "tower",
         "station",
         "line_section",
+        "project_preconstruction",
         "year_progress",
     ]
     assert adapter.config["datasets"]["tower"]["page_name"] == "杆塔信息"
     assert adapter.config["datasets"]["line_section"]["enabled"] is True
     assert adapter.config["datasets"]["line_section"]["expose_to_monitor"] is False
-    assert adapter.config["datasets"]["line_section"]["processing_supported"] is False
+    assert adapter.config["datasets"]["line_section"]["processing_supported"] is True
+    assert adapter.config["datasets"]["project_preconstruction"]["enabled"] is True
+    assert adapter.config["datasets"]["project_preconstruction"]["expose_to_monitor"] is False
+    assert adapter.config["datasets"]["project_preconstruction"]["processing_supported"] is True
     assert adapter.config["datasets"]["year_progress"]["enabled"] is True
     assert adapter.config["datasets"]["year_progress"]["expose_to_monitor"] is False
-    assert adapter.config["datasets"]["year_progress"]["processing_supported"] is False
+    assert adapter.config["datasets"]["year_progress"]["processing_supported"] is True
     assert adapter.get_default_schedule() is None
     assert await adapter.fetch() == []
 

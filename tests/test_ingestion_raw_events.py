@@ -253,6 +253,23 @@ def test_line_section_default_ingests_successfully() -> None:
     assert saved["dataset_key"] == "line_section"
 
 
+def test_project_preconstruction_default_ingests_successfully() -> None:
+    store = _make_store()
+    event = _event_for_source_ref(
+        "project-preconstruction-default",
+        "projectPages",
+        "项目前期成果",
+        "preconstruction_results_detail",
+    )
+
+    response = _client(store).post("/ingestion/v1/events", json={"events": [event]})
+
+    assert response.status_code == 200
+    assert response.json()["accepted"] == 1
+    saved = store.get_raw_event_by_idempotency_key(event["idempotency_key"])
+    assert saved["dataset_key"] == "project_preconstruction"
+
+
 def test_line_section_ingests_with_old_three_dataset_runtime_config() -> None:
     store = _make_store()
     store.save_plugin_runtime_config(

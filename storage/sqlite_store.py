@@ -116,6 +116,24 @@ CREATE TABLE IF NOT EXISTS canonical_entities (
     UNIQUE(entity_type, entity_key)
 );
 
+-- Canonical relationship current table.
+CREATE TABLE IF NOT EXISTS canonical_relationships (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    relationship_key TEXT NOT NULL UNIQUE,
+    relationship_type TEXT NOT NULL,
+    from_entity_type TEXT NOT NULL,
+    from_entity_key TEXT NOT NULL,
+    to_entity_type TEXT NOT NULL,
+    to_entity_key TEXT NOT NULL,
+    dataset_key TEXT NOT NULL,
+    source_system TEXT NOT NULL,
+    latest_raw_event_id INTEGER NOT NULL,
+    latest_collected_at TIMESTAMP,
+    attributes TEXT NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Normalizer incremental checkpoint table
 CREATE TABLE IF NOT EXISTS normalizer_state (
     dataset_key TEXT PRIMARY KEY,
@@ -189,6 +207,10 @@ CREATE INDEX IF NOT EXISTS idx_normalized_entity ON normalized_data(entity);
 CREATE INDEX IF NOT EXISTS idx_normalized_timestamp ON normalized_data(event_timestamp);
 CREATE INDEX IF NOT EXISTS idx_external_collection_jobs_plugin_status ON external_collection_jobs(plugin_id, status);
 CREATE INDEX IF NOT EXISTS idx_external_collection_jobs_created_at ON external_collection_jobs(created_at);
+CREATE INDEX IF NOT EXISTS idx_canonical_relationships_type ON canonical_relationships(relationship_type);
+CREATE INDEX IF NOT EXISTS idx_canonical_relationships_from ON canonical_relationships(from_entity_type, from_entity_key);
+CREATE INDEX IF NOT EXISTS idx_canonical_relationships_to ON canonical_relationships(to_entity_type, to_entity_key);
+CREATE INDEX IF NOT EXISTS idx_canonical_relationships_dataset ON canonical_relationships(dataset_key);
 
 -- Task execution stats table
 CREATE TABLE IF NOT EXISTS task_stats (
@@ -308,6 +330,17 @@ class SQLiteStore:
             self._ensure_column(conn, "canonical_entities", "latest_collected_at_epoch", "REAL")
             self._ensure_column(conn, "canonical_entities", "latest_source_record_hash", "TEXT")
             self._ensure_column(conn, "canonical_entities", "source_refs", "TEXT NOT NULL DEFAULT '[]'")
+            self._ensure_column(conn, "canonical_relationships", "relationship_key", "TEXT")
+            self._ensure_column(conn, "canonical_relationships", "relationship_type", "TEXT")
+            self._ensure_column(conn, "canonical_relationships", "from_entity_type", "TEXT")
+            self._ensure_column(conn, "canonical_relationships", "from_entity_key", "TEXT")
+            self._ensure_column(conn, "canonical_relationships", "to_entity_type", "TEXT")
+            self._ensure_column(conn, "canonical_relationships", "to_entity_key", "TEXT")
+            self._ensure_column(conn, "canonical_relationships", "dataset_key", "TEXT")
+            self._ensure_column(conn, "canonical_relationships", "source_system", "TEXT")
+            self._ensure_column(conn, "canonical_relationships", "latest_raw_event_id", "INTEGER")
+            self._ensure_column(conn, "canonical_relationships", "latest_collected_at", "TIMESTAMP")
+            self._ensure_column(conn, "canonical_relationships", "attributes", "TEXT NOT NULL DEFAULT '{}'")
             self._ensure_column(conn, "normalizer_state", "normalizer_version", "TEXT")
             self._ensure_column(conn, "processing_jobs", "mode", "TEXT NOT NULL DEFAULT 'incremental'")
             self._ensure_column(conn, "processing_jobs", "batch_size", "INTEGER NOT NULL DEFAULT 1000")
@@ -343,6 +376,21 @@ class SQLiteStore:
             )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_canonical_entities_date ON canonical_entities(entity_type, entity_date)"
+            )
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_canonical_relationships_key ON canonical_relationships(relationship_key)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_canonical_relationships_type ON canonical_relationships(relationship_type)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_canonical_relationships_from ON canonical_relationships(from_entity_type, from_entity_key)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_canonical_relationships_to ON canonical_relationships(to_entity_type, to_entity_key)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_canonical_relationships_dataset ON canonical_relationships(dataset_key)"
             )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_processing_jobs_dataset_status ON processing_jobs(dataset_key, status)"
@@ -1192,6 +1240,178 @@ class SQLiteStore:
                 (entity_type,),
             )
             return [row["entity_date"] for row in cursor.fetchall()]
+        finally:
+            conn.close()
+
+    # --- Canonical relationship operations ---
+
+    def _decode_canonical_relationship(
+        self, row: sqlite3.Row | None
+    ) -> Optional[Dict[str, Any]]:
+        if not row:
+            return None
+        relationship = dict(row)
+        relationship["attributes"] = (
+            json.loads(relationship["attributes"])
+            if relationship.get("attributes")
+            else {}
+        )
+        return relationship
+
+    def upsert_canonical_relationship(
+        self,
+        relationship_key: str,
+        relationship_type: str,
+        from_entity_type: str,
+        from_entity_key: str,
+        to_entity_type: str,
+        to_entity_key: str,
+        dataset_key: str,
+        source_system: str,
+        latest_raw_event_id: int,
+        latest_collected_at: Optional[str],
+        attributes: Dict[str, Any],
+    ) -> str:
+        """Upsert a current canonical relationship."""
+        conn = self._get_connection()
+        try:
+            now = datetime.now()
+            attributes_json = json.dumps(attributes, ensure_ascii=False, default=str)
+            cursor = conn.execute(
+                "SELECT id FROM canonical_relationships WHERE relationship_key = ?",
+                (relationship_key,),
+            )
+            existing = cursor.fetchone()
+            if not existing:
+                conn.execute(
+                    """
+                    INSERT INTO canonical_relationships (
+                        relationship_key, relationship_type,
+                        from_entity_type, from_entity_key,
+                        to_entity_type, to_entity_key,
+                        dataset_key, source_system, latest_raw_event_id,
+                        latest_collected_at, attributes, updated_at, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        relationship_key,
+                        relationship_type,
+                        from_entity_type,
+                        from_entity_key,
+                        to_entity_type,
+                        to_entity_key,
+                        dataset_key,
+                        source_system,
+                        latest_raw_event_id,
+                        latest_collected_at,
+                        attributes_json,
+                        now,
+                        now,
+                    ),
+                )
+                status = "inserted"
+            else:
+                conn.execute(
+                    """
+                    UPDATE canonical_relationships
+                    SET relationship_type = ?,
+                        from_entity_type = ?,
+                        from_entity_key = ?,
+                        to_entity_type = ?,
+                        to_entity_key = ?,
+                        dataset_key = ?,
+                        source_system = ?,
+                        latest_raw_event_id = ?,
+                        latest_collected_at = ?,
+                        attributes = ?,
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        relationship_type,
+                        from_entity_type,
+                        from_entity_key,
+                        to_entity_type,
+                        to_entity_key,
+                        dataset_key,
+                        source_system,
+                        latest_raw_event_id,
+                        latest_collected_at,
+                        attributes_json,
+                        now,
+                        existing["id"],
+                    ),
+                )
+                status = "updated"
+            conn.commit()
+            return status
+        finally:
+            conn.close()
+
+    def get_canonical_relationship(
+        self, relationship_key: str
+    ) -> Optional[Dict[str, Any]]:
+        conn = self._get_connection()
+        try:
+            cursor = conn.execute(
+                "SELECT * FROM canonical_relationships WHERE relationship_key = ?",
+                (relationship_key,),
+            )
+            return self._decode_canonical_relationship(cursor.fetchone())
+        finally:
+            conn.close()
+
+    def list_canonical_relationships(
+        self,
+        relationship_type: Optional[str] = None,
+        from_entity_type: Optional[str] = None,
+        from_entity_key: Optional[str] = None,
+        to_entity_type: Optional[str] = None,
+        to_entity_key: Optional[str] = None,
+        dataset_key: Optional[str] = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        conn = self._get_connection()
+        try:
+            where = ["1=1"]
+            params: list[Any] = []
+            if relationship_type:
+                where.append("relationship_type = ?")
+                params.append(relationship_type)
+            if from_entity_type:
+                where.append("from_entity_type = ?")
+                params.append(from_entity_type)
+            if from_entity_key:
+                where.append("from_entity_key = ?")
+                params.append(from_entity_key)
+            if to_entity_type:
+                where.append("to_entity_type = ?")
+                params.append(to_entity_type)
+            if to_entity_key:
+                where.append("to_entity_key = ?")
+                params.append(to_entity_key)
+            if dataset_key:
+                where.append("dataset_key = ?")
+                params.append(dataset_key)
+            params.append(limit)
+            cursor = conn.execute(
+                f"""
+                SELECT * FROM canonical_relationships
+                WHERE {' AND '.join(where)}
+                ORDER BY updated_at DESC, id DESC
+                LIMIT ?
+                """,
+                params,
+            )
+            return [
+                relationship
+                for row in cursor.fetchall()
+                if (
+                    relationship := self._decode_canonical_relationship(row)
+                )
+                is not None
+            ]
         finally:
             conn.close()
 

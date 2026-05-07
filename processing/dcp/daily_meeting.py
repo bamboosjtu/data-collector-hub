@@ -235,6 +235,9 @@ def normalize_daily_meeting(
     )
 
     attributes = {
+        "project_code": _first_present(raw, "prjCode", "projectCode"),
+        "single_project_code": _first_present(raw, "singleProjectCode", "singlePrjCode"),
+        "bidding_section_code": _first_present(raw, "biddingSectionCode", "bidSectCode"),
         "project_name": _first_present(raw, "projectName", "prjName", "project_name"),
         "longitude": longitude,
         "latitude": latitude,

@@ -42,6 +42,7 @@ def test_dcp_default_runtime_config_targets_monitor_mvp_datasets():
         "tower",
         "station",
         "line_section",
+        "project_preconstruction",
         "year_progress",
     ]
     assert config["monitor_datasets"] == ["daily_meeting", "tower", "station"]
@@ -81,15 +82,31 @@ def test_dcp_default_runtime_config_targets_monitor_mvp_datasets():
         "section_details",
     ]
     assert config["datasets"]["line_section"]["expose_to_monitor"] is False
-    assert config["datasets"]["line_section"]["processing_supported"] is False
-    assert config["datasets"]["line_section"]["normalizer"] is None
+    assert config["datasets"]["line_section"]["processing_supported"] is True
+    assert config["datasets"]["line_section"]["normalizer"] == "dcp_line_section"
+    assert config["datasets"]["project_preconstruction"]["enabled"] is True
+    assert config["datasets"]["project_preconstruction"]["collection"] == "projectPages"
+    assert config["datasets"]["project_preconstruction"]["scope"] == "project_snapshot"
+    assert config["datasets"]["project_preconstruction"]["page_name"] == "项目前期成果"
+    assert config["datasets"]["project_preconstruction"]["api_names"] == [
+        "preconstruction_results_detail"
+    ]
+    assert config["datasets"]["project_preconstruction"]["expose_to_monitor"] is False
+    assert config["datasets"]["project_preconstruction"]["processing_supported"] is True
+    assert config["datasets"]["project_preconstruction"]["normalizer"] == "project_hierarchy"
     assert config["datasets"]["year_progress"]["enabled"] is True
     assert config["datasets"]["year_progress"]["collection"] == "planPages"
     assert config["datasets"]["year_progress"]["scope"] == "snapshot"
     assert config["datasets"]["year_progress"]["page_name"] == "年度进度计划分析"
     assert config["datasets"]["year_progress"]["expose_to_monitor"] is False
-    assert config["datasets"]["year_progress"]["processing_supported"] is False
-    assert config["datasets"]["year_progress"]["normalizer"] is None
+    assert config["datasets"]["year_progress"]["processing_supported"] is True
+    assert config["datasets"]["year_progress"]["normalizer"] == "dcp_year_progress"
+    assert config["collection_profiles"]["spatial_snapshot"]["datasets"] == [
+        "project_preconstruction",
+        "tower",
+        "station",
+        "line_section",
+    ]
 
 
 def test_old_runtime_config_is_deep_merged_with_schema_defaults():
@@ -126,12 +143,14 @@ def test_old_runtime_config_is_deep_merged_with_schema_defaults():
 
     assert runtime["source"] == "runtime+defaults"
     assert "line_section" in config["datasets"]
+    assert "project_preconstruction" in config["datasets"]
     assert "year_progress" in config["datasets"]
     assert config["enabled_datasets"] == [
         "daily_meeting",
         "tower",
         "station",
         "line_section",
+        "project_preconstruction",
         "year_progress",
     ]
     assert config["datasets"]["daily_meeting"]["output_policy"]["partition_by"] == "work_date"
@@ -234,6 +253,7 @@ def test_put_plugin_config_rejects_enabled_dataset_marked_disabled():
                     "tower",
                     "station",
                     "line_section",
+                    "project_preconstruction",
                     "year_progress",
                 ],
                 "datasets": {
