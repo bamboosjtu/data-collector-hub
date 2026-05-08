@@ -278,7 +278,76 @@ def test_domain_health_detects_unscoped_and_known_issues() -> None:
 
     assert health["relationship_counts"]["HAS_TOWER_SEQUENCE"] >= 2
     assert health["unscoped_tower_sequence_count"] > 0
+    assert health["tower_sequence_orphan_count"] > 0
     assert health["line_section_known_issue_count"] > 0
+
+
+def test_domain_health_reports_zero_tower_sequence_orphans_when_scoped_tower_exists() -> None:
+    store = _make_store()
+    store.upsert_canonical_entity(
+        entity_type="tower",
+        entity_key="dcp:tower:S01:B01:G1",
+        dataset_key="tower",
+        source_system="dcp",
+        source_record_key="tower-record",
+        latest_raw_event_id=1,
+        latest_collected_at="2026-05-08T08:00:00+08:00",
+        latest_collected_at_epoch=1.0,
+        latest_source_record_hash="hash-tower",
+        source_refs=[],
+        attributes={"tower_no": "G1"},
+    )
+    store.upsert_canonical_entity(
+        entity_type="line_section",
+        entity_key="dcp:line_section:LS-001",
+        dataset_key="line_section",
+        source_system="dcp",
+        source_record_key="line-record",
+        latest_raw_event_id=2,
+        latest_collected_at="2026-05-08T08:01:00+08:00",
+        latest_collected_at_epoch=2.0,
+        latest_source_record_hash="hash-line",
+        source_refs=[],
+        attributes={},
+    )
+    store.upsert_canonical_relationship(
+        relationship_key="rel-tower-sequence",
+        relationship_type="HAS_TOWER_SEQUENCE",
+        from_entity_type="line_section",
+        from_entity_key="dcp:line_section:LS-001",
+        to_entity_type="tower",
+        to_entity_key="dcp:tower:S01:B01:G1",
+        dataset_key="line_section",
+        source_system="dcp",
+        latest_raw_event_id=3,
+        latest_collected_at="2026-05-08T08:02:00+08:00",
+        attributes={"tower_no": "G1"},
+    )
+
+    health = get_domain_health(store)
+
+    assert health["tower_sequence_orphan_count"] == 0
+
+
+def test_domain_health_counts_unscoped_tower_entities() -> None:
+    store = _make_store()
+    store.upsert_canonical_entity(
+        entity_type="tower",
+        entity_key="dcp:tower:G1",
+        dataset_key="tower",
+        source_system="dcp",
+        source_record_key="tower-unscoped",
+        latest_raw_event_id=1,
+        latest_collected_at="2026-05-08T08:00:00+08:00",
+        latest_collected_at_epoch=1.0,
+        latest_source_record_hash="hash-tower-unscoped",
+        source_refs=[],
+        attributes={"tower_no": "G1"},
+    )
+
+    health = get_domain_health(store)
+
+    assert health["unscoped_tower_entity_count"] == 1
 
 
 def test_domain_health_orphan_relationship_uses_entity_type_and_key() -> None:
@@ -359,6 +428,41 @@ def test_health_summary_reports_failed_reasons() -> None:
 
     assert summary["overall_status"] == "failed"
     assert any("unscoped tower sequence" in reason for reason in summary["reasons"])
+
+
+def test_health_summary_warns_when_tower_sequence_points_to_missing_tower() -> None:
+    store = _make_store()
+    store.upsert_canonical_entity(
+        entity_type="line_section",
+        entity_key="dcp:line_section:LS-WARN",
+        dataset_key="line_section",
+        source_system="dcp",
+        source_record_key="line-warn",
+        latest_raw_event_id=1,
+        latest_collected_at="2026-05-08T08:00:00+08:00",
+        latest_collected_at_epoch=1.0,
+        latest_source_record_hash="hash-line-warn",
+        source_refs=[],
+        attributes={},
+    )
+    store.upsert_canonical_relationship(
+        relationship_key="rel-tower-warn",
+        relationship_type="HAS_TOWER_SEQUENCE",
+        from_entity_type="line_section",
+        from_entity_key="dcp:line_section:LS-WARN",
+        to_entity_type="tower",
+        to_entity_key="dcp:tower:S01:B01:G1",
+        dataset_key="line_section",
+        source_system="dcp",
+        latest_raw_event_id=2,
+        latest_collected_at="2026-05-08T08:01:00+08:00",
+        attributes={"tower_no": "G1"},
+    )
+
+    summary = get_health_summary(store, recent_days=1)
+
+    assert summary["overall_status"] == "warning"
+    assert "tower sequence relationships point to missing tower entities" in summary["reasons"]
 
 
 def test_health_api_endpoints() -> None:

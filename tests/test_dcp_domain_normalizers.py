@@ -4,6 +4,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from core.plugin_manager import PluginManager
+from processing.dcp.keys import dcp_tower_key
 from processing.normalizer_runner import NormalizerRunner
 from storage.sqlite_store import SQLiteStore
 
@@ -152,6 +153,12 @@ def test_section_details_generates_line_section_and_tower_sequence_relationships
         limit=10,
     )
     assert [item["attributes"]["tower_no"] for item in tower_sequence] == ["T002", "T001"]
+    assert {
+        item["to_entity_key"] for item in tower_sequence
+    } == {
+        dcp_tower_key("SP-003", "BS-003", "T001"),
+        dcp_tower_key("SP-003", "BS-003", "T002"),
+    }
 
 
 def test_section_details_missing_context_marks_known_issue_without_fake_hierarchy() -> None:
@@ -213,7 +220,41 @@ def test_section_details_uses_source_context_for_scoped_tower_relationships() ->
         for item in relationships
     } == {
         ("HAS_LINE_SECTION", "dcp:line_section:LS-CTX"),
-        ("HAS_TOWER_SEQUENCE", "dcp:tower:SP-CTX:BS-CTX:G1"),
+        ("HAS_TOWER_SEQUENCE", dcp_tower_key("SP-CTX", "BS-CTX", "G1")),
+    }
+
+
+def test_section_details_context_scopes_multiple_tower_sequence_keys() -> None:
+    store = _make_store()
+    event = _event(
+        suffix="section-details-context-multi",
+        dataset_key="line_section",
+        page_name="区段划分",
+        api_name="section_details",
+        raw={
+            "id": "LS-CTX-MULTI",
+            "sectionName": "四区段",
+            "sectionVo": {"towerNoList": [{"towerNo": "G1"}, {"towerNo": "G2"}]},
+        },
+        context={
+            "single_project_code": "S01",
+            "bidding_section_code": "B01",
+        },
+    )
+    store.save_raw_event(event, dataset_key="line_section")
+
+    result = NormalizerRunner(store).run("line_section")
+
+    assert result["processed"] == 1
+    tower_sequence = store.list_canonical_relationships(
+        relationship_type="HAS_TOWER_SEQUENCE",
+        limit=10,
+    )
+    assert {
+        item["to_entity_key"] for item in tower_sequence
+    } == {
+        dcp_tower_key("S01", "B01", "G1"),
+        dcp_tower_key("S01", "B01", "G2"),
     }
 
 

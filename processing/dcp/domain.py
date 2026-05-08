@@ -10,6 +10,8 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
+from processing.dcp.keys import dcp_tower_key, dcp_unscoped_tower_key, normalize_tower_no
+
 
 def _parse_epoch(timestamp: Any) -> float | None:
     try:
@@ -489,13 +491,17 @@ def extract_section_details(
     tower_list = section_vo.get("towerNoList")
     if isinstance(tower_list, list):
         for index, tower_item in enumerate(tower_list, start=1):
-            tower_no = tower_item.get("towerNo") if isinstance(tower_item, dict) else tower_item
+            tower_no = normalize_tower_no(
+                tower_item.get("towerNo") if isinstance(tower_item, dict) else tower_item
+            )
             if tower_no in (None, ""):
                 continue
             tower_key = (
-                f"dcp:tower:{codes['single_project_code']}:{codes['bidding_section_code']}:{tower_no}"
+                dcp_tower_key(
+                    codes["single_project_code"], codes["bidding_section_code"], tower_no
+                )
                 if codes["single_project_code"] and codes["bidding_section_code"]
-                else f"dcp:tower:{tower_no}"
+                else dcp_unscoped_tower_key(tower_no)
             )
             relationships.append(
                 _relationship(

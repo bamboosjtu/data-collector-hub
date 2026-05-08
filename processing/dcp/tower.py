@@ -5,6 +5,7 @@ import math
 from typing import Any
 
 from processing.dcp.geo import _is_hunan_coordinate
+from processing.dcp.keys import dcp_tower_key, dcp_unscoped_tower_key, normalize_tower_no
 
 
 def _parse_epoch(timestamp: Any) -> float | None:
@@ -66,17 +67,29 @@ def normalize_tower(
     bidding_section_code = _first_present(
         raw, context, "biddingSectionCode", "bidding_section_code"
     )
-    tower_no = raw.get("towerNo")
-    if tower_id not in (None, ""):
-        entity_key = f"dcp:tower:{tower_id}"
-    else:
-        if (
-            single_project_code in (None, "")
-            or bidding_section_code in (None, "")
-            or tower_no in (None, "")
-        ):
+    tower_no = normalize_tower_no(
+        raw.get("towerNo") or raw.get("towerNoName") or raw.get("towerName")
+    )
+    known_issues: list[str] = []
+    legacy_entity_key = (
+        f"dcp:tower:{tower_id}" if tower_id not in (None, "") else None
+    )
+    if tower_no is None:
+        if legacy_entity_key is None:
             return None, "missing tower identity"
-        entity_key = f"dcp:tower:{single_project_code}:{bidding_section_code}:{tower_no}"
+        entity_key = legacy_entity_key
+        known_issues.append(
+            "tower_details missing stable tower number; canonical key fell back to legacy DCP id"
+        )
+    elif single_project_code not in (None, "") and bidding_section_code not in (None, ""):
+        entity_key = dcp_tower_key(
+            str(single_project_code), str(bidding_section_code), tower_no
+        )
+    else:
+        entity_key = dcp_unscoped_tower_key(tower_no)
+        known_issues.append(
+            "tower_details missing singleProjectCode/biddingSectionCode; canonical key is unscoped"
+        )
 
     longitude = _float_value(raw.get("longitudeEdit"))
     latitude = _float_value(raw.get("latitudeEdit"))
@@ -87,6 +100,8 @@ def normalize_tower(
 
     attributes = {
         "tower_id": tower_id,
+        "dcp_tower_id": tower_id,
+        "legacy_entity_key": legacy_entity_key,
         "project_code": project_code,
         "single_project_code": single_project_code,
         "bidding_section_code": bidding_section_code,
@@ -100,6 +115,8 @@ def normalize_tower(
         # Debug-only lineage snapshot. Consumer DTOs must not expose DCP raw fields directly.
         "raw": raw,
     }
+    if known_issues:
+        attributes["known_issues"] = known_issues
 
     return {
         "entity_type": "tower",

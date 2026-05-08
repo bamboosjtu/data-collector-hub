@@ -25,21 +25,30 @@ RELATIONSHIP_TYPES = [
 ]
 
 
+def _is_unscoped_tower_key(entity_key: str) -> bool:
+    parts = str(entity_key).split(":")
+    return parts[:2] == ["dcp", "tower"] and len(parts) == 3
+
+
 def get_domain_health(store: SQLiteStore) -> dict[str, Any]:
     entities = store.list_canonical_entities(limit=100000)
     relationships = store.list_canonical_relationships(limit=100000)
 
     entity_counts = {entity_type: 0 for entity_type in ENTITY_TYPES}
     entity_identities: set[tuple[str, str]] = set()
+    unscoped_tower_entity_count = 0
     for entity in entities:
         entity_type = entity["entity_type"]
         if entity_type in entity_counts:
             entity_counts[entity_type] += 1
         entity_identities.add((entity_type, entity["entity_key"]))
+        if entity_type == "tower" and _is_unscoped_tower_key(entity["entity_key"]):
+            unscoped_tower_entity_count += 1
 
     relationship_counts = {relationship_type: 0 for relationship_type in RELATIONSHIP_TYPES}
     orphan_relationship_count = 0
     unscoped_tower_sequence_count = 0
+    tower_sequence_orphan_count = 0
     project_with_single: set[str] = set()
     single_with_bidding: set[str] = set()
     bidding_with_line: set[str] = set()
@@ -48,17 +57,18 @@ def get_domain_health(store: SQLiteStore) -> dict[str, Any]:
         relationship_type = relationship["relationship_type"]
         if relationship_type in relationship_counts:
             relationship_counts[relationship_type] += 1
+        from_identity = (relationship["from_entity_type"], relationship["from_entity_key"])
+        to_identity = (relationship["to_entity_type"], relationship["to_entity_key"])
         if (
-            (relationship["from_entity_type"], relationship["from_entity_key"])
-            not in entity_identities
-            or (relationship["to_entity_type"], relationship["to_entity_key"])
-            not in entity_identities
+            from_identity not in entity_identities
+            or to_identity not in entity_identities
         ):
             orphan_relationship_count += 1
         if relationship_type == "HAS_TOWER_SEQUENCE":
-            parts = str(relationship["to_entity_key"]).split(":")
-            if parts[:2] == ["dcp", "tower"] and len(parts) == 3:
+            if _is_unscoped_tower_key(relationship["to_entity_key"]):
                 unscoped_tower_sequence_count += 1
+            if to_identity not in entity_identities:
+                tower_sequence_orphan_count += 1
         if relationship_type == "HAS_SINGLE_PROJECT":
             project_with_single.add(relationship["from_entity_key"])
         if relationship_type == "HAS_BIDDING_SECTION":
@@ -97,6 +107,8 @@ def get_domain_health(store: SQLiteStore) -> dict[str, Any]:
         "entity_counts": entity_counts,
         "relationship_counts": relationship_counts,
         "unscoped_tower_sequence_count": unscoped_tower_sequence_count,
+        "unscoped_tower_entity_count": unscoped_tower_entity_count,
+        "tower_sequence_orphan_count": tower_sequence_orphan_count,
         "line_section_known_issue_count": line_section_known_issue_count,
         "orphan_relationship_count": orphan_relationship_count,
         "project_without_single_project_count": project_without_single_project_count,

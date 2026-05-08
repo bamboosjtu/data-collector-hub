@@ -657,7 +657,7 @@ def test_downloader_realistic_source_events_feed_sandbox_apis():
     body = skeleton.json()
     assert body["meta"]["towers_count"] == 1
     assert body["meta"]["stations_count"] == 1
-    assert body["towers"][0]["id"] == "dcp:tower:TW-HN-001"
+    assert body["towers"][0]["id"] == "dcp:tower:SP-HN-001:BD-HN-001:N101"
     assert body["towers"][0]["longitude"] == 112.9451
     assert body["stations"][0]["longitude"] == 112.9279
     assert "raw" not in body["towers"][0]
@@ -680,8 +680,9 @@ def test_tower_details_source_event_to_tower_canonical():
     entities = store.list_canonical_entities(entity_type="tower", dataset_key="tower")
     assert len(entities) == 1
     entity = entities[0]
-    assert entity["entity_key"] == "dcp:tower:tower-001"
+    assert entity["entity_key"] == "dcp:tower:SP-TOWER-001:BS-001:T-001"
     assert entity["attributes"]["tower_id"] == "tower-001"
+    assert entity["attributes"]["legacy_entity_key"] == "dcp:tower:tower-001"
     assert entity["attributes"]["longitude"] == 112.9451
     assert entity["attributes"]["latitude"] == 28.2311
     assert entity["attributes"]["raw"]["rawOnly"] == "not exposed"
@@ -742,11 +743,28 @@ def test_sandbox_skeleton_returns_towers_and_stations_without_raw():
     assert body["meta"]["towers_count"] == 1
     assert body["lines"] == []
     assert body["stations"][0]["id"] == "dcp:station:SP-001"
-    assert body["towers"][0]["id"] == "dcp:tower:tower-001"
+    assert body["towers"][0]["id"] == "dcp:tower:SP-TOWER-001:BS-001:T-001"
     assert body["towers"][0]["longitude"] == 112.9451
     assert body["towers"][0]["latitude"] == 28.2311
     assert "raw" not in body["stations"][0]
     assert "raw" not in body["towers"][0]
+
+
+def test_tower_entity_key_uses_scoped_format_even_when_raw_id_exists():
+    store = _make_store()
+    event = _tower_event("scoped-with-id", include_id=True)
+    event["payload"]["raw"]["id"] = "tower-scoped-with-id"
+    event["payload"]["raw"]["singleProjectCode"] = "S01"
+    event["payload"]["raw"]["biddingSectionCode"] = "B01"
+    event["payload"]["raw"]["towerNo"] = "G1"
+    store.save_raw_event(event, dataset_key="tower")
+
+    result = NormalizerRunner(store).run("tower")
+
+    assert result["processed"] == 1
+    entity = store.list_canonical_entities(entity_type="tower", dataset_key="tower")[0]
+    assert entity["entity_key"] == "dcp:tower:S01:B01:G1"
+    assert entity["attributes"]["legacy_entity_key"] == "dcp:tower:tower-scoped-with-id"
 
 
 def test_processing_run_supports_station_from_registry():
