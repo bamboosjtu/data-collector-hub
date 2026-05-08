@@ -52,6 +52,14 @@ from core.paths import DEFAULT_DB_PATH, PLUGINS_DIR
 from core.scheduler import TaskScheduler
 from core.websocket_manager import WebSocketBroadcastManager
 from core.mcp_tools import MCPTools, TOOL_SCHEMAS
+from health.dataset_health import (
+    get_context_coverage,
+    get_daily_meeting_date_health,
+    get_dataset_health,
+)
+from health.domain_health import get_domain_health
+from health.job_health import get_job_health
+from health.summary import get_health_summary
 from processing.normalizer_runner import NormalizerRunner, supported_datasets
 from storage.sqlite_store import SQLiteStore
 
@@ -1331,6 +1339,36 @@ async def run_monitor_processing():
             "skipped": skipped,
         },
     }
+
+
+@app.get("/health/v1/summary")
+async def health_summary(recent_days: int = Query(14, ge=1, le=365)):
+    return get_health_summary(store, recent_days=recent_days)
+
+
+@app.get("/health/v1/datasets")
+async def health_datasets():
+    return get_dataset_health(store)
+
+
+@app.get("/health/v1/jobs")
+async def health_jobs(running_timeout_hours: int = Query(6, ge=1, le=72)):
+    return get_job_health(store, running_timeout_hours=running_timeout_hours)
+
+
+@app.get("/health/v1/domain")
+async def health_domain():
+    return get_domain_health(store)
+
+
+@app.get("/health/v1/daily-meeting")
+async def health_daily_meeting(recent_days: int = Query(14, ge=1, le=365)):
+    return get_daily_meeting_date_health(store, recent_days=recent_days)
+
+
+@app.get("/health/v1/context")
+async def health_context():
+    return get_context_coverage(store)
 
 
 @app.get("/api/v1/sandbox/dates")

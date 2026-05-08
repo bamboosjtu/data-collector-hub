@@ -26,6 +26,10 @@ import streamlit as st
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.plugin_config_validator import validate_plugin_runtime_config
+from health.dataset_health import get_context_coverage, get_daily_meeting_date_health, get_dataset_health
+from health.domain_health import get_domain_health
+from health.job_health import get_job_health
+from health.summary import get_health_summary
 from storage.sqlite_store import SQLiteStore
 
 # Page config
@@ -363,6 +367,42 @@ def get_collection_schedules(plugin_id: str, enabled_filter):
     )
 
 
+@st.cache_data(ttl=5)
+def get_health_summary_cached(recent_days: int):
+    store = SQLiteStore(DB_PATH)
+    return get_health_summary(store, recent_days=recent_days)
+
+
+@st.cache_data(ttl=5)
+def get_dataset_health_cached():
+    store = SQLiteStore(DB_PATH)
+    return get_dataset_health(store)
+
+
+@st.cache_data(ttl=5)
+def get_job_health_cached():
+    store = SQLiteStore(DB_PATH)
+    return get_job_health(store)
+
+
+@st.cache_data(ttl=5)
+def get_domain_health_cached():
+    store = SQLiteStore(DB_PATH)
+    return get_domain_health(store)
+
+
+@st.cache_data(ttl=5)
+def get_daily_meeting_health_cached(recent_days: int):
+    store = SQLiteStore(DB_PATH)
+    return get_daily_meeting_date_health(store, recent_days=recent_days)
+
+
+@st.cache_data(ttl=5)
+def get_context_coverage_cached():
+    store = SQLiteStore(DB_PATH)
+    return get_context_coverage(store)
+
+
 # Sidebar
 st.sidebar.title("📊 Data Collector Hub")
 st.sidebar.caption("v1.0 Dashboard")
@@ -388,6 +428,7 @@ page = st.sidebar.radio(
         "🧾 Raw Events",
         "📋 Normalized Data",
         "🚚 Collection Jobs",
+        "🩺 Data Health",
         "📈 Statistics",
         "📝 Logs",
     ]
@@ -816,6 +857,97 @@ elif page == "🚚 Collection Jobs":
                     st.rerun()
                 else:
                     st.error(body)
+
+# Data Health Page
+elif page == "🩺 Data Health":
+    st.title("🩺 Data Health")
+    st.markdown("---")
+
+    health_days = st.number_input("Daily Meeting Recent Days", min_value=1, max_value=365, value=14, step=1)
+    if st.button("Refresh Health"):
+        st.cache_data.clear()
+        st.rerun()
+
+    summary = get_health_summary_cached(int(health_days))
+    dataset_health = get_dataset_health_cached()
+    job_health = get_job_health_cached()
+    domain_health = get_domain_health_cached()
+    daily_meeting_health = get_daily_meeting_health_cached(int(health_days))
+    context_health = get_context_coverage_cached()
+
+    st.subheader("Overall Status")
+    st.metric("Status", summary["overall_status"])
+    if summary["reasons"]:
+        st.write("**Reasons:**")
+        for reason in summary["reasons"]:
+            st.write(f"- {reason}")
+
+    st.subheader("Dataset Health")
+    st.dataframe(
+        pd.DataFrame(
+            [
+                {
+                    "dataset_key": dataset_key,
+                    "raw_event_count": item["raw_event_count"],
+                    "canonical_entity_count": item["canonical_entity_count"],
+                    "relationship_count": item["relationship_count"],
+                    "latest_collected_at": item["latest_collected_at"],
+                    "latest_processing_status": (
+                        item["latest_processing_job"]["status"]
+                        if item["latest_processing_job"]
+                        else None
+                    ),
+                }
+                for dataset_key, item in dataset_health["datasets"].items()
+            ]
+        ),
+        use_container_width=True,
+    )
+
+    st.subheader("Job Health")
+    external = job_health["external_collection_jobs"]
+    processing = job_health["processing_jobs"]
+    col1, col2 = st.columns(2)
+    with col1:
+        st.write("**External Collection Jobs**")
+        st.json(external["counts"])
+        if external["latest_failed_jobs"]:
+            st.write("Latest failed jobs:")
+            st.json(external["latest_failed_jobs"])
+        if external["active_running_jobs"]:
+            st.write("Active running jobs:")
+            st.json(external["active_running_jobs"])
+    with col2:
+        st.write("**Processing Jobs**")
+        st.json(processing["counts"])
+        if processing["latest_failed_jobs"]:
+            st.write("Latest failed jobs:")
+            st.json(processing["latest_failed_jobs"])
+        if processing["active_running_jobs"]:
+            st.write("Active running jobs:")
+            st.json(processing["active_running_jobs"])
+
+    st.subheader("Domain Health")
+    domain_col1, domain_col2 = st.columns(2)
+    with domain_col1:
+        st.write("**Entity Counts**")
+        st.json(domain_health["entity_counts"])
+    with domain_col2:
+        st.write("**Relationship Counts**")
+        st.json(domain_health["relationship_counts"])
+    st.write(
+        f"unscoped_tower_sequence_count={domain_health['unscoped_tower_sequence_count']} | "
+        f"line_section_known_issue_count={domain_health['line_section_known_issue_count']} | "
+        f"orphan_relationship_count={domain_health['orphan_relationship_count']}"
+    )
+
+    st.subheader("Daily Meeting Health")
+    st.write(f"latest_work_date={daily_meeting_health['latest_work_date']}")
+    st.write(f"missing_dates={daily_meeting_health['missing_dates']}")
+    st.json(daily_meeting_health["work_point_count_by_date"])
+
+    st.subheader("Context Coverage")
+    st.json(context_health)
 
 # Statistics Page
 elif page == "📈 Statistics":
