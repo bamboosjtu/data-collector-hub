@@ -157,6 +157,13 @@ data/**/*.db-shm
 data/**/*.db-wal
 *.sqlite
 *.sqlite3
+*.sqlite-journal
+*.sqlite3-journal
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+**/.artifacts/
 
 # Logs
 logs/
@@ -165,6 +172,8 @@ logs/
 # Temporary files
 tmp/
 temp/
+uv-cache/
+pytest-tmp/
 *.tmp
 
 # OS files

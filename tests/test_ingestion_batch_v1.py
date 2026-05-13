@@ -11,9 +11,7 @@ from storage.sqlite_store import SQLiteStore
 
 
 def _make_store() -> SQLiteStore:
-    artifacts_dir = Path(__file__).resolve().parent / ".artifacts"
-    artifacts_dir.mkdir(exist_ok=True)
-    db_path = artifacts_dir / f"ingestion-batch-v1-{uuid4().hex}.db"
+    db_path = f"file:ingestion_batch_v1_{uuid4().hex}?mode=memory&cache=shared"
     store = SQLiteStore(db_path)
     store.init_schema()
     return store

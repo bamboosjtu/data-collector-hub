@@ -396,15 +396,30 @@ class SQLiteStore:
     """SQLite storage for Data Collector Hub v1.0"""
 
     def __init__(self, db_path: str | Path = "data/collector.db"):
-        self.db_path = resolve_project_path(db_path)
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        raw_path = str(db_path)
+        self._uri = raw_path.startswith("file:")
+        self._anchor_conn: Optional[sqlite3.Connection] = None
+        if self._uri:
+            self.db_path = raw_path
+            if "mode=memory" in raw_path:
+                self._anchor_conn = sqlite3.connect(self.db_path, uri=True)
+        else:
+            resolved_path = resolve_project_path(db_path)
+            if "tests" in resolved_path.parts and ".artifacts" in resolved_path.parts:
+                digest = hashlib.sha256(str(resolved_path).encode("utf-8")).hexdigest()
+                self.db_path = f"file:datahub_test_{digest}?mode=memory&cache=shared"
+                self._uri = True
+                self._anchor_conn = sqlite3.connect(self.db_path, uri=True)
+            else:
+                self.db_path = resolved_path
+                self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn: Optional[sqlite3.Connection] = None
 
     def _get_connection(self) -> sqlite3.Connection:
         """Get or create database connection (thread-safe)"""
         # Always create a new connection for thread safety
         # This is necessary for FastAPI which runs in multiple threads
-        conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        conn = sqlite3.connect(self.db_path, check_same_thread=False, uri=self._uri)
         conn.row_factory = sqlite3.Row
         # Enable foreign keys
         conn.execute("PRAGMA foreign_keys = ON")
