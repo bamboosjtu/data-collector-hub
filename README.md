@@ -216,6 +216,19 @@ terminal status, then reads the result and updates command status. Downloader
 data writes are only accepted through `POST /ingestion/v1/batch`; downloader
 services must not write DataHub SQLite directly.
 
+DataHub command config can pass through downloader-facing fields without reading
+downloader local files itself:
+
+```text
+profile
+params
+options
+scope_items
+```
+
+DataHub only forwards these to downloader `/sync`; local Envelope directories
+and live collect details remain downloader-owned concerns.
+
 ### 归一化处理
 
 | 端点 | 方法 | 说明 |

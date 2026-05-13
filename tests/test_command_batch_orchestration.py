@@ -163,6 +163,29 @@ def _tower_ingestion_batch(*, batch_id: str, command_run_id: str) -> dict:
     }
 
 
+def _daily_meeting_envelope(output_file: Path, *, record_count: int = 40) -> dict:
+    return {
+        "envelope_version": 1,
+        "collection": "safePages",
+        "page_name": "meetingListAdmin",
+        "run": {
+            "run_id": "test-run",
+            "started_at": "2026-05-12T08:00:00+08:00",
+            "finished_at": "2026-05-12T08:01:00+08:00",
+            "output_file": str(output_file),
+        },
+        "raw_data": [
+            {
+                "api_name": "queryToolBoxTalkListPagePc",
+                "records": [
+                    {"id": f"meeting-{index:03d}", "workDate": "2026-05-12"}
+                    for index in range(record_count)
+                ],
+            }
+        ],
+    }
+
+
 class _MockDownloaderServer:
     def __init__(self, *, result: dict, status_sequence: list[str] | None = None):
         self.result = result
@@ -487,11 +510,13 @@ def test_command_batch_orchestrator_runs_http_downloader_client() -> None:
                     "command_key": "daily_meeting_today",
                     "command_type": "refresh_today",
                     "dataset_keys": ["daily_meeting"],
+                    "profile": "daily_meeting_fixture",
                     "scope_selector": {
                         "entity_type": "single_project",
                         "filter": {"project_status": "active"},
                     },
-                    "params": {"test_fixture": True},
+                    "params": {"date": "2026-05-12"},
+                    "options": {"mode": "incremental", "archive_envelope": True},
                     "processing_policy": {"auto_process": False},
                 }
             ],
@@ -506,6 +531,10 @@ def test_command_batch_orchestrator_runs_http_downloader_client() -> None:
     assert command["request_count"] == 1
     assert command["raw_record_count"] == 40
     assert server.sync_payloads[0]["scope_items"][0]["entity_key"] == "dcp:single_project:P001:S001"
+    assert server.sync_payloads[0]["profile"] == "daily_meeting_fixture"
+    assert server.sync_payloads[0]["options"] == {"mode": "incremental", "archive_envelope": True}
+    assert server.sync_payloads[0]["params"] == {"date": "2026-05-12"}
+    assert server.sync_payloads[0]["datahub"]["ingestion_url"] == "http://datahub.test/ingestion/v1/batch"
 
 
 def test_orchestrator_with_local_downloader_service_posts_ingestion_to_datahub() -> None:
@@ -554,6 +583,74 @@ def test_orchestrator_with_local_downloader_service_posts_ingestion_to_datahub()
     assert store.count_table_rows("raw_events") == 40
     assert len(datahub_server.payloads) == 1
     assert datahub_server.payloads[0]["schema_version"] == "ingestion.batch.v1"
+
+
+def test_orchestrator_with_local_downloader_service_envelope_dir_profile() -> None:
+    downloader_src = Path(__file__).resolve().parents[2] / "vibe-downloader" / "src"
+    if str(downloader_src) not in sys.path:
+        sys.path.insert(0, str(downloader_src))
+    from app.service.server import SyncJobStore, create_app
+
+    store = _make_store()
+    artifacts_dir = Path(__file__).resolve().parent / ".artifacts"
+    envelope_dir = artifacts_dir / f"daily-meeting-envelope-{uuid4().hex}"
+    envelope_dir.mkdir(parents=True, exist_ok=True)
+    output_file = envelope_dir / "2026-05-12.json"
+    output_file.write_text(
+        json.dumps(_daily_meeting_envelope(output_file), ensure_ascii=False),
+        encoding="utf-8",
+    )
+    batch_id = "batch_local_downloader_envelope_dir"
+    command_run_id = "cmd_local_downloader_envelope_dir"
+    with _DataHubIngestionServer(store) as datahub_server:
+        downloader_app = create_app(
+            job_store=SyncJobStore(),
+            service_config={
+                "sync_profiles": {
+                    "daily_meeting_envelope_dir": {
+                        "mode": "envelope_dir",
+                        "dataset_key": "daily_meeting",
+                        "envelope_dir": str(envelope_dir),
+                    }
+                }
+            },
+        )
+        with _UvicornServer(downloader_app) as downloader_server:
+            orchestrator = SyncOrchestrator.from_config(
+                store=store,
+                config={
+                    "type": "http",
+                    "base_url": downloader_server.base_url,
+                    "datahub_ingestion_url": datahub_server.ingestion_url,
+                    "poll_interval_seconds": 0.01,
+                    "poll_timeout_seconds": 5,
+                },
+            )
+            orchestrator.create_batch_with_commands(
+                batch_id=batch_id,
+                batch_key="daily_meeting_today_refresh",
+                commands=[
+                    {
+                        "command_run_id": command_run_id,
+                        "command_key": "daily_meeting_today",
+                        "command_type": "refresh_today",
+                        "dataset_keys": ["daily_meeting"],
+                        "profile": "daily_meeting_envelope_dir",
+                        "params": {"date": "2026-05-12"},
+                        "options": {"mode": "incremental"},
+                        "processing_policy": {"auto_process": False},
+                    }
+                ],
+            )
+
+            result = orchestrator.run_pending_commands(batch_id=batch_id)
+
+    command = store.get_collection_command(command_run_id)
+    assert result["results"][0]["status"] == "succeeded"
+    assert command["status"] == "succeeded"
+    assert store.count_table_rows("raw_events") == 40
+    assert len(datahub_server.payloads) == 1
+    assert len(datahub_server.payloads[0]["raw_events"]) == 40
 
 
 def test_collection_errors_and_checkpoints_can_be_recorded() -> None:

@@ -66,13 +66,20 @@ class SyncOrchestrator:
             started_at=datetime.now(),
         )
         for command in commands:
+            normalized_command = dict(command)
+            params = dict(normalized_command.get("params") or {})
+            if "profile" in normalized_command:
+                params["__downloader_profile"] = normalized_command["profile"]
+            if "options" in normalized_command:
+                params["__downloader_options"] = normalized_command["options"]
+            normalized_command["params"] = params
             self.command_service.create_collection_command(
                 batch_id=batch_id,
                 source_system=source_system,
                 plugin_id=plugin_id,
                 downloader_name=downloader_name,
                 status="queued",
-                **command,
+                **normalized_command,
             )
         return batch
 

@@ -49,13 +49,18 @@ class HttpDownloaderClient:
         )
 
     def sync(self, command: dict[str, Any], scope_items: list[dict[str, Any]]) -> str:
+        params = dict(command.get("params") or {})
+        embedded_profile = params.pop("__downloader_profile", None)
+        embedded_options = params.pop("__downloader_options", None)
         payload = {
             "schema_version": "downloader.sync.request.v1",
             "batch_id": command["batch_id"],
             "command_run_id": command["command_run_id"],
             "command_key": command["command_key"],
             "datasets": command.get("dataset_keys") or [],
-            "params": command.get("params") or {},
+            "profile": command.get("profile") or embedded_profile,
+            "params": params,
+            "options": command.get("options") or embedded_options or {},
             "scope_items": scope_items,
             "datahub": {
                 "ingestion_url": command.get("ingestion_url")
