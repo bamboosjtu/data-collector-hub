@@ -530,6 +530,11 @@ def test_command_batch_orchestrator_runs_http_downloader_client() -> None:
     assert command["downloader_job_id"] == server.job_id
     assert command["request_count"] == 1
     assert command["raw_record_count"] == 40
+    assert command["profile"] == "daily_meeting_fixture"
+    assert command["options"] == {"mode": "incremental", "archive_envelope": True}
+    assert command["params"] == {"date": "2026-05-12"}
+    assert "__downloader_profile" not in command["params"]
+    assert "__downloader_options" not in command["params"]
     assert server.sync_payloads[0]["scope_items"][0]["entity_key"] == "dcp:single_project:P001:S001"
     assert server.sync_payloads[0]["profile"] == "daily_meeting_fixture"
     assert server.sync_payloads[0]["options"] == {"mode": "incremental", "archive_envelope": True}

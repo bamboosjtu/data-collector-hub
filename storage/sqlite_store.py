@@ -107,9 +107,11 @@ CREATE TABLE IF NOT EXISTS collection_commands (
     plugin_id TEXT NOT NULL,
     downloader_name TEXT NOT NULL,
     dataset_keys TEXT NOT NULL,
+    profile TEXT,
     scope_selector TEXT,
     scope_snapshot TEXT,
     params TEXT NOT NULL DEFAULT '{}',
+    options TEXT NOT NULL DEFAULT '{}',
     downloader_job_id TEXT,
     status TEXT NOT NULL,
     request_count INTEGER DEFAULT 0,
@@ -469,6 +471,8 @@ class SQLiteStore:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_collection_commands_batch ON collection_commands(batch_id)"
             )
+            self._ensure_column(conn, "collection_commands", "profile", "TEXT")
+            self._ensure_column(conn, "collection_commands", "options", "TEXT NOT NULL DEFAULT '{}'")
             self._ensure_column(conn, "collection_commands", "error_count", "INTEGER DEFAULT 0")
             self._ensure_column(conn, "collection_commands", "processing_policy", "TEXT")
             self._ensure_column(conn, "collection_commands", "result_summary", "TEXT")
@@ -1507,13 +1511,14 @@ class SQLiteStore:
                     INSERT INTO collection_commands (
                         command_run_id, batch_id, command_key, command_type,
                         source_system, plugin_id, downloader_name, dataset_keys,
-                        scope_selector, scope_snapshot, params, downloader_job_id,
+                        profile, scope_selector, scope_snapshot, params, options,
+                        downloader_job_id,
                         status, request_count, raw_record_count,
                         success_request_count, failed_request_count, error_count,
                         processing_policy, result_summary, error,
                         started_at, finished_at, updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(command_run_id) DO UPDATE SET
                         batch_id=excluded.batch_id,
                         command_key=excluded.command_key,
@@ -1522,9 +1527,11 @@ class SQLiteStore:
                         plugin_id=excluded.plugin_id,
                         downloader_name=excluded.downloader_name,
                         dataset_keys=excluded.dataset_keys,
+                        profile=excluded.profile,
                         scope_selector=excluded.scope_selector,
                         scope_snapshot=excluded.scope_snapshot,
                         params=excluded.params,
+                        options=excluded.options,
                         downloader_job_id=COALESCE(excluded.downloader_job_id, collection_commands.downloader_job_id),
                         status=excluded.status,
                         request_count=excluded.request_count,
@@ -1548,9 +1555,11 @@ class SQLiteStore:
                         command["plugin_id"],
                         command["downloader_name"],
                         self._json_text(command.get("dataset_keys"), []),
+                        command.get("profile"),
                         self._json_text(command.get("scope_selector"), None),
                         self._json_text(command.get("scope_snapshot"), None),
                         self._json_text(command.get("params"), {}),
+                        self._json_text(command.get("options"), {}),
                         command.get("downloader_job_id"),
                         command["status"],
                         command.get("request_count", 0),
@@ -1805,6 +1814,7 @@ class SQLiteStore:
             ("scope_selector", None),
             ("scope_snapshot", None),
             ("params", {}),
+            ("options", {}),
             ("processing_policy", None),
             ("result_summary", {}),
         ):
@@ -1862,13 +1872,14 @@ class SQLiteStore:
                 INSERT INTO collection_commands (
                     command_run_id, batch_id, command_key, command_type,
                     source_system, plugin_id, downloader_name, dataset_keys,
-                    scope_selector, scope_snapshot, params, downloader_job_id,
+                    profile, scope_selector, scope_snapshot, params, options,
+                    downloader_job_id,
                     status, request_count, raw_record_count,
                     success_request_count, failed_request_count, error_count,
                     processing_policy, result_summary, error,
                     started_at, finished_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(command_run_id) DO UPDATE SET
                     batch_id=excluded.batch_id,
                     command_key=excluded.command_key,
@@ -1877,9 +1888,11 @@ class SQLiteStore:
                     plugin_id=excluded.plugin_id,
                     downloader_name=excluded.downloader_name,
                     dataset_keys=excluded.dataset_keys,
+                    profile=excluded.profile,
                     scope_selector=excluded.scope_selector,
                     scope_snapshot=excluded.scope_snapshot,
                     params=excluded.params,
+                    options=excluded.options,
                     downloader_job_id=excluded.downloader_job_id,
                     status=excluded.status,
                     processing_policy=excluded.processing_policy,
@@ -1894,9 +1907,11 @@ class SQLiteStore:
                     command.get("plugin_id", "dcp"),
                     command.get("downloader_name", "vibe-downloader-dcp"),
                     self._json_text(command.get("dataset_keys") or [], []),
+                    command.get("profile"),
                     self._json_text(command.get("scope_selector"), None),
                     self._json_text(command.get("scope_snapshot"), None),
                     self._json_text(command.get("params"), {}),
+                    self._json_text(command.get("options"), {}),
                     command.get("downloader_job_id"),
                     command.get("status", "queued"),
                     command.get("request_count", 0),

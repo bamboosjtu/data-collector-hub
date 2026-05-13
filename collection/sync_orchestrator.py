@@ -67,12 +67,8 @@ class SyncOrchestrator:
         )
         for command in commands:
             normalized_command = dict(command)
-            params = dict(normalized_command.get("params") or {})
-            if "profile" in normalized_command:
-                params["__downloader_profile"] = normalized_command["profile"]
-            if "options" in normalized_command:
-                params["__downloader_options"] = normalized_command["options"]
-            normalized_command["params"] = params
+            normalized_command["params"] = dict(normalized_command.get("params") or {})
+            normalized_command["options"] = dict(normalized_command.get("options") or {})
             self.command_service.create_collection_command(
                 batch_id=batch_id,
                 source_system=source_system,

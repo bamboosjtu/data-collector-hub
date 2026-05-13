@@ -193,9 +193,11 @@ class CollectionCommandV1(BaseModel):
     downloader_name: str
     dataset_keys: List[str]
     depends_on_command: Optional[str] = None
+    profile: Optional[str] = None
     scope_selector: Optional[Dict[str, Any]] = None
     scope_snapshot: Optional[Dict[str, Any]] = None
     params: Dict[str, Any] = Field(default_factory=dict)
+    options: Dict[str, Any] = Field(default_factory=dict)
     downloader_job_id: Optional[str] = None
     status: str
     request_count: int = 0
