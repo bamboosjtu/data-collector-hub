@@ -3,6 +3,20 @@ from __future__ import annotations
 from typing import List
 
 from core.base_adapter import BaseAdapter, DataItem
+from plugins.dcp_response_registry import DCP_RESPONSE_TABLES, dataset_plugins
+
+
+DCP_RESPONSE_CANONICAL_REGISTRY = {
+    entry["table"]: {
+        "dataset_key": entry["dataset_key"],
+        "plugin_id": entry["plugin_id"],
+        "page_name": entry["page_name"],
+        "api_name": entry["api_name"],
+        "record_path": entry["record_path"],
+        "columns": [column["name"] for column in entry.get("columns", [])],
+    }
+    for entry in DCP_RESPONSE_TABLES
+}
 
 
 class DcpExternalCollectorAdapter(BaseAdapter):
@@ -229,9 +243,26 @@ class DcpExternalCollectorAdapter(BaseAdapter):
                     "api_names": ["yearly_progress_analysis"],
                     "normalizer": "dcp_year_progress",
                     "processing_supported": True,
+                    "canonical_outputs": [
+                        "project",
+                        "project_progress",
+                        "single_project",
+                    ],
                     "description": "planPages 中已采集的年度目标数据；先入 DataHub，暂不暴露给 Monitor。",
                 },
             },
+        },
+        "dataset_plugins": {
+            "type": "object",
+            "required": False,
+            "description": "Dataset-grained DataHub plugins sharing the DCP downloader",
+            "default": dataset_plugins(),
+        },
+        "response_schema_registry": {
+            "type": "object",
+            "required": False,
+            "description": "Response-aligned canonical table registry for stable DCP interfaces",
+            "default": DCP_RESPONSE_CANONICAL_REGISTRY,
         },
         "credentials_profile": {
             "type": "string",

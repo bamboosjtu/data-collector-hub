@@ -18,6 +18,19 @@ TARGET_DATASETS = [
 ]
 
 
+def _iter_target_raw_events(
+    store: SQLiteStore,
+    *,
+    limit_per_dataset: int = 100000,
+):
+    for dataset_key in TARGET_DATASETS:
+        for raw_event in store.list_raw_events(
+            dataset_key=dataset_key,
+            limit=limit_per_dataset,
+        ):
+            yield raw_event
+
+
 def _parse_iso(value: Any) -> datetime | None:
     if value in (None, ""):
         return None
@@ -41,6 +54,10 @@ def _raw_and_context(raw_event: dict[str, Any]) -> tuple[dict[str, Any], dict[st
 
 def _has_code(raw: dict[str, Any], context: dict[str, Any], raw_key: str, context_key: str) -> bool:
     return raw.get(raw_key) not in (None, "") or context.get(context_key) not in (None, "")
+
+
+def _has_any_context_value(context: dict[str, Any], *keys: str) -> bool:
+    return any(context.get(key) not in (None, "") for key in keys)
 
 
 def _context_status(total: int, missing_critical: int) -> str:
@@ -99,10 +116,8 @@ def get_dataset_health(store: SQLiteStore) -> dict[str, Any]:
             )
 
         api_counts: dict[tuple[str, Any, Any], int] = defaultdict(int)
-        for raw_event in store.list_raw_events(limit=100000):
-            dataset_key = raw_event.get("dataset_key")
-            if dataset_key not in datasets:
-                continue
+        for raw_event in _iter_target_raw_events(store):
+            dataset_key = raw_event["dataset_key"]
             key = (
                 dataset_key,
                 raw_event.get("page_name"),
@@ -118,17 +133,14 @@ def get_dataset_health(store: SQLiteStore) -> dict[str, Any]:
                 }
             )
 
-        cursor = conn.execute(
-            """
-            SELECT dataset_key, COUNT(*) AS canonical_entity_count
-            FROM canonical_entities
-            GROUP BY dataset_key
-            """
-        )
-        for row in cursor.fetchall():
-            dataset_key = row["dataset_key"]
+        canonical_count_by_dataset: dict[str, int] = defaultdict(int)
+        for entity in store.list_canonical_current_entities(limit=100000):
+            dataset_key = str(entity.get("dataset_key") or "")
+            if dataset_key:
+                canonical_count_by_dataset[dataset_key] += 1
+        for dataset_key, count in canonical_count_by_dataset.items():
             if dataset_key in datasets:
-                datasets[dataset_key]["canonical_entity_count"] = row["canonical_entity_count"]
+                datasets[dataset_key]["canonical_entity_count"] = count
 
         cursor = conn.execute(
             """
@@ -179,7 +191,7 @@ def get_daily_meeting_date_health(
     ]
 
     work_point_count_by_date: dict[str, int] = defaultdict(int)
-    for entity in store.list_canonical_entities(
+    for entity in store.list_canonical_current_entities(
         entity_type="work_point",
         dataset_key="daily_meeting",
         limit=100000,
@@ -219,8 +231,6 @@ def get_daily_meeting_date_health(
 
 
 def get_context_coverage(store: SQLiteStore) -> dict[str, Any]:
-    raw_events = store.list_raw_events(limit=100000)
-
     line_section_total = 0
     line_with_context = 0
     line_missing_context = 0
@@ -242,14 +252,21 @@ def get_context_coverage(store: SQLiteStore) -> dict[str, Any]:
     daily_with_single = 0
     daily_with_bidding = 0
 
-    for raw_event in raw_events:
+    for raw_event in _iter_target_raw_events(store):
         dataset_key = raw_event.get("dataset_key")
         api_name = raw_event.get("api_name")
         raw, context = _raw_and_context(raw_event)
 
         if dataset_key == "line_section" and api_name == "section_details":
             line_section_total += 1
-            if context:
+            if _has_any_context_value(
+                context,
+                "project_code",
+                "single_project_code",
+                "bidding_section_code",
+                "line_section_id",
+                "line_section_name",
+            ):
                 line_with_context += 1
             else:
                 line_missing_context += 1

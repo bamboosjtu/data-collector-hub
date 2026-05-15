@@ -1,4 +1,4 @@
-"""Dataset resolution helpers for legacy raw-event migration fixtures."""
+"""Dataset resolution helpers for raw-event fixtures and processing seeds."""
 
 from typing import Any
 

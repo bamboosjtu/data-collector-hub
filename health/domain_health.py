@@ -38,7 +38,7 @@ def _tower_scope(entity_key: str) -> tuple[str, str] | None:
 
 
 def get_domain_health(store: SQLiteStore) -> dict[str, Any]:
-    entities = store.list_canonical_entities(limit=100000)
+    entities = store.list_canonical_current_entities(limit=100000)
     relationships = store.list_canonical_relationships(limit=100000)
 
     entity_counts = {entity_type: 0 for entity_type in ENTITY_TYPES}

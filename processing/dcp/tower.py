@@ -123,6 +123,8 @@ def normalize_tower(
         "entity_key": entity_key,
         "entity_date": None,
         "dataset_key": "tower",
+        "batch_id": raw_event.get("batch_id"),
+        "request_id": raw_event.get("request_id"),
         "source_system": raw_event.get("source_system"),
         "source_record_key": raw_event.get("source_record_key"),
         "latest_raw_event_id": raw_event.get("id"),

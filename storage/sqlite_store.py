@@ -16,6 +16,10 @@ from pathlib import Path
 from typing import Optional, Dict, Any, List
 
 from core.paths import resolve_project_path
+from storage.dcp_response_canonical_schema import response_canonical_schema_sql
+
+
+sqlite3.register_adapter(datetime, lambda value: value.isoformat())
 
 # Schema definition matching 04-data-model.md
 SCHEMA_SQL = """
@@ -215,26 +219,7 @@ CREATE TABLE IF NOT EXISTS raw_events (
     processing_error TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
-
--- Canonical current entity table
-CREATE TABLE IF NOT EXISTS canonical_entities (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    entity_type TEXT NOT NULL,
-    entity_key TEXT NOT NULL,
-    entity_date TEXT,
-    dataset_key TEXT NOT NULL,
-    source_system TEXT NOT NULL,
-    source_record_key TEXT NOT NULL,
-    latest_raw_event_id INTEGER NOT NULL,
-    latest_collected_at TIMESTAMP,
-    latest_collected_at_epoch REAL,
-    latest_source_record_hash TEXT,
-    source_refs TEXT NOT NULL DEFAULT '[]',
-    attributes TEXT NOT NULL,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(entity_type, entity_key)
-);
+""" + response_canonical_schema_sql() + """
 
 -- Canonical relationship current table.
 CREATE TABLE IF NOT EXISTS canonical_relationships (
@@ -349,7 +334,6 @@ CREATE INDEX IF NOT EXISTS idx_collection_commands_batch ON collection_commands(
 CREATE INDEX IF NOT EXISTS idx_collection_requests_batch_command ON collection_requests(batch_id, command_run_id);
 CREATE INDEX IF NOT EXISTS idx_collection_errors_batch ON collection_errors(batch_id);
 CREATE INDEX IF NOT EXISTS idx_collection_checkpoints_dataset ON collection_checkpoints(dataset_key);
-CREATE INDEX IF NOT EXISTS idx_canonical_entities_type_dataset ON canonical_entities(entity_type, dataset_key);
 CREATE INDEX IF NOT EXISTS idx_canonical_relationships_type ON canonical_relationships(relationship_type);
 CREATE INDEX IF NOT EXISTS idx_canonical_relationships_from ON canonical_relationships(from_entity_type, from_entity_key);
 CREATE INDEX IF NOT EXISTS idx_canonical_relationships_to ON canonical_relationships(to_entity_type, to_entity_key);
@@ -499,11 +483,6 @@ class SQLiteStore:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_collection_checkpoints_dataset ON collection_checkpoints(dataset_key)"
             )
-            self._ensure_column(conn, "canonical_entities", "latest_collected_at", "TIMESTAMP")
-            self._ensure_column(conn, "canonical_entities", "entity_date", "TEXT")
-            self._ensure_column(conn, "canonical_entities", "latest_collected_at_epoch", "REAL")
-            self._ensure_column(conn, "canonical_entities", "latest_source_record_hash", "TEXT")
-            self._ensure_column(conn, "canonical_entities", "source_refs", "TEXT NOT NULL DEFAULT '[]'")
             self._ensure_column(conn, "canonical_relationships", "relationship_key", "TEXT")
             self._ensure_column(conn, "canonical_relationships", "relationship_type", "TEXT")
             self._ensure_column(conn, "canonical_relationships", "from_entity_type", "TEXT")
@@ -553,18 +532,6 @@ class SQLiteStore:
             self._ensure_column(conn, "collection_schedules", "last_job_id", "TEXT")
             self._ensure_column(conn, "collection_schedules", "updated_at", "TIMESTAMP")
             conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_canonical_entities_type ON canonical_entities(entity_type)"
-            )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_canonical_entities_dataset ON canonical_entities(dataset_key)"
-            )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_canonical_entities_type_dataset ON canonical_entities(entity_type, dataset_key)"
-            )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_canonical_entities_date ON canonical_entities(entity_type, entity_date)"
-            )
-            conn.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_canonical_relationships_key ON canonical_relationships(relationship_key)"
             )
             conn.execute(
@@ -598,6 +565,113 @@ class SQLiteStore:
             print(f"[SQLiteStore] Schema initialized at {self.db_path}")
         finally:
             conn.close()
+
+    def _raw_event_row_to_normalizer_context(self, row: sqlite3.Row) -> dict[str, Any]:
+        """Adapt MVP raw-layer rows into normalizer input.
+
+        Current DCP normalizers still consume the legacy-compatible shape:
+        - collection
+        - page_name
+        - payload.raw
+        - source_ref.context
+
+        The persisted release schema stores:
+        - raw_events.raw_record
+        - collection_requests.request_context
+        - collection_requests.request_params
+        - collection_requests.response_meta
+        """
+        raw_record = self._load_json_or_default(row["raw_record"], {})
+        request_context = self._load_json_or_default(row["request_context"], {})
+        request_params = self._load_json_or_default(row["request_params"], {})
+        response_meta = self._load_json_or_default(row["response_meta"], {})
+
+        dataset_key = row["dataset_key"]
+        api_name = row["api_name"]
+
+        collection = (
+            request_context.get("collection")
+            or request_params.get("collection")
+            or response_meta.get("collection")
+        )
+        page_name = (
+            request_context.get("page_name")
+            or request_params.get("page_name")
+            or response_meta.get("page_name")
+        )
+
+        if dataset_key == "daily_meeting":
+            collection = collection or "safePages"
+            page_name = page_name or "meetingListAdmin"
+
+        source_file = (
+            request_context.get("source_file")
+            or response_meta.get("source_file")
+            or request_params.get("source_file")
+        )
+
+        if dataset_key == "daily_meeting" and not source_file:
+            work_date = (
+                request_context.get("work_date")
+                or request_context.get("date")
+                or raw_record.get("workDate")
+                or raw_record.get("meetingDate")
+                or raw_record.get("currentConstrDate")
+            )
+            if work_date:
+                source_file = f"daily_meeting/{str(work_date)[:10]}.json"
+
+        return {
+            "id": row["id"],
+            "raw_event_key": row["raw_event_key"],
+            "raw_event_id": row["raw_event_id"],
+
+            "batch_id": row["batch_id"],
+            "command_run_id": row["command_run_id"],
+            "request_id": row["request_id"],
+
+            "dataset_key": dataset_key,
+            "collection": collection,
+            "page_name": page_name,
+            "api_name": api_name,
+            "source_system": row["source_system"] or "dcp",
+            "plugin_id": row["plugin_id"] or "dcp",
+            "downloader_name": row["downloader_name"] or "vibe-downloader-dcp",
+
+            "payload": {
+                "raw": raw_record,
+            },
+            "raw_record": raw_record,
+
+            "source_ref": {
+                "batch_id": row["batch_id"],
+                "command_run_id": row["command_run_id"],
+                "request_id": row["request_id"],
+                "request_key": row["request_key"],
+                "request_kind": row["request_kind"],
+                "context": request_context,
+                "params": request_params,
+                "response_meta": response_meta,
+                "source_file": source_file,
+            },
+
+            "source_file": source_file,
+            "source_path": row["source_path"],
+            "request_source_path": row["request_source_path"],
+
+            "source_record_id": row["source_record_id"],
+            "source_record_hash": row["source_record_hash"],
+            "source_record_key": row["source_record_key"],
+            "content_hash": row["content_hash"],
+
+            "occurred_at": row["occurred_at"],
+            "collected_at": row["collected_at"],
+            "occurred_at_epoch": row["occurred_at_epoch"],
+            "collected_at_epoch": row["collected_at_epoch"],
+
+            "processing_status": row["processing_status"],
+            "processing_error": row["processing_error"],
+        }
 
     def _ensure_column(
         self,
@@ -1086,60 +1160,77 @@ class SQLiteStore:
 
     def list_raw_events(
         self,
-        dataset_key: Optional[str] = None,
+        dataset_key: str,
         limit: int = 1000,
+        after_id: int | None = None,
         offset: int = 0,
-        after_id: Optional[int] = None,
-    ) -> List[Dict[str, Any]]:
-        """List raw_events, optionally filtered by dataset."""
+    ) -> list[dict[str, Any]]:
+        """List MVP raw_events as normalizer-ready RawEventContext dicts."""
         conn = self._get_connection()
         try:
-            where = ["1=1"]
-            params: list[Any] = []
-            if dataset_key:
-                where.append("dataset_key = ?")
-                params.append(dataset_key)
+            where = ["e.dataset_key = ?"]
+            params: list[Any] = [dataset_key]
+
             if after_id is not None:
-                where.append("id > ?")
+                where.append("e.id > ?")
                 params.append(after_id)
-            params.extend([limit, offset])
-            cursor = conn.execute(
-                f"""
+
+            sql = f"""
                 SELECT
-                    r.*,
-                    b.source_system AS batch_source_system,
-                    b.plugin_id AS batch_plugin_id,
-                    b.downloader_name AS batch_downloader_name,
+                    e.id,
+                    e.raw_event_key,
+                    e.raw_event_id,
+                    e.batch_id,
+                    e.command_run_id,
+                    e.request_id,
+                    e.dataset_key,
+                    e.raw_record_type,
+                    e.raw_record,
+                    e.source_path,
+                    e.source_record_id,
+                    e.source_record_hash,
+                    e.source_record_key,
+                    e.content_hash,
+                    e.occurred_at,
+                    e.collected_at,
+                    e.occurred_at_epoch,
+                    e.collected_at_epoch,
+                    e.processing_status,
+                    e.processing_error,
+
+                    r.request_key,
+                    r.request_kind,
+                    r.source_system,
+                    r.plugin_id,
+                    r.downloader_name,
+                    r.api_name,
+                    r.source_path AS request_source_path,
+                    r.request_params,
+                    r.request_context,
+                    r.response_meta,
+                    r.status AS request_status,
+
                     c.command_key,
-                    c.command_type,
-                    req.request_key,
-                    req.api_name,
-                    req.source_path AS request_source_path,
-                    req.request_params,
-                    req.request_context,
-                    req.response_meta AS response_summary,
-                    COALESCE(req.source_path, r.source_path) AS source_file,
-                    req.source_path AS collection_key,
-                    COALESCE(req.api_name, r.raw_record_type) AS joined_api_name,
-                    req.dataset_key AS request_dataset_key,
-                    req.request_kind
-                FROM raw_events r
-                LEFT JOIN collection_requests req ON req.request_id = r.request_id
-                LEFT JOIN collection_commands c ON c.command_run_id = r.command_run_id
-                LEFT JOIN collection_batches b ON b.batch_id = r.batch_id
-                WHERE {' AND '.join('r.' + item if item.startswith('dataset_key') or item.startswith('id ') else item for item in where)}
-                ORDER BY r.id ASC
-                LIMIT ? OFFSET ?
-                """,
-                params,
-            )
-            decoded = [self._decode_raw_event_row(row) for row in cursor.fetchall()]
-            for item in decoded:
-                if item.get("api_name") in (None, ""):
-                    item["api_name"] = item.get("joined_api_name")
-                if item.get("dataset_key") in (None, ""):
-                    item["dataset_key"] = item.get("request_dataset_key")
-            return decoded
+                    c.profile
+
+                FROM raw_events e
+                LEFT JOIN collection_requests r
+                ON e.request_id = r.request_id
+                LEFT JOIN collection_commands c
+                ON e.command_run_id = c.command_run_id
+                WHERE {" AND ".join(where)}
+                ORDER BY e.id ASC
+                LIMIT ?
+            """
+
+            params.append(limit)
+
+            if after_id is None and offset:
+                sql += " OFFSET ?"
+                params.append(offset)
+
+            rows = conn.execute(sql, params).fetchall()
+            return [self._raw_event_row_to_normalizer_context(row) for row in rows]
         finally:
             conn.close()
 
@@ -1995,17 +2086,22 @@ class SQLiteStore:
         source_refs: List[Dict[str, Any]],
         attributes: Dict[str, Any],
         entity_date: Optional[str] = None,
+        batch_id: Optional[str] = None,
+        request_id: Optional[str] = None,
     ) -> str:
-        """Upsert a current canonical entity and return inserted/updated/ignored_older."""
+        """Upsert a typed canonical current entity and append an observation row."""
+        spec = entity_spec(entity_type)
+        table_name = spec["table"]
+        encoded_columns = encode_entity_columns(entity_type, attributes)
         conn = self._get_connection()
         try:
             now = datetime.now()
             cursor = conn.execute(
-                """
-                SELECT id, latest_collected_at_epoch, source_refs FROM canonical_entities
-                WHERE entity_type = ? AND entity_key = ?
+                f"""
+                SELECT id, latest_collected_at_epoch, source_refs FROM {table_name}
+                WHERE entity_key = ?
                 """,
-                (entity_type, entity_key),
+                (entity_key,),
             )
             existing = cursor.fetchone()
             existing_source_refs: list[dict[str, Any]] = []
@@ -2022,21 +2118,64 @@ class SQLiteStore:
             source_refs_json = json.dumps(
                 merged_source_refs, ensure_ascii=False, default=str
             )
-            attributes_json = json.dumps(attributes, ensure_ascii=False, default=str)
+            observation_attributes_json = json.dumps(
+                attributes,
+                ensure_ascii=False,
+                default=str,
+            )
+            conn.execute(
+                """
+                INSERT INTO canonical_entity_observations (
+                    entity_type, entity_key, dataset_key, source_system, raw_event_id,
+                    request_id, batch_id, source_record_key, source_record_hash,
+                    collected_at, collected_at_epoch, attributes_snapshot, source_refs, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    entity_type,
+                    entity_key,
+                    dataset_key,
+                    source_system,
+                    latest_raw_event_id,
+                    request_id,
+                    batch_id,
+                    source_record_key,
+                    latest_source_record_hash,
+                    latest_collected_at,
+                    latest_collected_at_epoch,
+                    observation_attributes_json,
+                    json.dumps(source_refs, ensure_ascii=False, default=str),
+                    now,
+                ),
+            )
+            dynamic_columns = list(encoded_columns.keys())
+            column_names = [
+                "entity_key",
+                "entity_date",
+                "dataset_key",
+                "source_system",
+                "source_record_key",
+                "latest_raw_event_id",
+                "latest_collected_at",
+                "latest_collected_at_epoch",
+                "latest_source_record_hash",
+                "source_refs",
+                "updated_at",
+                "created_at",
+                *dynamic_columns,
+            ]
 
             if not existing:
+                placeholders = ", ".join("?" for _ in column_names)
                 conn.execute(
-                    """
-                    INSERT INTO canonical_entities (
-                        entity_type, entity_key, entity_date, dataset_key, source_system,
-                        source_record_key, latest_raw_event_id, latest_collected_at,
-                        latest_collected_at_epoch, latest_source_record_hash,
-                        source_refs, attributes, updated_at, created_at
+                    f"""
+                    INSERT INTO {table_name} (
+                        {", ".join(column_names)}
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES ({placeholders})
                     """,
                     (
-                        entity_type,
                         entity_key,
                         entity_date,
                         dataset_key,
@@ -2047,9 +2186,9 @@ class SQLiteStore:
                         latest_collected_at_epoch,
                         latest_source_record_hash,
                         source_refs_json,
-                        attributes_json,
                         now,
                         now,
+                        *[encoded_columns[name] for name in dynamic_columns],
                     ),
                 )
                 status = "inserted"
@@ -2063,20 +2202,23 @@ class SQLiteStore:
                     )
                 )
                 if should_update:
+                    assignments = [
+                        "entity_date = ?",
+                        "dataset_key = ?",
+                        "source_system = ?",
+                        "source_record_key = ?",
+                        "latest_raw_event_id = ?",
+                        "latest_collected_at = ?",
+                        "latest_collected_at_epoch = ?",
+                        "latest_source_record_hash = ?",
+                        "source_refs = ?",
+                        "updated_at = ?",
+                    ]
+                    assignments.extend(f"{name} = ?" for name in dynamic_columns)
                     conn.execute(
-                        """
-                        UPDATE canonical_entities
-                        SET entity_date = ?,
-                            dataset_key = ?,
-                            source_system = ?,
-                            source_record_key = ?,
-                            latest_raw_event_id = ?,
-                            latest_collected_at = ?,
-                            latest_collected_at_epoch = ?,
-                            latest_source_record_hash = ?,
-                            source_refs = ?,
-                            attributes = ?,
-                            updated_at = ?
+                        f"""
+                        UPDATE {table_name}
+                        SET {", ".join(assignments)}
                         WHERE id = ?
                         """,
                         (
@@ -2089,8 +2231,8 @@ class SQLiteStore:
                             latest_collected_at_epoch,
                             latest_source_record_hash,
                             source_refs_json,
-                            attributes_json,
                             now,
+                            *[encoded_columns[name] for name in dynamic_columns],
                             existing["id"],
                         ),
                     )
@@ -2102,73 +2244,119 @@ class SQLiteStore:
         finally:
             conn.close()
 
-    def list_canonical_entities(
+    def list_canonical_current_entities(
         self,
         entity_type: Optional[str] = None,
         dataset_key: Optional[str] = None,
         entity_date: Optional[str] = None,
         limit: int = 100,
     ) -> List[Dict[str, Any]]:
-        """List current canonical entities."""
+        """List domain-shaped entities projected from response-aligned canonical tables."""
+        if entity_type:
+            return self.list_domain_entities_paged(
+                entity_type,
+                dataset_key=dataset_key,
+                entity_date=entity_date,
+                limit=limit,
+                offset=0,
+            )
+        results: list[dict[str, Any]] = []
+        for current_type in (
+            "project",
+            "single_project",
+            "bidding_section",
+            "project_progress",
+            "tower",
+            "station",
+            "line_section",
+            "work_point",
+        ):
+            results.extend(
+                self.list_domain_entities_paged(
+                    current_type,
+                    dataset_key=dataset_key,
+                    entity_date=entity_date,
+                    limit=limit,
+                    offset=0,
+                )
+            )
+        results.sort(key=lambda item: (item.get("updated_at") or "", item.get("entity_key") or ""), reverse=True)
+        return results[:limit]
+
+    def _decode_canonical_entity(
+        self,
+        row: sqlite3.Row | None,
+        *,
+        entity_type: str,
+    ) -> Optional[Dict[str, Any]]:
+        if not row:
+            return None
+        entity = dict(row)
+        entity["entity_type"] = entity_type
+        entity["attributes"] = decode_entity_attributes(entity_type, entity)
+        entity["source_refs"] = self._load_json_or_default(
+            entity.get("source_refs"), []
+        )
+        return entity
+
+    def _list_typed_entities(
+        self,
+        *,
+        entity_type: str,
+        dataset_key: Optional[str],
+        entity_date: Optional[str],
+        limit: int,
+        offset: int,
+    ) -> List[Dict[str, Any]]:
+        table_name = entity_spec(entity_type)["table"]
         conn = self._get_connection()
         try:
             where = ["1=1"]
             params: list[Any] = []
-            if entity_type:
-                where.append("entity_type = ?")
-                params.append(entity_type)
             if dataset_key:
                 where.append("dataset_key = ?")
                 params.append(dataset_key)
             if entity_date is not None:
                 where.append("entity_date = ?")
                 params.append(entity_date)
-            params.append(limit)
+            params.extend([limit, offset])
             cursor = conn.execute(
                 f"""
-                SELECT * FROM canonical_entities
+                SELECT * FROM {table_name}
                 WHERE {' AND '.join(where)}
                 ORDER BY updated_at DESC, id DESC
-                LIMIT ?
+                LIMIT ? OFFSET ?
                 """,
                 params,
             )
             return [
                 entity
                 for row in cursor.fetchall()
-                if (entity := self._decode_canonical_entity(row)) is not None
+                if (
+                    entity := self._decode_canonical_entity(
+                        row,
+                        entity_type=entity_type,
+                    )
+                )
+                is not None
             ]
         finally:
             conn.close()
-
-    def _decode_canonical_entity(
-        self, row: sqlite3.Row | None
-    ) -> Optional[Dict[str, Any]]:
-        if not row:
-            return None
-        entity = dict(row)
-        entity["attributes"] = self._load_json_or_default(
-            entity.get("attributes"), {}
-        )
-        entity["source_refs"] = self._load_json_or_default(
-            entity.get("source_refs"), []
-        )
-        return entity
 
     def get_latest_canonical_entity_date(
         self, entity_type: str
     ) -> Optional[str]:
         """Return the latest non-empty entity_date for current canonical entities."""
+        table_name = entity_spec(entity_type)["table"]
         conn = self._get_connection()
         try:
             cursor = conn.execute(
-                """
-                SELECT entity_date FROM canonical_entities
-                WHERE entity_type = ? AND entity_date IS NOT NULL AND entity_date != ''
+                f"""
+                SELECT entity_date FROM {table_name}
+                WHERE entity_date IS NOT NULL AND entity_date != ''
                 ORDER BY entity_date DESC
                 LIMIT 1
-                """,
-                (entity_type,),
+                """
             )
             row = cursor.fetchone()
             return row["entity_date"] if row else None
@@ -2177,19 +2365,228 @@ class SQLiteStore:
 
     def list_canonical_entity_dates(self, entity_type: str) -> List[str]:
         """Return distinct non-empty canonical entity dates in ascending order."""
+        table_name = entity_spec(entity_type)["table"]
         conn = self._get_connection()
         try:
             cursor = conn.execute(
-                """
-                SELECT DISTINCT entity_date FROM canonical_entities
-                WHERE entity_type = ? AND entity_date IS NOT NULL AND entity_date != ''
+                f"""
+                SELECT DISTINCT entity_date FROM {table_name}
+                WHERE entity_date IS NOT NULL AND entity_date != ''
                 ORDER BY entity_date ASC
-                """,
-                (entity_type,),
+                """
             )
             return [row["entity_date"] for row in cursor.fetchall()]
         finally:
             conn.close()
+
+    def list_canonical_entity_observations(
+        self,
+        *,
+        entity_type: Optional[str] = None,
+        entity_key: Optional[str] = None,
+        dataset_key: Optional[str] = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        conn = self._get_connection()
+        try:
+            where = ["1=1"]
+            params: list[Any] = []
+            if entity_type:
+                where.append("entity_type = ?")
+                params.append(entity_type)
+            if entity_key:
+                where.append("entity_key = ?")
+                params.append(entity_key)
+            if dataset_key:
+                where.append("dataset_key = ?")
+                params.append(dataset_key)
+            params.append(limit)
+            cursor = conn.execute(
+                f"""
+                SELECT * FROM canonical_entity_observations
+                WHERE {' AND '.join(where)}
+                ORDER BY collected_at DESC, id DESC
+                LIMIT ?
+                """,
+                params,
+            )
+            items: List[Dict[str, Any]] = []
+            for row in cursor.fetchall():
+                item = dict(row)
+                item["attributes_snapshot"] = self._load_json_or_default(
+                    item.get("attributes_snapshot"),
+                    {},
+                )
+                item["source_refs"] = self._load_json_or_default(
+                    item.get("source_refs"),
+                    [],
+                )
+                items.append(item)
+            return items
+        finally:
+            conn.close()
+
+    # --- Response-aligned canonical operations ---
+
+    def upsert_response_canonical_row(self, row_payload: Dict[str, Any]) -> str:
+        table_name = row_payload["table"]
+        dynamic_columns = list((row_payload.get("columns") or {}).keys())
+        source_refs_json = json.dumps(
+            row_payload.get("source_refs") or [],
+            ensure_ascii=False,
+            default=str,
+        )
+        snapshot_json = json.dumps(
+            row_payload.get("snapshot") or {},
+            ensure_ascii=False,
+            default=str,
+        )
+        now = datetime.now()
+        conn = self._get_connection()
+        try:
+            existing = conn.execute(
+                f"SELECT row_id, latest_collected_at_epoch FROM {table_name} WHERE entity_key = ?",
+                (row_payload["entity_key"],),
+            ).fetchone()
+            conn.execute(
+                """
+                INSERT INTO canonical_entity_observations (
+                    entity_type, entity_key, dataset_key, source_system, raw_event_id,
+                    request_id, batch_id, source_record_key, source_record_hash,
+                    collected_at, collected_at_epoch, attributes_snapshot, source_refs, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    row_payload["record_path"],
+                    row_payload["entity_key"],
+                    row_payload["dataset_key"],
+                    row_payload["source_system"],
+                    row_payload["latest_raw_event_id"],
+                    row_payload.get("request_id"),
+                    row_payload.get("batch_id"),
+                    row_payload["source_record_key"],
+                    row_payload.get("latest_source_record_hash"),
+                    row_payload.get("latest_collected_at"),
+                    row_payload.get("latest_collected_at_epoch"),
+                    snapshot_json,
+                    source_refs_json,
+                    now,
+                ),
+            )
+            base_columns = [
+                "entity_key",
+                "key_quality",
+                "dataset_key",
+                "plugin_id",
+                "page_name",
+                "api_name",
+                "record_path",
+                "partition_key",
+                "partition_value",
+                "source_system",
+                "source_record_key",
+                "latest_raw_event_id",
+                "latest_collected_at",
+                "latest_collected_at_epoch",
+                "latest_source_record_hash",
+                "source_refs",
+                "updated_at",
+                "created_at",
+            ]
+            values = [
+                row_payload["entity_key"],
+                row_payload["key_quality"],
+                row_payload["dataset_key"],
+                row_payload["plugin_id"],
+                row_payload["page_name"],
+                row_payload["api_name"],
+                row_payload["record_path"],
+                row_payload.get("partition_key"),
+                row_payload.get("partition_value"),
+                row_payload["source_system"],
+                row_payload["source_record_key"],
+                row_payload["latest_raw_event_id"],
+                row_payload.get("latest_collected_at"),
+                row_payload.get("latest_collected_at_epoch"),
+                row_payload.get("latest_source_record_hash"),
+                source_refs_json,
+                now,
+                now,
+            ]
+            values.extend((row_payload.get("columns") or {}).get(name) for name in dynamic_columns)
+            if existing is None:
+                columns = [*base_columns, *dynamic_columns]
+                placeholders = ", ".join("?" for _ in columns)
+                conn.execute(
+                    f"INSERT INTO {table_name} ({', '.join(columns)}) VALUES ({placeholders})",
+                    values,
+                )
+                status = "inserted"
+            else:
+                incoming_epoch = row_payload.get("latest_collected_at_epoch")
+                existing_epoch = existing["latest_collected_at_epoch"]
+                should_update = incoming_epoch is None or existing_epoch is None or float(incoming_epoch) >= float(existing_epoch)
+                if should_update:
+                    update_columns = [column for column in base_columns if column != "created_at"]
+                    update_columns.extend(dynamic_columns)
+                    update_values = [
+                        value
+                        for column, value in zip(base_columns, values[: len(base_columns)])
+                        if column != "created_at"
+                    ]
+                    update_values.extend(values[len(base_columns) :])
+                    update_values.append(existing["row_id"])
+                    conn.execute(
+                        f"UPDATE {table_name} SET {', '.join(f'{column} = ?' for column in update_columns)} WHERE row_id = ?",
+                        update_values,
+                    )
+                    status = "updated"
+                else:
+                    status = "ignored_older"
+            conn.commit()
+            return status
+        finally:
+            conn.close()
+
+    def list_response_canonical_rows(
+        self,
+        *,
+        dataset_key: Optional[str] = None,
+        api_name: Optional[str] = None,
+        record_path: Optional[str] = None,
+        table_name: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        from plugins.dcp_response_registry import DCP_RESPONSE_TABLES
+
+        table_entries = [
+            entry
+            for entry in DCP_RESPONSE_TABLES
+            if (table_name is None or entry["table"] == table_name)
+            and (dataset_key is None or entry["dataset_key"] == dataset_key)
+            and (api_name is None or entry["api_name"] == api_name)
+            and (record_path is None or entry["record_path"] == record_path)
+        ]
+        rows: list[dict[str, Any]] = []
+        conn = self._get_connection()
+        try:
+            for entry in table_entries:
+                cursor = conn.execute(
+                    f"SELECT * FROM {entry['table']} ORDER BY updated_at DESC, row_id DESC LIMIT ? OFFSET ?",
+                    (limit, offset),
+                )
+                for row in cursor.fetchall():
+                    item = dict(row)
+                    item["_table"] = entry["table"]
+                    item["_registry"] = entry
+                    item["source_refs"] = self._load_json_or_default(item.get("source_refs"), [])
+                    rows.append(item)
+        finally:
+            conn.close()
+        rows.sort(key=lambda item: (item.get("updated_at") or "", int(item.get("row_id") or 0)), reverse=True)
+        return rows[:limit]
 
     # --- Canonical relationship operations ---
 
@@ -2381,33 +2778,155 @@ class SQLiteStore:
         self,
         entity_type: str,
         dataset_key: Optional[str] = None,
+        entity_date: Optional[str] = None,
         limit: int = 1000,
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
+        from plugins.dcp_response_registry import DCP_RESPONSE_TABLES
+
+        entries = [
+            entry
+            for entry in DCP_RESPONSE_TABLES
+            if self._response_entry_matches_domain(entity_type, entry)
+            and (dataset_key is None or entry["dataset_key"] == dataset_key)
+        ]
+        rows: list[dict[str, Any]] = []
         conn = self._get_connection()
         try:
-            where = ["entity_type = ?"]
-            params: list[Any] = [entity_type]
-            if dataset_key:
-                where.append("dataset_key = ?")
-                params.append(dataset_key)
-            params.extend([limit, offset])
-            cursor = conn.execute(
-                f"""
-                SELECT * FROM canonical_entities
-                WHERE {' AND '.join(where)}
-                ORDER BY updated_at DESC, id DESC
-                LIMIT ? OFFSET ?
-                """,
-                params,
-            )
-            return [
-                entity
-                for row in cursor.fetchall()
-                if (entity := self._decode_canonical_entity(row)) is not None
-            ]
+            for entry in entries:
+                cursor = conn.execute(
+                    f"SELECT * FROM {entry['table']} ORDER BY updated_at DESC, row_id DESC LIMIT ? OFFSET ?",
+                    (limit, offset),
+                )
+                for row in cursor.fetchall():
+                    entity = self._response_row_to_domain_entity(entity_type, entry, dict(row))
+                    if entity_date is not None and entity.get("entity_date") != entity_date:
+                        continue
+                    rows.append(entity)
         finally:
             conn.close()
+        rows.sort(key=lambda item: (item.get("updated_at") or "", item.get("entity_key") or ""), reverse=True)
+        return rows[:limit]
+
+    @staticmethod
+    def _response_entry_matches_domain(entity_type: str, entry: dict[str, Any]) -> bool:
+        api_name = entry.get("api_name")
+        record_path = entry.get("record_path")
+        dataset_key = entry.get("dataset_key")
+        column_sources = {column["source"] for column in entry.get("columns", [])}
+        if entity_type == "work_point":
+            return api_name == "queryToolBoxTalkListPagePc"
+        if entity_type == "tower":
+            return api_name == "tower_details"
+        if entity_type == "station":
+            return api_name == "substation_coordinates"
+        if entity_type == "line_section":
+            return api_name == "section_details"
+        if entity_type == "project_progress":
+            return dataset_key == "year_progress" and record_path == "raw_event"
+        if entity_type == "project":
+            return record_path == "raw_event" and "prjCode" in column_sources
+        if entity_type == "single_project":
+            return "singleProjectCode" in column_sources and (
+                "singleList" in str(record_path)
+                or "sinList" in str(record_path)
+                or api_name in {"tower_single_projects", "section_single_projects", "substation_single_projects"}
+            )
+        if entity_type == "bidding_section":
+            return "biddingSectionCode" in column_sources and (
+                "bidSectList" in str(record_path) or "sectList" in str(record_path)
+            )
+        return False
+
+    @staticmethod
+    def _float_or_none(value: Any) -> float | None:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed == parsed else None
+
+    def _response_row_attributes(self, entry: dict[str, Any], row: dict[str, Any]) -> dict[str, Any]:
+        attributes: dict[str, Any] = {}
+        for column in entry.get("columns", []):
+            attributes[column["source"]] = row.get(column["name"])
+        return attributes
+
+    def _response_row_to_domain_entity(
+        self,
+        entity_type: str,
+        entry: dict[str, Any],
+        row: dict[str, Any],
+    ) -> Dict[str, Any]:
+        attributes = self._response_row_attributes(entry, row)
+        aliases = {
+            "project_code": attributes.get("prjCode"),
+            "project_name": attributes.get("prjName"),
+            "single_project_code": attributes.get("singleProjectCode"),
+            "single_project_name": attributes.get("singleProjectName"),
+            "bidding_section_code": attributes.get("biddingSectionCode"),
+            "bidding_section_name": attributes.get("biddingSectionName"),
+            "work_date": attributes.get("workDate") or attributes.get("currentConstrDate") or row.get("partition_value"),
+            "project_status": attributes.get("projectStatus") or attributes.get("status") or attributes.get("imageProgress"),
+            "tower_no": attributes.get("towerNo"),
+            "upstream_tower_no": attributes.get("upstreamTowerNo"),
+            "tower_type": attributes.get("towerType"),
+            "tower_full_height": attributes.get("towerFullHeight"),
+            "nominal_height": attributes.get("nominalHeight"),
+            "line_section_id": attributes.get("id"),
+            "line_section_name": attributes.get("sectionName"),
+            "person_count": attributes.get("currentConstrHeadcount"),
+            "risk_level": attributes.get("reAssessmentRiskLevel"),
+            "work_status": attributes.get("currentConstructionStatus"),
+            "voltage_level": attributes.get("voltageLevel") or attributes.get("voltageLevelName"),
+            "city": attributes.get("city") or attributes.get("buildUnitName"),
+        }
+        if entity_type == "tower":
+            aliases["longitude"] = self._float_or_none(attributes.get("longitudeEdit") or attributes.get("longitude"))
+            aliases["latitude"] = self._float_or_none(attributes.get("latitudeEdit") or attributes.get("latitude"))
+            aliases["tower_id"] = attributes.get("id")
+        elif entity_type == "station":
+            aliases["longitude"] = self._float_or_none(attributes.get("longitude"))
+            aliases["latitude"] = self._float_or_none(attributes.get("latitude"))
+            aliases["dcp_coordinate_id"] = attributes.get("id")
+        elif entity_type == "work_point":
+            aliases["longitude"] = self._float_or_none(attributes.get("toolBoxTalkLongitude") or attributes.get("longitude"))
+            aliases["latitude"] = self._float_or_none(attributes.get("toolBoxTalkLatitude") or attributes.get("latitude"))
+        attributes.update({key: value for key, value in aliases.items() if value not in (None, "")})
+        entity_key = self._domain_entity_key(entity_type, attributes, row)
+        return {
+            "id": row.get("row_id"),
+            "entity_type": entity_type,
+            "entity_key": entity_key,
+            "entity_date": aliases.get("work_date") if entity_type == "work_point" else None,
+            "dataset_key": row.get("dataset_key"),
+            "source_system": row.get("source_system"),
+            "latest_raw_event_id": row.get("latest_raw_event_id"),
+            "latest_collected_at": row.get("latest_collected_at"),
+            "latest_source_record_hash": row.get("latest_source_record_hash"),
+            "source_refs": self._load_json_or_default(row.get("source_refs"), []),
+            "attributes": attributes,
+            "updated_at": row.get("updated_at"),
+            "_table": entry.get("table"),
+        }
+
+    @staticmethod
+    def _domain_entity_key(entity_type: str, attributes: dict[str, Any], row: dict[str, Any]) -> str:
+        if entity_type == "project" and attributes.get("project_code"):
+            return f"dcp:project:{attributes['project_code']}"
+        if entity_type == "single_project" and attributes.get("single_project_code"):
+            return f"dcp:single_project:{attributes['single_project_code']}"
+        if entity_type == "bidding_section" and attributes.get("bidding_section_code"):
+            return f"dcp:bidding_section:{attributes['bidding_section_code']}"
+        if entity_type == "tower" and attributes.get("single_project_code") and attributes.get("bidding_section_code") and attributes.get("tower_no"):
+            return f"dcp:tower:{attributes['single_project_code']}:{attributes['bidding_section_code']}:{attributes['tower_no']}"
+        if entity_type == "station" and (attributes.get("single_project_code") or attributes.get("dcp_coordinate_id")):
+            return f"dcp:station:{attributes.get('single_project_code') or attributes.get('dcp_coordinate_id')}"
+        if entity_type == "work_point":
+            return f"dcp:work_point:{row.get('entity_key')}"
+        if entity_type == "line_section" and (attributes.get("line_section_id") or attributes.get("single_project_code")):
+            return f"dcp:line_section:{attributes.get('line_section_id') or attributes.get('single_project_code')}"
+        return str(row.get("entity_key"))
 
     def list_domain_relationships_for_from_keys(
         self,
@@ -2453,15 +2972,16 @@ class SQLiteStore:
     ) -> set[str]:
         if not entity_keys:
             return set()
+        table_name = entity_spec(entity_type)["table"]
         placeholders = ",".join("?" for _ in entity_keys)
         conn = self._get_connection()
         try:
             cursor = conn.execute(
                 f"""
-                SELECT entity_key FROM canonical_entities
-                WHERE entity_type = ? AND entity_key IN ({placeholders})
+                SELECT entity_key FROM {table_name}
+                WHERE entity_key IN ({placeholders})
                 """,
-                [entity_type, *entity_keys],
+                entity_keys,
             )
             return {str(row["entity_key"]) for row in cursor.fetchall()}
         finally:
@@ -2473,10 +2993,10 @@ class SQLiteStore:
         if not scopes:
             return set()
         clauses: list[str] = []
-        params: list[Any] = ["tower"]
+        params: list[Any] = []
         for single_project_code, bidding_section_code in scopes:
             clauses.append(
-                "(json_extract(attributes, '$.single_project_code') = ? AND json_extract(attributes, '$.bidding_section_code') = ?)"
+                "(single_project_code = ? AND bidding_section_code = ?)"
             )
             params.extend([single_project_code, bidding_section_code])
         conn = self._get_connection()
@@ -2484,10 +3004,10 @@ class SQLiteStore:
             cursor = conn.execute(
                 f"""
                 SELECT
-                    json_extract(attributes, '$.single_project_code') AS single_project_code,
-                    json_extract(attributes, '$.bidding_section_code') AS bidding_section_code
-                FROM canonical_entities
-                WHERE entity_type = ? AND ({' OR '.join(clauses)})
+                    single_project_code,
+                    bidding_section_code
+                FROM canonical_towers
+                WHERE {' OR '.join(clauses)}
                 GROUP BY 1, 2
                 """,
                 params,
@@ -2618,209 +3138,141 @@ class SQLiteStore:
         limit: int = 1000,
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
-        conn = self._get_connection()
-        try:
-            where = ["entity_type = 'project'"]
-            params: list[Any] = []
+        projects = self.list_domain_entities_paged(
+            "project",
+            dataset_key="project_preconstruction",
+            limit=max(limit, 1000),
+            offset=0,
+        ) + self.list_domain_entities_paged(
+            "project",
+            dataset_key="year_progress",
+            limit=max(limit, 1000),
+            offset=0,
+        )
+        seen_project_keys: set[str] = set()
+        deduped_projects: list[dict[str, Any]] = []
+        for project in projects:
+            if project["entity_key"] in seen_project_keys:
+                continue
             if keyword:
-                where.append(
-                    "("
-                    "COALESCE(json_extract(attributes, '$.project_code'), '') LIKE ? "
-                    "OR COALESCE(json_extract(attributes, '$.project_name'), '') LIKE ?"
-                    ")"
-                )
-                needle = f"%{keyword}%"
-                params.extend([needle, needle])
-            params.extend([limit, offset])
-            cursor = conn.execute(
-                f"""
-                SELECT * FROM canonical_entities
-                WHERE {' AND '.join(where)}
-                ORDER BY updated_at DESC, id DESC
-                LIMIT ? OFFSET ?
-                """,
-                params,
-            )
-            projects = [
-                project
-                for row in cursor.fetchall()
-                if (project := self._decode_canonical_entity(row)) is not None
-            ]
-            if not projects:
-                return []
-
-            project_keys = [project["entity_key"] for project in projects]
-            project_codes = [
-                self._attribute(project, "project_code")
-                for project in projects
-                if self._attribute(project, "project_code") not in (None, "")
-            ]
-            single_relationships = self.list_domain_relationships_for_from_keys(
-                relationship_type="HAS_SINGLE_PROJECT",
-                from_entity_type="project",
-                from_entity_keys=project_keys,
-            )
-            single_keys = list(
-                dict.fromkeys(
-                    relationship["to_entity_key"] for relationship in single_relationships
-                )
-            )
-            bidding_relationships = self.list_domain_relationships_for_from_keys(
-                relationship_type="HAS_BIDDING_SECTION",
-                from_entity_type="single_project",
-                from_entity_keys=single_keys,
-            )
-            bidding_keys = list(
-                dict.fromkeys(
-                    relationship["to_entity_key"] for relationship in bidding_relationships
-                )
-            )
-            line_relationships = self.list_domain_relationships_for_from_keys(
-                relationship_type="HAS_LINE_SECTION",
-                from_entity_type="bidding_section",
-                from_entity_keys=bidding_keys,
-            )
-
-            single_codes_by_project: Dict[str, set[str]] = {}
-            for relationship in single_relationships:
-                if relationship["to_entity_key"].startswith("dcp:single_project:"):
-                    single_codes_by_project.setdefault(
-                        relationship["from_entity_key"], set()
-                    ).add(relationship["to_entity_key"].split(":")[-1])
-
-            bidding_codes_by_project: Dict[str, set[str]] = {}
-            bidding_keys_by_project: Dict[str, set[str]] = {}
-            project_by_single_key = {
-                relationship["to_entity_key"]: relationship["from_entity_key"]
-                for relationship in single_relationships
-            }
-            for relationship in bidding_relationships:
-                project_key = project_by_single_key.get(relationship["from_entity_key"])
-                if not project_key:
+                needle = keyword.lower()
+                if needle not in str(self._attribute(project, "project_code") or "").lower() and needle not in str(
+                    self._attribute(project, "project_name") or ""
+                ).lower():
                     continue
-                bidding_keys_by_project.setdefault(project_key, set()).add(
-                    relationship["to_entity_key"]
-                )
-                if relationship["to_entity_key"].startswith("dcp:bidding_section:"):
-                    bidding_codes_by_project.setdefault(project_key, set()).add(
-                        relationship["to_entity_key"].split(":")[-1]
-                    )
+            seen_project_keys.add(project["entity_key"])
+            deduped_projects.append(project)
+        deduped_projects = deduped_projects[offset : offset + limit]
+        if not deduped_projects:
+            return []
 
-            line_keys_by_project: Dict[str, set[str]] = {}
-            project_by_bidding_key = {}
-            for project_key, keys in bidding_keys_by_project.items():
-                for key in keys:
-                    project_by_bidding_key[key] = project_key
-            for relationship in line_relationships:
-                project_key = project_by_bidding_key.get(relationship["from_entity_key"])
-                if project_key:
-                    line_keys_by_project.setdefault(project_key, set()).add(
-                        relationship["to_entity_key"]
-                    )
+        project_keys = [project["entity_key"] for project in deduped_projects]
+        single_relationships = self.list_domain_relationships_for_from_keys(
+            relationship_type="HAS_SINGLE_PROJECT",
+            from_entity_type="project",
+            from_entity_keys=project_keys,
+        )
+        single_keys = list(dict.fromkeys(rel["to_entity_key"] for rel in single_relationships))
+        bidding_relationships = self.list_domain_relationships_for_from_keys(
+            relationship_type="HAS_BIDDING_SECTION",
+            from_entity_type="single_project",
+            from_entity_keys=single_keys,
+        )
+        bidding_keys = list(dict.fromkeys(rel["to_entity_key"] for rel in bidding_relationships))
+        line_relationships = self.list_domain_relationships_for_from_keys(
+            relationship_type="HAS_LINE_SECTION",
+            from_entity_type="bidding_section",
+            from_entity_keys=bidding_keys,
+        )
+        tower_entities = self.list_domain_entities("tower", limit=100000)
+        station_entities = self.list_domain_entities("station", limit=100000)
+        work_point_entities = self.list_domain_entities("work_point", limit=100000)
+        progress_entities = self.list_domain_entities("project_progress", limit=100000)
 
-            def _count_for_project(
-                *,
-                entity_type: str,
-                project_code: Any,
-                single_codes: set[str] | None = None,
-                bidding_codes: set[str] | None = None,
-            ) -> int:
-                clauses = ["entity_type = ?"]
-                clause_params: list[Any] = [entity_type]
-                or_clauses: list[str] = []
-                if project_code not in (None, ""):
-                    or_clauses.append(
-                        "json_extract(attributes, '$.project_code') = ?"
-                    )
-                    clause_params.append(project_code)
-                if single_codes:
-                    placeholders = ",".join("?" for _ in single_codes)
-                    or_clauses.append(
-                        f"json_extract(attributes, '$.single_project_code') IN ({placeholders})"
-                    )
-                    clause_params.extend(sorted(single_codes))
-                if bidding_codes:
-                    placeholders = ",".join("?" for _ in bidding_codes)
-                    or_clauses.append(
-                        f"json_extract(attributes, '$.bidding_section_code') IN ({placeholders})"
-                    )
-                    clause_params.extend(sorted(bidding_codes))
-                if not or_clauses:
-                    return 0
-                cursor = conn.execute(
-                    f"""
-                    SELECT COUNT(*) AS count
-                    FROM canonical_entities
-                    WHERE {' AND '.join(clauses)} AND ({' OR '.join(or_clauses)})
-                    """,
-                    clause_params,
+        single_codes_by_project: Dict[str, set[str]] = {}
+        bidding_codes_by_project: Dict[str, set[str]] = {}
+        bidding_keys_by_project: Dict[str, set[str]] = {}
+        line_keys_by_project: Dict[str, set[str]] = {}
+        project_by_single_key = {
+            rel["to_entity_key"]: rel["from_entity_key"] for rel in single_relationships
+        }
+        for relationship in single_relationships:
+            if relationship["to_entity_key"].startswith("dcp:single_project:"):
+                single_codes_by_project.setdefault(relationship["from_entity_key"], set()).add(
+                    relationship["to_entity_key"].split(":")[-1]
                 )
-                row = cursor.fetchone()
-                return int(row["count"]) if row else 0
+        for relationship in bidding_relationships:
+            project_key = project_by_single_key.get(relationship["from_entity_key"])
+            if not project_key:
+                continue
+            bidding_keys_by_project.setdefault(project_key, set()).add(relationship["to_entity_key"])
+            if relationship["to_entity_key"].startswith("dcp:bidding_section:"):
+                bidding_codes_by_project.setdefault(project_key, set()).add(
+                    relationship["to_entity_key"].split(":")[-1]
+                )
+        project_by_bidding_key: Dict[str, str] = {}
+        for project_key, keys in bidding_keys_by_project.items():
+            for key in keys:
+                project_by_bidding_key[key] = project_key
+        for relationship in line_relationships:
+            project_key = project_by_bidding_key.get(relationship["from_entity_key"])
+            if project_key:
+                line_keys_by_project.setdefault(project_key, set()).add(relationship["to_entity_key"])
 
-            def _work_point_stats(project_code: Any) -> tuple[int, Optional[str]]:
-                if project_code in (None, ""):
-                    return 0, None
-                cursor = conn.execute(
-                    """
-                    SELECT COUNT(*) AS count, MAX(entity_date) AS latest_work_date
-                    FROM canonical_entities
-                    WHERE entity_type = 'work_point'
-                      AND json_extract(attributes, '$.project_code') = ?
-                    """,
-                    (project_code,),
-                )
-                row = cursor.fetchone()
-                return (
-                    int(row["count"]) if row and row["count"] is not None else 0,
-                    row["latest_work_date"] if row else None,
-                )
-
-            items: List[Dict[str, Any]] = []
-            for project in projects:
-                project_key = project["entity_key"]
-                project_code = self._attribute(project, "project_code")
-                single_codes = single_codes_by_project.get(project_key, set())
-                bidding_codes = bidding_codes_by_project.get(project_key, set())
-                work_point_count, latest_work_date = _work_point_stats(project_code)
-                progress_count = _count_for_project(
-                    entity_type="project_progress",
-                    project_code=project_code,
-                )
-                tower_count = _count_for_project(
-                    entity_type="tower",
-                    project_code=project_code,
-                    single_codes=single_codes,
-                    bidding_codes=bidding_codes,
-                )
-                station_count = _count_for_project(
-                    entity_type="station",
-                    project_code=project_code,
-                    single_codes=single_codes,
-                )
-                items.append(
-                    {
-                        "project_key": project_key,
-                        "project_code": project_code,
-                        "project_name": self._attribute(project, "project_name"),
-                        "single_project_count": len(single_codes),
-                        "bidding_section_count": len(
-                            bidding_keys_by_project.get(project_key, set())
+        items: List[Dict[str, Any]] = []
+        for project in deduped_projects:
+            project_key = project["entity_key"]
+            project_code = self._attribute(project, "project_code")
+            single_codes = single_codes_by_project.get(project_key, set())
+            bidding_codes = bidding_codes_by_project.get(project_key, set())
+            work_points = [
+                item for item in work_point_entities if self._attribute(item, "project_code") == project_code
+            ]
+            items.append(
+                {
+                    "project_key": project_key,
+                    "project_code": project_code,
+                    "project_name": self._attribute(project, "project_name"),
+                    "single_project_count": len(single_codes),
+                    "bidding_section_count": len(bidding_keys_by_project.get(project_key, set())),
+                    "tower_count": len(
+                        [
+                            item
+                            for item in tower_entities
+                            if self._attribute(item, "project_code") == project_code
+                            or self._attribute(item, "single_project_code") in single_codes
+                            or self._attribute(item, "bidding_section_code") in bidding_codes
+                        ]
+                    ),
+                    "station_count": len(
+                        [
+                            item
+                            for item in station_entities
+                            if self._attribute(item, "project_code") == project_code
+                            or self._attribute(item, "single_project_code") in single_codes
+                        ]
+                    ),
+                    "line_section_count": len(line_keys_by_project.get(project_key, set())),
+                    "work_point_count": len(work_points),
+                    "progress_count": len(
+                        [
+                            item
+                            for item in progress_entities
+                            if self._attribute(item, "project_code") == project_code
+                        ]
+                    ),
+                    "latest_work_date": max(
+                        (
+                            str(item.get("entity_date") or self._attribute(item, "work_date"))
+                            for item in work_points
+                            if item.get("entity_date") or self._attribute(item, "work_date")
                         ),
-                        "tower_count": tower_count,
-                        "station_count": station_count,
-                        "line_section_count": len(
-                            line_keys_by_project.get(project_key, set())
-                        ),
-                        "work_point_count": work_point_count,
-                        "progress_count": progress_count,
-                        "latest_work_date": latest_work_date,
-                        "latest_updated_at": project.get("updated_at"),
-                    }
-                )
-            return items
-        finally:
-            conn.close()
+                        default=None,
+                    ),
+                    "latest_updated_at": project.get("updated_at"),
+                }
+            )
+        return items
 
     def get_domain_project(self, project_code: str) -> Optional[Dict[str, Any]]:
         return self._project_entity_by_code(project_code)
@@ -3089,6 +3541,28 @@ class SQLiteStore:
             if job is None:
                 raise RuntimeError(f"failed to create processing job: {job_id}")
             return job
+        finally:
+            conn.close()
+
+    def update_raw_event_processing_status(
+        self,
+        raw_event_id: int,
+        *,
+        status: str,
+        error: str | None = None,
+    ) -> None:
+        conn = self._get_connection()
+        try:
+            conn.execute(
+                """
+                UPDATE raw_events
+                SET processing_status = ?,
+                    processing_error = ?
+                WHERE id = ?
+                """,
+                (status, error, raw_event_id),
+            )
+            conn.commit()
         finally:
             conn.close()
 

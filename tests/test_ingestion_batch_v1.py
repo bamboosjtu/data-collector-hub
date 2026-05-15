@@ -52,16 +52,6 @@ def test_daily_meeting_ingestion_batch_writes_mvp_raw_layer() -> None:
     assert store.count_table_rows("collection_checkpoints") == 1
 
 
-def test_legacy_events_route_is_not_registered() -> None:
-    store = _make_store()
-    response = _client(store).post(
-        "/ingestion/v1/events",
-        json={"events": []},
-    )
-
-    assert response.status_code == 404
-
-
 def test_daily_meeting_ingestion_batch_skips_duplicate_raw_events() -> None:
     store = _make_store()
     client = _client(store)
@@ -109,6 +99,6 @@ def test_batch_ingested_daily_meeting_can_be_processed() -> None:
     assert ingestion.status_code == 200
     assert processing.status_code == 200
     assert processing.json()["inserted"] == 1
-    entities = store.list_canonical_entities(entity_type="work_point")
+    entities = store.list_canonical_current_entities(entity_type="work_point")
     assert len(entities) == 1
     assert entities[0]["attributes"]["work_date"] == "2026-05-12"

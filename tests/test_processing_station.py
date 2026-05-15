@@ -175,7 +175,7 @@ def test_station_batch_record_to_sandbox_skeleton_flow():
     assert processing.json()["processed"] == 1
     assert processing.json()["failed"] == 0
 
-    entities = store.list_canonical_entities(entity_type="station", dataset_key="station")
+    entities = store.list_canonical_current_entities(entity_type="station", dataset_key="station")
     assert len(entities) == 1
     entity = entities[0]
     assert entity["entity_key"] == "dcp:station:SP-001"
@@ -233,7 +233,7 @@ def test_daily_meeting_batch_record_to_work_point_and_summary():
     assert processing.json()["processed"] == 1
     assert processing.json()["inserted"] == 1
 
-    entities = store.list_canonical_entities(
+    entities = store.list_canonical_current_entities(
         entity_type="work_point", dataset_key="daily_meeting"
     )
     assert len(entities) == 1
@@ -282,7 +282,7 @@ def test_daily_meeting_same_id_on_different_dates_creates_two_work_points():
 
     result = NormalizerRunner(store).run("daily_meeting")
 
-    entities = store.list_canonical_entities(entity_type="work_point", limit=10)
+    entities = store.list_canonical_current_entities(entity_type="work_point", limit=10)
     assert result["processed"] == 2
     assert {entity["entity_key"] for entity in entities} == {
         "dcp:work_point:2026-05-03:meeting-same",
@@ -374,7 +374,7 @@ def test_daily_meeting_maps_current_monitor_fields():
 
     result = NormalizerRunner(store).run("daily_meeting")
 
-    entity = store.list_canonical_entities(entity_type="work_point")[0]
+    entity = store.list_canonical_current_entities(entity_type="work_point")[0]
     assert result["processed"] == 1
     assert entity["attributes"]["person_count"] == 18
     assert entity["attributes"]["risk_level"] == "2"
@@ -393,7 +393,7 @@ def test_daily_meeting_normalizes_invalid_count_and_unknown_values():
 
     result = NormalizerRunner(store).run("daily_meeting")
 
-    entity = store.list_canonical_entities(entity_type="work_point")[0]
+    entity = store.list_canonical_current_entities(entity_type="work_point")[0]
     assert result["processed"] == 1
     assert entity["attributes"]["person_count"] == 0
     assert entity["attributes"]["risk_level"] == "unknown"
@@ -407,7 +407,7 @@ def test_daily_meeting_normalizes_datetime_work_date():
 
     result = NormalizerRunner(store).run("daily_meeting")
 
-    entity = store.list_canonical_entities(entity_type="work_point")[0]
+    entity = store.list_canonical_current_entities(entity_type="work_point")[0]
     assert result["processed"] == 1
     assert entity["entity_key"] == "dcp:work_point:2026-05-03:meeting-datetime-date"
     assert entity["entity_date"] == "2026-05-03"
@@ -424,7 +424,7 @@ def test_daily_meeting_normalizes_epoch_millis_work_date():
 
     result = NormalizerRunner(store).run("daily_meeting")
 
-    entity = store.list_canonical_entities(entity_type="work_point")[0]
+    entity = store.list_canonical_current_entities(entity_type="work_point")[0]
     assert result["processed"] == 1
     assert entity["entity_date"] == "2026-05-03"
     assert entity["attributes"]["work_date"] == "2026-05-03"
@@ -441,7 +441,7 @@ def test_daily_meeting_numeric_risk_levels_are_stable_values():
 
     result = NormalizerRunner(store).run("daily_meeting")
 
-    entities = store.list_canonical_entities(entity_type="work_point", limit=10)
+    entities = store.list_canonical_current_entities(entity_type="work_point", limit=10)
     assert result["processed"] == 4
     assert {entity["attributes"]["risk_level"] for entity in entities} == {
         "1",
@@ -474,7 +474,7 @@ def test_daily_meeting_named_risk_levels_follow_monitor_scale():
 
     result = NormalizerRunner(store).run("daily_meeting")
 
-    entities = store.list_canonical_entities(entity_type="work_point", limit=20)
+    entities = store.list_canonical_current_entities(entity_type="work_point", limit=20)
     risk_by_id = {
         entity["entity_key"].split(":")[-1]: entity["attributes"]["risk_level"]
         for entity in entities
@@ -656,7 +656,7 @@ def test_tower_details_batch_record_to_tower_canonical():
 
     assert result["processed"] == 1
     assert result["inserted"] == 1
-    entities = store.list_canonical_entities(entity_type="tower", dataset_key="tower")
+    entities = store.list_canonical_current_entities(entity_type="tower", dataset_key="tower")
     assert len(entities) == 1
     entity = entities[0]
     assert entity["entity_key"] == "dcp:tower:SP-TOWER-001:BS-001:T-001"
@@ -674,7 +674,7 @@ def test_tower_entity_key_falls_back_when_raw_id_missing():
 
     result = NormalizerRunner(store).run("tower")
 
-    entities = store.list_canonical_entities(entity_type="tower", dataset_key="tower")
+    entities = store.list_canonical_current_entities(entity_type="tower", dataset_key="tower")
     assert result["processed"] == 1
     assert entities[0]["entity_key"] == "dcp:tower:SP-TOWER-001:BS-001:T-fallback"
     assert entities[0]["attributes"]["single_project_code"] == "SP-TOWER-001"
@@ -694,7 +694,7 @@ def test_tower_single_projects_is_skipped_by_tower_normalizer():
     assert result["processed"] == 0
     assert result["skipped"] == 1
     assert "not tower_details api" in result["errors"][0]
-    assert store.list_canonical_entities(entity_type="tower", dataset_key="tower") == []
+    assert store.list_canonical_current_entities(entity_type="tower", dataset_key="tower") == []
 
 
 def test_sandbox_skeleton_returns_towers_and_stations_without_raw():
@@ -735,7 +735,7 @@ def test_tower_entity_key_uses_scoped_format_even_when_raw_id_exists():
     result = NormalizerRunner(store).run("tower")
 
     assert result["processed"] == 1
-    entity = store.list_canonical_entities(entity_type="tower", dataset_key="tower")[0]
+    entity = store.list_canonical_current_entities(entity_type="tower", dataset_key="tower")[0]
     assert entity["entity_key"] == "dcp:tower:S01:B01:G1"
     assert entity["attributes"]["dcp_entity_key_fallback"] == "dcp:tower:tower-scoped-with-id"
 
@@ -751,6 +751,21 @@ def test_processing_run_supports_station_from_registry():
     assert response.json()["failed"] == 0
 
 
+@pytest.mark.parametrize(
+    "dataset_key",
+    ["project_preconstruction", "line_section", "year_progress"],
+)
+def test_processing_run_supports_domain_normalizers(dataset_key):
+    store = _make_store()
+    client = _client(store)
+
+    response = client.post("/processing/v1/run", json={"dataset_key": dataset_key})
+
+    assert response.status_code == 200
+    assert response.json()["processed"] == 0
+    assert response.json()["failed"] == 0
+
+
 def test_processing_run_unknown_dataset_returns_supported_dataset_keys():
     store = _make_store()
     client = _client(store)
@@ -760,7 +775,15 @@ def test_processing_run_unknown_dataset_returns_supported_dataset_keys():
     assert response.status_code == 400
     detail = response.json()["detail"]
     assert detail["error"] == "unsupported dataset_key: unknown_dataset"
-    assert set(detail["supported_datasets"]) == {"daily_meeting", "tower", "station"}
+    assert set(detail["supported_datasets"]) == {
+        "daily_meeting",
+        "tower",
+        "station",
+        "project_hierarchy",
+        "project_preconstruction",
+        "line_section",
+        "year_progress",
+    }
 
 
 def test_processing_job_create_returns_queued_job(monkeypatch):
@@ -964,7 +987,7 @@ def test_station_entity_key_prefers_single_project_code():
     result = NormalizerRunner(store).run("station")
 
     assert result["processed"] == 1
-    entities = store.list_canonical_entities(entity_type="station", dataset_key="station")
+    entities = store.list_canonical_current_entities(entity_type="station", dataset_key="station")
     assert entities[0]["entity_key"] == "dcp:station:SP-001"
     assert entities[0]["attributes"]["dcp_coordinate_id"] == "coord-001"
 
@@ -978,7 +1001,7 @@ def test_station_entity_key_falls_back_to_coordinate_id_without_single_project_c
     result = NormalizerRunner(store).run("station")
 
     assert result["processed"] == 1
-    entities = store.list_canonical_entities(entity_type="station", dataset_key="station")
+    entities = store.list_canonical_current_entities(entity_type="station", dataset_key="station")
     assert entities[0]["entity_key"] == "dcp:station:coord-fallback"
     assert entities[0]["attributes"]["single_project_code"] is None
     assert entities[0]["attributes"]["dcp_coordinate_id"] == "coord-fallback"
@@ -999,7 +1022,7 @@ def test_station_context_can_supply_project_scoping_when_raw_lacks_codes():
     result = NormalizerRunner(store).run("station")
 
     assert result["processed"] == 1
-    entity = store.list_canonical_entities(entity_type="station", dataset_key="station")[0]
+    entity = store.list_canonical_current_entities(entity_type="station", dataset_key="station")[0]
     assert entity["entity_key"] == "dcp:station:SP-CTX"
     assert entity["attributes"]["project_code"] == "PRJ-CTX"
     assert entity["attributes"]["single_project_code"] == "SP-CTX"
@@ -1021,7 +1044,7 @@ def test_tower_context_can_supply_scoped_identity_when_raw_lacks_codes():
     result = NormalizerRunner(store).run("tower")
 
     assert result["processed"] == 1
-    entity = store.list_canonical_entities(entity_type="tower", dataset_key="tower")[0]
+    entity = store.list_canonical_current_entities(entity_type="tower", dataset_key="tower")[0]
     assert entity["entity_key"] == "dcp:tower:SP-TOWER-CTX:BS-TOWER-CTX:T-context-tower"
     assert entity["attributes"]["project_code"] == "PRJ-TOWER-CTX"
     assert entity["attributes"]["single_project_code"] == "SP-TOWER-CTX"
@@ -1044,7 +1067,7 @@ def test_daily_meeting_context_can_supply_missing_hierarchy_codes():
     result = NormalizerRunner(store).run("daily_meeting")
 
     assert result["processed"] == 1
-    entity = store.list_canonical_entities(entity_type="work_point", dataset_key="daily_meeting")[0]
+    entity = store.list_canonical_current_entities(entity_type="work_point", dataset_key="daily_meeting")[0]
     assert entity["attributes"]["project_code"] == "PRJ-DAILY-CTX"
     assert entity["attributes"]["single_project_code"] == "SP-DAILY-CTX"
     assert entity["attributes"]["bidding_section_code"] == "BS-DAILY-CTX"
@@ -1063,7 +1086,7 @@ def test_station_normalizer_processes_more_than_default_page_size():
 
     assert result["processed"] == 1001
     assert result["failed"] == 0
-    assert len(store.list_canonical_entities(entity_type="station", limit=2000)) == 1001
+    assert len(store.list_canonical_current_entities(entity_type="station", limit=2000)) == 1001
 
 
 def test_older_station_raw_event_does_not_overwrite_newer_current_entity():
@@ -1087,7 +1110,7 @@ def test_older_station_raw_event_does_not_overwrite_newer_current_entity():
     result = NormalizerRunner(store).run("station")
 
     assert result["processed"] == 2
-    entities = store.list_canonical_entities(entity_type="station", dataset_key="station")
+    entities = store.list_canonical_current_entities(entity_type="station", dataset_key="station")
     assert len(entities) == 1
     entity = entities[0]
     assert entity["latest_collected_at"] == newer["collected_at"]
@@ -1140,7 +1163,7 @@ def test_canonical_upsert_compares_latest_collected_at_epoch_not_strings():
         attributes={"longitude": 113.0, "latitude": 28.6},
     )
 
-    entity = store.list_canonical_entities(entity_type="station", dataset_key="station")[0]
+    entity = store.list_canonical_current_entities(entity_type="station", dataset_key="station")[0]
     assert status == "updated"
     assert entity["latest_collected_at"] == "2026-05-03T09:00:00Z"
     assert entity["latest_source_record_hash"] == "hash-timezone-new"
@@ -1389,7 +1412,7 @@ def test_incoming_missing_latest_collected_at_does_not_overwrite_current_entity(
         attributes={"longitude": 112.2, "latitude": 27.5},
     )
 
-    entity = store.list_canonical_entities(entity_type="station", dataset_key="station")[0]
+    entity = store.list_canonical_current_entities(entity_type="station", dataset_key="station")[0]
     assert entity["latest_collected_at"] == "2026-05-03T22:30:12+08:00"
     assert entity["latest_source_record_hash"] == "hash-current"
     assert entity["source_record_key"] == "dcp:station:current"
@@ -1437,7 +1460,7 @@ def test_source_refs_are_merged_across_current_entity_upserts():
         attributes={"longitude": 113.0, "latitude": 28.6},
     )
 
-    entity = store.list_canonical_entities(entity_type="station", dataset_key="station")[0]
+    entity = store.list_canonical_current_entities(entity_type="station", dataset_key="station")[0]
     source_record_keys = {
         ref["source_record_key"] for ref in entity["source_refs"]
     }

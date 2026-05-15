@@ -6,7 +6,7 @@ from storage.sqlite_store import SQLiteStore
 
 
 class CanonicalScopeSelector:
-    """Select downloader scope_items from canonical_entities."""
+    """Select downloader scope_items from typed canonical current tables."""
 
     def __init__(self, store: SQLiteStore):
         self.store = store
@@ -29,9 +29,10 @@ class CanonicalScopeSelector:
 
         items: list[dict[str, Any]] = []
         offset_limit = max(effective_limit * 5, effective_limit)
-        for entity in self.store.list_canonical_entities(
-            entity_type=str(entity_type),
+        for entity in self.store.list_domain_entities_paged(
+            str(entity_type),
             limit=offset_limit,
+            offset=0,
         ):
             attributes = entity.get("attributes") or {}
             if not self._matches(attributes, filters):

@@ -12,7 +12,8 @@ downloader /sync
   -> collection_requests
   -> raw_events
   -> processing
-  -> canonical_entities / canonical_relationships
+  -> canonical_projects / canonical_single_projects / canonical_bid_sections / canonical_work_points / canonical_towers / canonical_stations / canonical_line_sections / canonical_project_progress
+  -> canonical_entity_observations / canonical_relationships
   -> Domain API
 ```
 

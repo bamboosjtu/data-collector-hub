@@ -78,11 +78,12 @@
   - `raw_data`：插件采集的原始数据
   - `raw_events`：`collection_requests` 拆分后的一条原始业务记录一行
   - `normalized_data`：轻量级规范化数据
-  - `canonical_entities`：下游应用消费的实体数据
+  - `canonical_*` typed tables：按实体拆分的当前实体数据
+  - `canonical_entity_observations`：实体采集历史
   - `canonical_relationships`：DCP 等领域实体之间的当前关系
 - **自动去重**：基于 MD5 unique_key 的重复检测
 - **增量采集**：支持状态保存的增量模式
-- **归一化处理**：可配置的 normalizer 将 raw_events 转换为 canonical_entities / canonical_relationships
+- **归一化处理**：可配置的 normalizer 将 raw_events 转换为 typed canonical tables / canonical_relationships
 
 ### DCP 领域模型
 
@@ -474,7 +475,8 @@ class ExternalCollectorAdapter(BaseAdapter):
 └────────┬────────┘
          ▼
 ┌─────────────────┐
-│canonical_entities│ ← 下游应用消费
+│typed canonical  │ ← 下游应用消费
+│tables + graph   │
 └─────────────────┘
 ```
 

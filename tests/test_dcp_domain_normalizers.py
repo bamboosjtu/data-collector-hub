@@ -85,7 +85,7 @@ def test_one_raw_event_can_generate_multiple_entities_and_relationships() -> Non
 
     assert result["inserted"] == 3
     assert result["relationships_inserted"] == 2
-    assert store.list_canonical_entities(entity_type="project")[0]["entity_key"] == "dcp:project:PRJ-001"
+    assert store.list_canonical_current_entities(entity_type="project")[0]["entity_key"] == "dcp:project:PRJ-001"
     relationships = store.list_canonical_relationships(limit=10)
     assert {item["relationship_type"] for item in relationships} == {
         "HAS_SINGLE_PROJECT",
@@ -118,8 +118,8 @@ def test_section_single_projects_generates_single_project_and_bidding_section() 
 
     assert result["inserted"] == 2
     assert result["relationships_inserted"] == 1
-    assert store.list_canonical_entities(entity_type="single_project")[0]["entity_key"] == "dcp:single_project:SP-002"
-    assert store.list_canonical_entities(entity_type="bidding_section")[0]["entity_key"] == "dcp:bidding_section:BS-002"
+    assert store.list_canonical_current_entities(entity_type="single_project")[0]["entity_key"] == "dcp:single_project:SP-002"
+    assert store.list_canonical_current_entities(entity_type="bidding_section")[0]["entity_key"] == "dcp:bidding_section:BS-002"
 
 
 def test_section_details_generates_line_section_and_tower_sequence_relationships() -> None:
@@ -144,7 +144,7 @@ def test_section_details_generates_line_section_and_tower_sequence_relationships
 
     assert result["inserted"] >= 1
     assert result["relationships_inserted"] >= 2
-    line_section = store.list_canonical_entities(entity_type="line_section")[0]
+    line_section = store.list_canonical_current_entities(entity_type="line_section")[0]
     assert line_section["entity_key"] == "dcp:line_section:LS-001"
     tower_sequence = store.list_canonical_relationships(
         relationship_type="HAS_TOWER_SEQUENCE",
@@ -181,10 +181,10 @@ def test_section_details_missing_context_marks_known_issue_without_fake_hierarch
     result = NormalizerRunner(store).run("line_section")
 
     assert result["inserted"] == 1
-    line_section = store.list_canonical_entities(entity_type="line_section")[0]
+    line_section = store.list_canonical_current_entities(entity_type="line_section")[0]
     assert line_section["attributes"]["known_issues"]
-    assert store.list_canonical_entities(entity_type="single_project") == []
-    assert store.list_canonical_entities(entity_type="bidding_section") == []
+    assert store.list_canonical_current_entities(entity_type="single_project") == []
+    assert store.list_canonical_current_entities(entity_type="bidding_section") == []
 
 
 def test_section_details_uses_source_context_for_scoped_tower_relationships() -> None:
@@ -212,7 +212,7 @@ def test_section_details_uses_source_context_for_scoped_tower_relationships() ->
     result = NormalizerRunner(store).run("line_section")
 
     assert result["processed"] == 1
-    line_section = store.list_canonical_entities(entity_type="line_section")[0]
+    line_section = store.list_canonical_current_entities(entity_type="line_section")[0]
     assert "known_issues" not in line_section["attributes"]
     assert line_section["attributes"]["single_project_code"] == "SP-CTX"
     assert line_section["attributes"]["bidding_section_code"] == "BS-CTX"
@@ -416,7 +416,7 @@ def test_flat_hierarchy_can_use_source_context_when_raw_lacks_codes() -> None:
     assert result["failed"] == 0
     entity_types = {
         item["entity_type"]
-        for item in store.list_canonical_entities(dataset_key="tower", limit=10)
+        for item in store.list_canonical_current_entities(dataset_key="tower", limit=10)
     }
     assert {"project", "single_project", "bidding_section"}.issubset(entity_types)
 
@@ -446,13 +446,13 @@ def test_year_progress_generates_project_progress_and_project_relationship() -> 
 
     assert result["inserted"] == 3
     assert result["relationships_inserted"] == 2
-    progress = store.list_canonical_entities(entity_type="project_progress")[0]
+    progress = store.list_canonical_current_entities(entity_type="project_progress")[0]
     assert progress["entity_key"] == "dcp:project_progress:PROG-001"
     relationship = store.list_canonical_relationships(
         relationship_type="HAS_PROJECT_PROGRESS"
     )[0]
     assert relationship["from_entity_key"] == "dcp:project:PRJ-004"
-    assert store.list_canonical_entities(entity_type="bidding_section") == []
+    assert store.list_canonical_current_entities(entity_type="bidding_section") == []
 
 
 def test_year_progress_without_project_code_skips_with_summary() -> None:
@@ -571,7 +571,7 @@ def test_domain_canonical_acceptance_entities_and_relationships_land_in_store() 
     assert progress_result["failed"] == 0
     entity_types = {
         item["entity_type"]
-        for item in store.list_canonical_entities(dataset_key=None, limit=100)
+        for item in store.list_canonical_current_entities(dataset_key=None, limit=100)
     }
     assert {
         "project",

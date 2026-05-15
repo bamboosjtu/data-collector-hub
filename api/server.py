@@ -294,6 +294,7 @@ class IngestionBatchResponse(BaseModel):
     collection_errors_inserted: int
     collection_errors_duplicated: int
     collection_checkpoints_upserted: int
+    processing: Dict[str, Any] = Field(default_factory=dict)
 
 
 class ProcessingRunRequest(BaseModel):
@@ -1161,6 +1162,14 @@ async def ingest_batch_v1(batch: IngestionBatchV1):
     payload = batch.model_dump()
     try:
         stats = store.save_ingestion_batch(payload)
+        processing_results: dict[str, Any] = {}
+        for dataset_key in sorted({event.dataset_key for event in batch.raw_events}):
+            processing_results[dataset_key] = NormalizerRunner(store).run(
+                dataset_key=dataset_key,
+                mode="incremental",
+            )
+        if processing_results:
+            stats["processing"] = processing_results
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return IngestionBatchResponse(accepted=True, **stats)
@@ -1168,8 +1177,8 @@ async def ingest_batch_v1(batch: IngestionBatchV1):
 
 @app.post("/processing/v1/run")
 async def run_processing(request: ProcessingRunRequest):
-    """Run a foreground/debug normalizer pass for a supported dataset."""
-    supported = supported_datasets()
+    """Run a foreground/debug normalizer pass for any registered dataset."""
+    supported = supported_datasets(include_domain=True)
     if request.dataset_key not in supported:
         raise HTTPException(
             status_code=400,
@@ -1365,7 +1374,7 @@ async def run_monitor_processing():
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"failed to load dcp runtime config: {exc}")
 
-    monitor_datasets = runtime_config.get("monitor_datasets") or []
+    monitor_datasets = runtime_config.get("monitor_datasets") or supported_datasets()
     if not isinstance(monitor_datasets, list):
         raise HTTPException(status_code=400, detail="dcp monitor_datasets must be a list")
 
@@ -1638,8 +1647,8 @@ async def get_sandbox_map_skeleton(
 ):
     """Return a minimal sandbox map skeleton from canonical current entities."""
     stations = []
-    station_entities = store.list_canonical_entities(entity_type="station", limit=limit + 1)
-    tower_entities = store.list_canonical_entities(entity_type="tower", limit=limit + 1)
+    station_entities = store.list_canonical_current_entities(entity_type="station", limit=limit + 1)
+    tower_entities = store.list_canonical_current_entities(entity_type="tower", limit=limit + 1)
     truncated = len(station_entities) > limit or len(tower_entities) > limit
     for entity in station_entities[:limit]:
         attributes = entity.get("attributes") or {}
@@ -1691,7 +1700,7 @@ async def get_sandbox_map_summary(
     """Return sandbox work point summary from canonical current entities."""
     selected_date = date or store.get_latest_canonical_entity_date("work_point")
     entities = (
-        store.list_canonical_entities(
+        store.list_canonical_current_entities(
             entity_type="work_point",
             entity_date=selected_date,
             limit=limit + 1,

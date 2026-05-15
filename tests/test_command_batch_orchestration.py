@@ -465,7 +465,7 @@ def test_command_batch_orchestrator_runs_fake_downloader_ingests_and_processes()
     assert store.count_table_rows("collection_commands") == 1
     assert store.count_table_rows("collection_requests") == 1
     assert store.count_table_rows("raw_events") == 1
-    towers = store.list_canonical_entities(entity_type="tower")
+    towers = store.list_canonical_current_entities(entity_type="tower")
     assert len(towers) == 1
     assert towers[0]["entity_key"] == "dcp:tower:S001:B001:G1"
     checkpoint = store.get_collection_checkpoint(
