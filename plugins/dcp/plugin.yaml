@@ -1,0 +1,133 @@
+name: dcp
+version: 2
+
+display:
+  label: DCP 数据采集
+  description: 从 DCP 平台采集的工程、安全、计划数据
+
+connector:
+  type: downloader_sync
+  base_url: http://localhost:8010
+  timeout_seconds: 30
+
+commands:
+  - job_type: project_tech_full
+    required_params: [projectCode]
+  - job_type: daily_meeting_today_snapshot
+    required_params: [date]
+  - job_type: daily_meeting_yesterday_final
+    required_params: [date]
+  - job_type: plan_professional_all
+    required_params: [planYear]
+  - job_type: year_progress_project_domain
+    required_params: [year]
+  - job_type: safety_daily_meeting_range
+    required_params: [startDate, endDate]
+
+scope_mappings: []
+
+query_routes:
+  - path: /api/v1/plan/blackout-execution
+    table: dcp_plan_blackout_execution
+    query_filters:
+      planYear: planYear
+    default_limit: 200
+    max_limit: 1000
+
+  - path: /api/v1/plan/completion-statistics
+    table: dcp_plan_completion_statistics
+    query_filters:
+      planYear: planYear
+    default_limit: 200
+    max_limit: 1000
+
+  - path: /api/v1/plan/month-blackout-detail
+    table: dcp_plan_month_blackout_detail
+    query_filters:
+      planYear: planYear
+    default_limit: 200
+    max_limit: 1000
+
+  - path: /api/v1/plan/month-blackout-list
+    table: dcp_plan_month_blackout_list
+    query_filters:
+      planYear: planYear
+    default_limit: 200
+    max_limit: 1000
+
+  - path: /api/v1/plan/progress-management
+    table: dcp_plan_progress_management
+    query_filters:
+      planYear: planYear
+    default_limit: 200
+    max_limit: 1000
+
+  - path: /api/v1/plan/project-dept-establishment
+    table: dcp_plan_project_dept_establishment
+    query_filters:
+      planYear: planYear
+    default_limit: 200
+    max_limit: 1000
+
+  - path: /api/v1/plan/project-dept-key-personnel
+    table: dcp_plan_project_dept_key_personnel
+    query_filters:
+      planYear: planYear
+    default_limit: 200
+    max_limit: 1000
+
+  - path: /api/v1/plan/project-search
+    table: dcp_plan_project_search
+    query_filters:
+      planYear: planYear
+    default_limit: 200
+    max_limit: 1000
+
+  - path: /api/v1/plan/service-bidding-statistics
+    table: dcp_plan_service_bidding_statistics
+    query_filters:
+      planYear: planYear
+    default_limit: 200
+    max_limit: 1000
+
+  - path: /api/v1/plan/start-statistics
+    table: dcp_plan_start_statistics
+    query_filters:
+      planYear: planYear
+    default_limit: 200
+    max_limit: 1000
+
+  - path: /api/v1/plan/under-construction-statistics
+    table: dcp_plan_under_construction_statistics
+    query_filters:
+      planYear: planYear
+    default_limit: 200
+    max_limit: 1000
+
+  - path: /api/v1/plan/year-blackout
+    table: dcp_plan_year_blackout
+    query_filters:
+      planYear: planYear
+    default_limit: 200
+    max_limit: 1000
+
+  - path: /api/v1/plan/year-plan-view
+    table: dcp_plan_year_plan_view
+    query_filters:
+      planYear: planYear
+    default_limit: 200
+    max_limit: 1000
+
+  - path: /api/v1/year-progress/project-domain
+    table: dcp_year_progress_project_domain
+    query_filters:
+      year: year
+    default_limit: 200
+    max_limit: 1000
+
+  - path: /api/v1/safety/daily-meetings
+    table: dcp_safety_daily_meeting
+    query_filters:
+      dateRange: dateRange
+    default_limit: 200
+    max_limit: 1000

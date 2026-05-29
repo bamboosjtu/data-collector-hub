@@ -1,0 +1,679 @@
+version: 2
+
+tables:
+  dcp_plan_blackout_execution:
+    dataset_key: plan_professional
+    description: DCP plan blackout plan execution detail records.
+    write_mode: upsert
+    scope_column_names: [planYear]
+    primary_key: [planYear, id]
+    columns:
+      planYear: {type: string, nullable: false}
+      id: {type: string, nullable: false}
+      blackoutCode: {type: string, nullable: true}
+      blackoutId: {type: string, nullable: true}
+      overhaulId: {type: string, nullable: true}
+      prjCode: {type: string, nullable: true}
+      prjName: {type: string, nullable: true}
+      singleProjectCode: {type: string, nullable: true}
+      singleProjectName: {type: string, nullable: true}
+      provinceCode: {type: string, nullable: true}
+      provinceName: {type: string, nullable: true}
+      voltageLevel: {type: string, nullable: true}
+      equipmentName: {type: string, nullable: true}
+      blackoutPlanStatus: {type: string, nullable: true}
+      blackoutPlanStatusName: {type: string, nullable: true}
+      constructionStatus: {type: string, nullable: true}
+      planBlackoutStartDate: {type: string, nullable: true}
+      planBlackoutEndDate: {type: string, nullable: true}
+      actualBlackoutStartDate: {type: string, nullable: true}
+      actualBlackoutEndDate: {type: string, nullable: true}
+      declarationDays: {type: string, nullable: true}
+      planFlag: {type: string, nullable: true}
+      planMonth: {type: string, nullable: true}
+      planYear_field: {type: string, nullable: true}
+      projectOperationPlanDate: {type: string, nullable: true}
+      unDeclaredReason: {type: string, nullable: true}
+      unExecutionReason: {type: string, nullable: true}
+      unExecutionReasonName: {type: string, nullable: true}
+      extra: {type: json, nullable: true}
+
+  dcp_plan_completion_statistics:
+    dataset_key: plan_professional
+    description: DCP plan completion plan statistics records.
+    write_mode: upsert
+    scope_column_names: [planYear]
+    primary_key: [planYear, id]
+    columns:
+      planYear: {type: string, nullable: false}
+      id: {type: string, nullable: false}
+      prjCode: {type: string, nullable: true}
+      prjName: {type: string, nullable: true}
+      provinceCode: {type: string, nullable: true}
+      provinceName: {type: string, nullable: true}
+      buildUnitCode: {type: string, nullable: true}
+      buildUnitName: {type: string, nullable: true}
+      singleProjectCode: {type: string, nullable: true}
+      singleProjectName: {type: string, nullable: true}
+      voltageLevelCode: {type: string, nullable: true}
+      voltageLevelName: {type: string, nullable: true}
+      planExecuteType: {type: string, nullable: true}
+      planCommenceTime: {type: string, nullable: true}
+      planProdTime: {type: string, nullable: true}
+      planLineLength: {type: string, nullable: true}
+      planTransCapacity: {type: string, nullable: true}
+      completeLineLength: {type: string, nullable: true}
+      completeTransCapacity: {type: string, nullable: true}
+      actualCommencementDate: {type: string, nullable: true}
+      actualCommissioningDate: {type: string, nullable: true}
+      commenceMonthNum: {type: string, nullable: true}
+      isUhvProject: {type: string, nullable: true}
+      sinPrjInventoryList: {type: json, nullable: true}
+
+  dcp_plan_month_blackout_detail:
+    dataset_key: plan_professional
+    description: DCP plan month blackout plan detail records.
+    write_mode: upsert
+    scope_column_names: [planYear]
+    primary_key: [planYear, id]
+    columns:
+      planYear: {type: string, nullable: false}
+      id: {type: string, nullable: false}
+      blackoutCode: {type: string, nullable: true}
+      blackoutId: {type: string, nullable: true}
+      overhaulId: {type: string, nullable: true}
+      prjCode: {type: string, nullable: true}
+      prjName: {type: string, nullable: true}
+      singleProjectCode: {type: string, nullable: true}
+      singleProjectName: {type: string, nullable: true}
+      provinceCode: {type: string, nullable: true}
+      provinceName: {type: string, nullable: true}
+      voltageLevel: {type: string, nullable: true}
+      equipmentName: {type: string, nullable: true}
+      blackoutPlanStatus: {type: string, nullable: true}
+      blackoutPlanStatusName: {type: string, nullable: true}
+      planBlackoutStartDate: {type: string, nullable: true}
+      planBlackoutEndDate: {type: string, nullable: true}
+      declarationConstrStartDate: {type: string, nullable: true}
+      declarationConstrEndDate: {type: string, nullable: true}
+      declarationDays: {type: string, nullable: true}
+      planFlag: {type: string, nullable: true}
+      planMonth: {type: string, nullable: true}
+      planYear_field: {type: string, nullable: true}
+      projectOperationPlanDate: {type: string, nullable: true}
+      fileId: {type: string, nullable: true}
+      unDeclaredReason: {type: string, nullable: true}
+      unExecutionReason: {type: string, nullable: true}
+      unExecutionReasonName: {type: string, nullable: true}
+      jobContentOne: {type: string, nullable: true}
+      jobContentTwo: {type: string, nullable: true}
+      jobContentThree: {type: string, nullable: true}
+      jobContentFour: {type: string, nullable: true}
+      jobContentFive: {type: string, nullable: true}
+      jobContentSix: {type: string, nullable: true}
+      jobContentSeven: {type: string, nullable: true}
+
+  dcp_plan_month_blackout_list:
+    dataset_key: plan_professional
+    description: DCP plan month blackout plan list records.
+    write_mode: upsert
+    scope_column_names: [planYear]
+    primary_key: [planYear, id]
+    columns:
+      planYear: {type: string, nullable: false}
+      id: {type: string, nullable: false}
+      blackoutName: {type: string, nullable: true}
+      planMonth: {type: string, nullable: true}
+      provinceCode: {type: string, nullable: true}
+      provinceName: {type: string, nullable: true}
+      auditStatus: {type: string, nullable: true}
+      releaseFlag: {type: string, nullable: true}
+      returnReason: {type: string, nullable: true}
+      submitTime: {type: string, nullable: true}
+      planNormal: {type: string, nullable: true}
+      planAdd: {type: string, nullable: true}
+      planBefore: {type: string, nullable: true}
+      planCancel: {type: string, nullable: true}
+      planDelay: {type: string, nullable: true}
+      planDelayToCurrentMonth: {type: string, nullable: true}
+      planPrjCount: {type: string, nullable: true}
+      reportUserId: {type: string, nullable: true}
+      reportUserName: {type: string, nullable: true}
+      weaveUserId: {type: string, nullable: true}
+      weaveUserName: {type: string, nullable: true}
+      unusePam: {type: string, nullable: true}
+
+  dcp_plan_progress_management:
+    dataset_key: plan_professional
+    description: DCP plan progress management records.
+    write_mode: upsert
+    scope_column_names: [planYear]
+    primary_key: [planYear, id]
+    columns:
+      planYear: {type: string, nullable: false}
+      id: {type: string, nullable: false}
+      prjCode: {type: string, nullable: true}
+      prjName: {type: string, nullable: true}
+      provinceCode: {type: string, nullable: true}
+      buildUnitCode: {type: string, nullable: true}
+      singleProjectCode: {type: string, nullable: true}
+      biddingSectionCode: {type: string, nullable: true}
+      biddingSectionType: {type: string, nullable: true}
+      projectType: {type: integer, nullable: true}
+      type: {type: integer, nullable: true}
+      constructionStatus: {type: integer, nullable: true}
+      progressStatus: {type: integer, nullable: true}
+      stopFlag: {type: integer, nullable: true}
+      warningFlag: {type: integer, nullable: true}
+      rectifyFlag: {type: integer, nullable: true}
+      planProgress: {type: number, nullable: true}
+      actualProgress: {type: number, nullable: true}
+      monthlyIncrease: {type: number, nullable: true}
+      weeklyIncrease: {type: number, nullable: true}
+      planStartDate: {type: string, nullable: true}
+      planFinDate: {type: string, nullable: true}
+      actualStartDate: {type: string, nullable: true}
+      actualFinDate: {type: string, nullable: true}
+      planDuration: {type: integer, nullable: true}
+      actualDuration: {type: string, nullable: true}
+      constructionLineLength: {type: number, nullable: true}
+      constrTransformerCapacity: {type: number, nullable: true}
+      noUpdateDays: {type: integer, nullable: true}
+      weight: {type: number, nullable: true}
+      orderNum: {type: string, nullable: true}
+      updateTime: {type: string, nullable: true}
+      provinceBuildUnitName: {type: string, nullable: true}
+      prjActualProgress: {type: string, nullable: true}
+      singleActualProgress: {type: string, nullable: true}
+      singleProjectDetailsType: {type: string, nullable: true}
+      suspensionCause: {type: string, nullable: true}
+      suspensionCauseType: {type: string, nullable: true}
+      traceId: {type: string, nullable: true}
+      messageId: {type: string, nullable: true}
+      children: {type: json, nullable: true}
+      extra: {type: json, nullable: true}
+
+  dcp_plan_project_dept_establishment:
+    dataset_key: plan_professional
+    description: DCP plan project department establishment records.
+    write_mode: upsert
+    scope_column_names: [planYear]
+    primary_key: [planYear, projectDeptNo]
+    columns:
+      planYear: {type: string, nullable: false}
+      projectDeptNo: {type: string, nullable: false}
+      projectDepartmentName: {type: string, nullable: true}
+      departmentTypeName: {type: string, nullable: true}
+      deptHeadName: {type: string, nullable: true}
+      appointUnitName: {type: string, nullable: true}
+      unitTypeName: {type: string, nullable: true}
+
+  dcp_plan_project_dept_key_personnel:
+    dataset_key: plan_professional
+    description: DCP plan project department key personnel records.
+    write_mode: upsert
+    scope_column_names: [planYear]
+    primary_key: [planYear, originalIdCard]
+    columns:
+      planYear: {type: string, nullable: false}
+      originalIdCard: {type: string, nullable: false}
+      name: {type: string, nullable: true}
+      idCard: {type: string, nullable: true}
+      positionCode: {type: string, nullable: true}
+      positionName: {type: string, nullable: true}
+      unitName: {type: string, nullable: true}
+      personnelCertificates: {type: json, nullable: true}
+
+  dcp_plan_project_search:
+    dataset_key: plan_professional
+    description: DCP plan project search records.
+    write_mode: upsert
+    scope_column_names: [planYear]
+    primary_key: [planYear, id]
+    columns:
+      planYear: {type: string, nullable: false}
+      id: {type: string, nullable: false}
+      prjCode: {type: string, nullable: true}
+      serialNumber: {type: string, nullable: true}
+      prjName: {type: string, nullable: true}
+      provinceCode: {type: string, nullable: true}
+      provinceName: {type: string, nullable: true}
+      buildUnitCode: {type: string, nullable: true}
+      buildUnitName: {type: string, nullable: true}
+      projectType: {type: string, nullable: true}
+      projectTypeName: {type: string, nullable: true}
+      projectNature: {type: string, nullable: true}
+      projectStatusName: {type: string, nullable: true}
+      constrNature: {type: string, nullable: true}
+      constrNatureName: {type: string, nullable: true}
+      voltageLevel: {type: string, nullable: true}
+      voltageLevelName: {type: string, nullable: true}
+      initialApprovalDate: {type: string, nullable: true}
+      plannedCommencementDate: {type: string, nullable: true}
+      plannedCommissioningDate: {type: string, nullable: true}
+      actualCommencementDate: {type: string, nullable: true}
+      actualCommissioningDate: {type: string, nullable: true}
+      constructionBidWinningDate: {type: string, nullable: true}
+      constructionLineLength: {type: string, nullable: true}
+      constrTransformerCapacity: {type: string, nullable: true}
+      singleProjectCounts: {type: integer, nullable: true}
+      singleProjectList: {type: json, nullable: true}
+
+  dcp_plan_service_bidding_statistics:
+    dataset_key: plan_professional
+    description: DCP plan service bidding statistics records.
+    write_mode: upsert
+    scope_column_names: [planYear]
+    primary_key: [planYear, id]
+    columns:
+      planYear: {type: string, nullable: false}
+      id: {type: string, nullable: false}
+      prjCode: {type: string, nullable: true}
+      prjName: {type: string, nullable: true}
+      unitName: {type: string, nullable: true}
+      voltageLevel: {type: string, nullable: true}
+      tenderingBatchName: {type: string, nullable: true}
+      bidpkgName: {type: string, nullable: true}
+      subbidName: {type: string, nullable: true}
+      suppName: {type: string, nullable: true}
+      suppType: {type: string, nullable: true}
+      adjTotPrice: {type: string, nullable: true}
+      constrTransformerCapacity: {type: string, nullable: true}
+      constructionLineLength: {type: string, nullable: true}
+      openbidDate: {type: string, nullable: true}
+      publishNoticePrdtDate: {type: string, nullable: true}
+      plannedCommencementDate: {type: string, nullable: true}
+      plannedCommissioningDate: {type: string, nullable: true}
+
+  dcp_plan_start_statistics:
+    dataset_key: plan_professional
+    description: DCP plan start plan statistics records.
+    write_mode: upsert
+    scope_column_names: [planYear]
+    primary_key: [planYear, id]
+    columns:
+      planYear: {type: string, nullable: false}
+      id: {type: string, nullable: false}
+      prjCode: {type: string, nullable: true}
+      serialNumber: {type: string, nullable: true}
+      prjName: {type: string, nullable: true}
+      provinceCode: {type: string, nullable: true}
+      provinceName: {type: string, nullable: true}
+      buildUnitCode: {type: string, nullable: true}
+      buildUnitName: {type: string, nullable: true}
+      singleProjectCode: {type: string, nullable: true}
+      singleProjectName: {type: string, nullable: true}
+      voltageLevelCode: {type: string, nullable: true}
+      voltageLevelName: {type: string, nullable: true}
+      planExecuteType: {type: string, nullable: true}
+      planCommenceTime: {type: string, nullable: true}
+      planProdTime: {type: string, nullable: true}
+      planLineLength: {type: string, nullable: true}
+      planTransCapacity: {type: string, nullable: true}
+      completeLineLength: {type: string, nullable: true}
+      completeTransCapacity: {type: string, nullable: true}
+      actualCommencementDate: {type: string, nullable: true}
+      actualCommissioningDate: {type: string, nullable: true}
+      commenceMonthNum: {type: string, nullable: true}
+      isUhvProject: {type: string, nullable: true}
+      sinPrjInventoryList: {type: json, nullable: true}
+
+  dcp_plan_under_construction_statistics:
+    dataset_key: plan_professional
+    description: DCP plan under construction statistics records.
+    write_mode: upsert
+    scope_column_names: [planYear]
+    primary_key: [planYear, id]
+    columns:
+      planYear: {type: string, nullable: false}
+      id: {type: string, nullable: false}
+      prjCode: {type: string, nullable: true}
+      serialNumber: {type: string, nullable: true}
+      prjName: {type: string, nullable: true}
+      provinceCode: {type: string, nullable: true}
+      provinceName: {type: string, nullable: true}
+      buildUnitCode: {type: string, nullable: true}
+      buildUnitName: {type: string, nullable: true}
+      singleProjectCode: {type: string, nullable: true}
+      singleProjectName: {type: string, nullable: true}
+      voltageLevelCode: {type: string, nullable: true}
+      voltageLevelName: {type: string, nullable: true}
+      planExecuteType: {type: string, nullable: true}
+      planCommenceTime: {type: string, nullable: true}
+      planProdTime: {type: string, nullable: true}
+      planLineLength: {type: string, nullable: true}
+      planTransCapacity: {type: string, nullable: true}
+      completeLineLength: {type: string, nullable: true}
+      completeTransCapacity: {type: string, nullable: true}
+      actualCommencementDate: {type: string, nullable: true}
+      actualCommissioningDate: {type: string, nullable: true}
+      commenceMonthNum: {type: string, nullable: true}
+      isUhvProject: {type: string, nullable: true}
+      sinPrjInventoryList: {type: json, nullable: true}
+
+  dcp_plan_year_blackout:
+    dataset_key: plan_professional
+    description: DCP plan year blackout plan records.
+    write_mode: upsert
+    scope_column_names: [planYear]
+    primary_key: [planYear, id]
+    columns:
+      planYear: {type: string, nullable: false}
+      id: {type: string, nullable: false}
+      overhaulId: {type: string, nullable: true}
+      blackoutCode: {type: string, nullable: true}
+      blackoutId: {type: string, nullable: true}
+      blackoutName: {type: string, nullable: true}
+      blackoutStartDate: {type: string, nullable: true}
+      blackoutEndDate: {type: string, nullable: true}
+      prjCode: {type: string, nullable: true}
+      prjName: {type: string, nullable: true}
+      singleProjectCode: {type: string, nullable: true}
+      singleProjectName: {type: string, nullable: true}
+      provinceCode: {type: string, nullable: true}
+      provinceName: {type: string, nullable: true}
+      voltageLevel: {type: string, nullable: true}
+      equipmentName: {type: string, nullable: true}
+      outageDuration: {type: integer, nullable: true}
+      level: {type: string, nullable: true}
+      auditStatus: {type: string, nullable: true}
+      auditUserName: {type: string, nullable: true}
+      compilerUserName: {type: string, nullable: true}
+      userName: {type: string, nullable: true}
+      planMonth: {type: string, nullable: true}
+      planSingleProjectNum: {type: string, nullable: true}
+      planYear_field: {type: string, nullable: true}
+      reportTime: {type: string, nullable: true}
+      reviewTime: {type: string, nullable: true}
+      submitTime: {type: string, nullable: true}
+      returnedOpinions: {type: string, nullable: true}
+      minBlackoutStartDate: {type: string, nullable: true}
+      reportedProvinceName: {type: string, nullable: true}
+      reportedProvinceNum: {type: string, nullable: true}
+      notReportedProvinceName: {type: string, nullable: true}
+      notReportedProvinceNum: {type: string, nullable: true}
+      blackoutIds: {type: string, nullable: true}
+      jobContentOne: {type: string, nullable: true}
+      jobContentTwo: {type: string, nullable: true}
+      jobContentThree: {type: string, nullable: true}
+      jobContentFour: {type: string, nullable: true}
+      jobContentFive: {type: string, nullable: true}
+      jobContentSix: {type: string, nullable: true}
+      jobContentSeven: {type: string, nullable: true}
+
+  dcp_plan_year_plan_view:
+    dataset_key: plan_professional
+    description: DCP plan year plan view records.
+    write_mode: upsert
+    scope_column_names: [planYear]
+    primary_key: [planYear, id]
+    columns:
+      planYear: {type: string, nullable: false}
+      id: {type: string, nullable: false}
+      prjCode: {type: string, nullable: true}
+      prjName: {type: string, nullable: true}
+      provinceCode: {type: string, nullable: true}
+      provinceName: {type: string, nullable: true}
+      buildUnitCode: {type: string, nullable: true}
+      buildUnitName: {type: string, nullable: true}
+      voltageLevel: {type: string, nullable: true}
+      voltageLevelName: {type: string, nullable: true}
+      constrNature: {type: integer, nullable: true}
+      constrNatureName: {type: string, nullable: true}
+      constructionCategory: {type: integer, nullable: true}
+      constructionCategoryName: {type: string, nullable: true}
+      projectType: {type: string, nullable: true}
+      planNature: {type: integer, nullable: true}
+      planNatureName: {type: string, nullable: true}
+      planNatureStart: {type: string, nullable: true}
+      planNatureProduct: {type: string, nullable: true}
+      cbStart: {type: integer, nullable: true}
+      cbStartName: {type: string, nullable: true}
+      num: {type: string, nullable: true}
+      deleteFlag: {type: integer, nullable: true}
+      createType: {type: integer, nullable: true}
+      nonConstrDepartmentImpl: {type: integer, nullable: true}
+      durationMonths: {type: integer, nullable: true}
+      startReadyMonths: {type: integer, nullable: true}
+      constrTransformerCapacity: {type: number, nullable: true}
+      constructionLineLength: {type: number, nullable: true}
+      lineQuantity: {type: integer, nullable: true}
+      mainTransformerQuantity: {type: integer, nullable: true}
+      feasTransCapacity: {type: string, nullable: true}
+      feaLineLength: {type: string, nullable: true}
+      feaSinvest: {type: string, nullable: true}
+      feaDinvest: {type: string, nullable: true}
+      prodTransCapacity: {type: string, nullable: true}
+      productionLineLength: {type: string, nullable: true}
+      currentBudget: {type: string, nullable: true}
+      currentInvestment: {type: string, nullable: true}
+      constrAddress: {type: string, nullable: true}
+      imageProgress: {type: string, nullable: true}
+      adjustCause: {type: string, nullable: true}
+      adjustType: {type: string, nullable: true}
+      apprFileNo: {type: string, nullable: true}
+      projectApprovalDocumentNo: {type: string, nullable: true}
+      buildProcessId: {type: string, nullable: true}
+      hqProcessId: {type: string, nullable: true}
+      provinceProcessId: {type: string, nullable: true}
+      createrId: {type: string, nullable: true}
+      updaterId: {type: string, nullable: true}
+      createTime: {type: string, nullable: true}
+      updateTime: {type: string, nullable: true}
+      hppfTime: {type: string, nullable: true}
+      hzTime: {type: string, nullable: true}
+      sbpfTime: {type: string, nullable: true}
+      kypfTime: {type: string, nullable: true}
+      kypsyjxdTime: {type: string, nullable: true}
+      sbysTime: {type: string, nullable: true}
+      cbsjpsTime: {type: string, nullable: true}
+      cbsjpsyjxdTime: {type: string, nullable: true}
+      sgzbTime: {type: string, nullable: true}
+      sgzbjhsbTime: {type: string, nullable: true}
+      jlzbTime: {type: string, nullable: true}
+      jlzbjhsbTime: {type: string, nullable: true}
+      spwzzbTime: {type: string, nullable: true}
+      spwzzbjhsbTime: {type: string, nullable: true}
+      jhkgTime: {type: string, nullable: true}
+      jhkgTimeList: {type: string, nullable: true}
+      jhtcTime: {type: string, nullable: true}
+      jhtcTimeList: {type: string, nullable: true}
+      jhjgTime: {type: string, nullable: true}
+      jgjsTime: {type: string, nullable: true}
+      cspfTime: {type: string, nullable: true}
+      dazlyjTime: {type: string, nullable: true}
+      hbysTime: {type: string, nullable: true}
+      azksTime: {type: string, nullable: true}
+      sjzbTime: {type: string, nullable: true}
+      sjzbjhsbTime: {type: string, nullable: true}
+      sjkgTime: {type: string, nullable: true}
+      sjtcTime: {type: string, nullable: true}
+      sjjgTime: {type: string, nullable: true}
+      stypTime: {type: string, nullable: true}
+      tjksTime: {type: string, nullable: true}
+      tsksTime: {type: string, nullable: true}
+      traceId: {type: string, nullable: true}
+      constrTransformerCapacityList: {type: json, nullable: true}
+      constructionLineLengthList: {type: json, nullable: true}
+      singleList: {type: json, nullable: true}
+      extra: {type: json, nullable: true}
+
+  dcp_year_progress_project_domain:
+    dataset_key: year_progress_project_domain
+    description: DCP annual progress plan project-domain records.
+    write_mode: replace_scope
+    scope_column_names: [year]
+    primary_key: [year, id]
+    columns:
+      year: {type: string, nullable: false}
+      id: {type: string, nullable: false}
+      prjCode: {type: string, nullable: true}
+      prjName: {type: string, nullable: true}
+      provinceCode: {type: string, nullable: true}
+      provinceName: {type: string, nullable: true}
+      buildUnitCode: {type: string, nullable: true}
+      buildUnitName: {type: string, nullable: true}
+      voltageLevel: {type: string, nullable: true}
+      voltageLevelName: {type: string, nullable: true}
+      constrNature: {type: integer, nullable: true}
+      constrNatureName: {type: string, nullable: true}
+      constructionCategory: {type: integer, nullable: true}
+      constructionCategoryName: {type: string, nullable: true}
+      projectType: {type: string, nullable: true}
+      planNature: {type: integer, nullable: true}
+      planNatureName: {type: string, nullable: true}
+      planNatureStart: {type: string, nullable: true}
+      planNatureProduct: {type: string, nullable: true}
+      cbStart: {type: integer, nullable: true}
+      cbStartName: {type: string, nullable: true}
+      num: {type: string, nullable: true}
+      deleteFlag: {type: integer, nullable: true}
+      createType: {type: integer, nullable: true}
+      nonConstrDepartmentImpl: {type: integer, nullable: true}
+      durationMonths: {type: integer, nullable: true}
+      startReadyMonths: {type: integer, nullable: true}
+      constrTransformerCapacity: {type: number, nullable: true}
+      constructionLineLength: {type: number, nullable: true}
+      lineQuantity: {type: integer, nullable: true}
+      mainTransformerQuantity: {type: integer, nullable: true}
+      feasTransCapacity: {type: string, nullable: true}
+      feaLineLength: {type: string, nullable: true}
+      feaSinvest: {type: string, nullable: true}
+      feaDinvest: {type: string, nullable: true}
+      prodTransCapacity: {type: string, nullable: true}
+      productionLineLength: {type: string, nullable: true}
+      currentBudget: {type: string, nullable: true}
+      currentInvestment: {type: string, nullable: true}
+      constrAddress: {type: string, nullable: true}
+      imageProgress: {type: string, nullable: true}
+      adjustCause: {type: string, nullable: true}
+      adjustType: {type: string, nullable: true}
+      apprFileNo: {type: string, nullable: true}
+      projectApprovalDocumentNo: {type: string, nullable: true}
+      buildProcessId: {type: string, nullable: true}
+      hqProcessId: {type: string, nullable: true}
+      provinceProcessId: {type: string, nullable: true}
+      createrId: {type: string, nullable: true}
+      updaterId: {type: string, nullable: true}
+      createTime: {type: string, nullable: true}
+      updateTime: {type: string, nullable: true}
+      hppfTime: {type: string, nullable: true}
+      hzTime: {type: string, nullable: true}
+      sbpfTime: {type: string, nullable: true}
+      kypfTime: {type: string, nullable: true}
+      kypsyjxdTime: {type: string, nullable: true}
+      sbysTime: {type: string, nullable: true}
+      cbsjpsTime: {type: string, nullable: true}
+      cbsjpsyjxdTime: {type: string, nullable: true}
+      sgzbTime: {type: string, nullable: true}
+      sgzbjhsbTime: {type: string, nullable: true}
+      jlzbTime: {type: string, nullable: true}
+      jlzbjhsbTime: {type: string, nullable: true}
+      spwzzbTime: {type: string, nullable: true}
+      spwzzbjhsbTime: {type: string, nullable: true}
+      jhkgTime: {type: string, nullable: true}
+      jhkgTimeList: {type: string, nullable: true}
+      jhtcTime: {type: string, nullable: true}
+      jhtcTimeList: {type: string, nullable: true}
+      jhjgTime: {type: string, nullable: true}
+      jgjsTime: {type: string, nullable: true}
+      cspfTime: {type: string, nullable: true}
+      dazlyjTime: {type: string, nullable: true}
+      hbysTime: {type: string, nullable: true}
+      azksTime: {type: string, nullable: true}
+      sjzbTime: {type: string, nullable: true}
+      sjzbjhsbTime: {type: string, nullable: true}
+      sjkgTime: {type: string, nullable: true}
+      sjtcTime: {type: string, nullable: true}
+      sjjgTime: {type: string, nullable: true}
+      stypTime: {type: string, nullable: true}
+      tjksTime: {type: string, nullable: true}
+      tsksTime: {type: string, nullable: true}
+      traceId: {type: string, nullable: true}
+      constrTransformerCapacityList: {type: json, nullable: true}
+      constructionLineLengthList: {type: json, nullable: true}
+      singleList: {type: json, nullable: true}
+      extra: {type: json, nullable: true}
+
+  dcp_safety_daily_meeting:
+    dataset_key: safety_daily_meeting
+    description: DCP safety professional daily meeting records for a date range.
+    write_mode: upsert
+    scope_column_names: []
+    primary_key: [dateRange, id]
+    columns:
+      dateRange: {type: string, nullable: false}
+      id: {type: string, nullable: false}
+      prjCode: {type: string, nullable: true}
+      prjName: {type: string, nullable: true}
+      provinceCode: {type: string, nullable: true}
+      provinceName: {type: string, nullable: true}
+      buildUnitCode: {type: string, nullable: true}
+      buildUnitName: {type: string, nullable: true}
+      singleProjectCode: {type: string, nullable: true}
+      singleProjectName: {type: string, nullable: true}
+      biddingSectionCode: {type: string, nullable: true}
+      biddingSectionName: {type: string, nullable: true}
+      voltageLevel: {type: string, nullable: true}
+      currentConstrDate: {type: string, nullable: true}
+      currentConstructionStatus: {type: string, nullable: true}
+      currentConstrStatusName: {type: string, nullable: true}
+      currentConstrHeadcount: {type: integer, nullable: true}
+      constructionHeadcount: {type: integer, nullable: true}
+      leaderId: {type: string, nullable: true}
+      leaderName: {type: string, nullable: true}
+      createrId: {type: string, nullable: true}
+      workStartTime: {type: string, nullable: true}
+      workProcedure: {type: string, nullable: true}
+      workContents: {type: string, nullable: true}
+      workSiteName: {type: string, nullable: true}
+      workSiteNum: {type: string, nullable: true}
+      workOvernightFlag: {type: integer, nullable: true}
+      workAcrossFlagName: {type: string, nullable: true}
+      ticketId: {type: string, nullable: true}
+      ticketName: {type: string, nullable: true}
+      ticketNo: {type: string, nullable: true}
+      toolBoxTalkAddress: {type: string, nullable: true}
+      toolBoxTalkLongitude: {type: string, nullable: true}
+      toolBoxTalkLatitude: {type: string, nullable: true}
+      lonAndLatString: {type: string, nullable: true}
+      cameraNum: {type: integer, nullable: true}
+      cameraBindFlag: {type: string, nullable: true}
+      offOnlineFlag: {type: integer, nullable: true}
+      huvFlag: {type: integer, nullable: true}
+      reAssessmentRiskLevel: {type: integer, nullable: true}
+      reAssessmentRiskLevelChines: {type: string, nullable: true}
+      rate: {type: string, nullable: true}
+      constructionUnitName: {type: string, nullable: true}
+      constrUnifiedSocialCreditId: {type: string, nullable: true}
+      supervisionUnitName: {type: string, nullable: true}
+      supervisionSocialCreditCode: {type: string, nullable: true}
+      subcontractUnitName: {type: string, nullable: true}
+      safeStringIds: {type: string, nullable: true}
+      safeStringNames: {type: string, nullable: true}
+      safeIds: {type: string, nullable: true}
+      safeNames: {type: string, nullable: true}
+      safeUserNameList: {type: string, nullable: true}
+      technologyNames: {type: string, nullable: true}
+      jobUserNameList: {type: string, nullable: true}
+      abnormalRiskCause: {type: string, nullable: true}
+      addSafetyCtrlMeasure: {type: string, nullable: true}
+      num: {type: string, nullable: true}
+      mcWorkSiteId: {type: string, nullable: true}
+      subSinId: {type: string, nullable: true}
+      subSinName: {type: string, nullable: true}
+      subEntryProjectId: {type: string, nullable: true}
+      subEntryProjectName: {type: string, nullable: true}
+      subSectionProjectId: {type: string, nullable: true}
+      subSectionProjectName: {type: string, nullable: true}
+      jlDeptDuty: {type: string, nullable: true}
+      sgDeptDuty: {type: string, nullable: true}
+      yzDeptDuty: {type: string, nullable: true}
+      currentConstrDateString: {type: string, nullable: true}
+      endTimeString: {type: string, nullable: true}
+      opStartTimeString: {type: string, nullable: true}
+      traceId: {type: string, nullable: true}
+      cameraNoList: {type: json, nullable: true}
+      dailyMeetingFileList: {type: json, nullable: true}
+      dailySubEntryS: {type: json, nullable: true}
+      extra: {type: json, nullable: true}
