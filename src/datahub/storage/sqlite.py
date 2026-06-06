@@ -49,14 +49,15 @@ class DataHubStore:
         params: dict[str, Any],
         plugin_id: str | None = None,
         dataset_key: str | None = None,
+        parent_job_id: str | None = None,
     ) -> None:
         with closing(self.connect()) as conn, conn:
             conn.execute(
                 """
-                INSERT INTO ingestion_jobs(ingestion_job_id, plugin_id, trigger_key, downloader_job_id, dataset_key, params_json, status, started_at)
-                VALUES (?, ?, ?, ?, ?, ?, 'triggering', CURRENT_TIMESTAMP)
+                INSERT INTO ingestion_jobs(ingestion_job_id, parent_job_id, plugin_id, trigger_key, downloader_job_id, dataset_key, params_json, status, started_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'triggering', CURRENT_TIMESTAMP)
                 """,
-                (ingestion_job_id, plugin_id, job_type, producer_job_id, dataset_key, self._json(params)),
+                (ingestion_job_id, parent_job_id, plugin_id, job_type, producer_job_id, dataset_key, self._json(params)),
             )
 
     def mark_job(
@@ -92,6 +93,9 @@ class DataHubStore:
 
     def list_jobs(self, limit: int = 50) -> list[dict[str, Any]]:
         return self._get_rows("SELECT * FROM ingestion_jobs ORDER BY id DESC LIMIT ?", (limit,))
+
+    def list_child_jobs(self, parent_job_id: str) -> list[dict[str, Any]]:
+        return self._get_rows("SELECT * FROM ingestion_jobs WHERE parent_job_id = ? ORDER BY id", (parent_job_id,))
 
     def list_messages(self, limit: int = 50) -> list[dict[str, Any]]:
         return self._get_rows("SELECT * FROM ingestion_messages ORDER BY id DESC LIMIT ?", (limit,))

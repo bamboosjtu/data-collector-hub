@@ -183,6 +183,11 @@ def build_ingestion_router(
             raise HTTPException(status_code=404, detail="ingestion job not found")
         return row
 
+    @router.get("/ingestion/v1/jobs/{ingestion_job_id}/children", dependencies=[Depends(require_scope(store, "admin"))])
+    def list_child_jobs(ingestion_job_id: str) -> dict[str, Any]:
+        children = store.list_child_jobs(ingestion_job_id)
+        return {"parent_job_id": ingestion_job_id, "total": len(children), "items": children}
+
     @router.get("/ingestion/v1/messages", dependencies=[Depends(require_scope(store, "admin"))])
     def list_messages(limit: int = Query(default=50, ge=1, le=200)) -> dict[str, Any]:
         return {"items": store.list_messages(limit)}

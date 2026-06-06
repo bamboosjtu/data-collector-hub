@@ -194,6 +194,7 @@ def execute_fan_out(
             job_type=fan_out_config.child_command,
             params=child_params,
             plugin_id=child_plugin.name,
+            parent_job_id=parent_job_id,
         )
 
         try:
@@ -396,6 +397,7 @@ def execute_date_range_fan_out(
             job_type=config.child_command,
             params=child_params,
             plugin_id=child_plugin.name,
+            parent_job_id=parent_job_id,
         )
 
         try:
