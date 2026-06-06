@@ -17,9 +17,12 @@ def write_table(
 ) -> dict[str, int]:
     deleted_count = 0
     if table.write_mode == "replace_scope":
-        where = " AND ".join(f"{name} = ?" for name in table.scope_column_names)
-        values = [scope_values[name] for name in table.scope_column_names]
-        deleted_count = conn.execute(f"DELETE FROM {table.table_name} WHERE {where}", values).rowcount
+        if table.scope_column_names:
+            where = " AND ".join(f"{name} = ?" for name in table.scope_column_names)
+            values = [scope_values[name] for name in table.scope_column_names]
+            deleted_count = conn.execute(f"DELETE FROM {table.table_name} WHERE {where}", values).rowcount
+        else:
+            deleted_count = conn.execute(f"DELETE FROM {table.table_name}").rowcount
 
     inserted = 0
     updated = 0

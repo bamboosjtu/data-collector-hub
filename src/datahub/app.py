@@ -9,7 +9,7 @@ from src.datahub.api import (
     build_metadata_router,
     register_query_routes,
 )
-from src.datahub.core.plugin_loader import build_scope_map, load_all_plugins
+from src.datahub.core.plugin_loader import build_normalizer_map, build_scope_map, load_all_plugins
 from src.datahub.core.registry import load_registry_from_plugins
 from src.datahub.core.trigger_runtime import ExternalSyncClient
 from src.datahub.ingestion.service import IngestionService
@@ -28,7 +28,8 @@ def create_app(
     active_store = store or DataHubStore(active_settings.db_path, registry, scope_mappings=build_scope_map(plugins))
     active_store.init_schema()
     clients = trigger_clients or {plugin.name: ExternalSyncClient(plugin.connector) for plugin in plugins if plugin.connector.base_url}
-    ingestion_service = IngestionService(active_store)
+    normalizer_map = build_normalizer_map(plugins)
+    ingestion_service = IngestionService(active_store, normalizer_map=normalizer_map)
 
     app = FastAPI(title="DataCollectorHub MVP", version="1.0.0")
     app.state.settings = active_settings

@@ -18,7 +18,7 @@ from .auth import require_scope
 
 
 class IngestionJobRequest(BaseModel):
-    job_type: str
+    command: str
     params: dict[str, Any] = Field(default_factory=dict)
     downloader_job_id: str | None = None
     debug: bool = False
@@ -46,32 +46,41 @@ def build_ingestion_router(
 
     @router.post("/ingestion/v1/jobs", status_code=202, dependencies=[Depends(require_scope(store, "ingestion"))])
     def create_ingestion_job(payload: IngestionJobRequest) -> dict[str, Any]:
-        command = find_command(plugins, payload.job_type)
-        plugin = find_plugin_for_job(plugins, payload.job_type)
+        command = find_command(plugins, payload.command)
+        plugin = find_plugin_for_job(plugins, payload.command)
         if command is None or plugin is None:
-            raise HTTPException(status_code=422, detail={"error": "unknown_job_type", "message": f"job_type {payload.job_type} not declared by any plugin"})
+            raise HTTPException(status_code=422, detail={"error": "unknown_command", "message": f"command {payload.command} not declared by any plugin"})
+        if not command.enabled:
+            raise HTTPException(status_code=422, detail={"error": "command_disabled", "message": f"command {payload.command} is currently disabled"})
         for param in command.required_params:
             if param not in payload.params or payload.params[param] is None:
-                raise HTTPException(status_code=422, detail={"error": "missing_required_param", "message": f"job_type {payload.job_type} requires param {param}"})
+                raise HTTPException(status_code=422, detail={"error": "missing_required_param", "message": f"command {payload.command} requires param {param}"})
 
-        ingestion_job_id = f"ing_{payload.job_type}_{uuid4().hex[:12]}"
-        producer_job_id = payload.downloader_job_id or new_producer_job_id(payload.job_type, payload.params, command)
+        ingestion_job_id = f"ing_{payload.command}_{uuid4().hex[:12]}"
+        producer_job_id = payload.downloader_job_id or new_producer_job_id(payload.command, payload.params, command)
         store.create_ingestion_job(
             ingestion_job_id=ingestion_job_id,
             producer_job_id=producer_job_id,
-            job_type=payload.job_type,
+            job_type=payload.command,
             params=payload.params,
             plugin_id=plugin.name,
         )
         client = trigger_clients.get(plugin.name)
         if client is None:
             store.mark_job(ingestion_job_id, status="failed", error="no external trigger connector configured")
-            raise HTTPException(status_code=502, detail={"error": "no_connector", "message": f"no connector configured for job_type {payload.job_type}"})
+            raise HTTPException(status_code=502, detail={"error": "no_connector", "message": f"no connector configured for command {payload.command}"})
+
+        # Resolve downloader job_type from command.trigger
+        downloader_job_type = command.trigger.get("job_type")
+        if not downloader_job_type:
+            store.mark_job(ingestion_job_id, status="failed", error="command trigger has no job_type")
+            raise HTTPException(status_code=422, detail={"error": "invalid_trigger", "message": f"command {payload.command} trigger has no job_type"})
+
         callback_url = f"{settings.callback_base_url}/ingestion/v1/table-batches"
         try:
             response = client.sync(
                 producer_job_id=producer_job_id,
-                job_type=payload.job_type,
+                job_type=downloader_job_type,
                 params=payload.params,
                 callback_url=callback_url,
                 debug=payload.debug,

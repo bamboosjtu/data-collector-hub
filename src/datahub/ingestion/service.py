@@ -1,19 +1,25 @@
 from __future__ import annotations
 
 import json
+import logging
 from contextlib import closing
 from typing import Any
 
+from src.datahub.core.plugin_loader import NormalizerSpec, PluginSpec, load_normalizer_handler
 from src.datahub.storage.sqlite import DataHubStore
 from src.datahub.storage.writer import write_table
 
 from .idempotency import classify
 from .validator import validate_payload
 
+logger = logging.getLogger(__name__)
+
 
 class IngestionService:
-    def __init__(self, store: DataHubStore):
+    def __init__(self, store: DataHubStore, normalizer_map: dict[str, tuple[NormalizerSpec, PluginSpec]] | None = None):
         self.store = store
+        self.normalizer_map = normalizer_map or {}
+        self._handler_cache: dict[str, Any] = {}
 
     def ingest_table_batch(self, payload: dict[str, Any]) -> dict[str, Any]:
         required = ["message_id", "idempotency_key", "downloader_job_id", "collect_run_id", "dataset_key", "payload_hash", "tables"]
@@ -30,7 +36,11 @@ class IngestionService:
             if mode in {"payload_hash_conflict", "idempotency_conflict"}:
                 return self._failed_response(message_id, mode, mode, status="conflict")
             try:
-                validated = validate_payload(self.store.registry, payload, self.store.apply_scope_mappings)
+                # Apply normalizers before validation
+                expanded_tables = self._apply_normalizers(payload.get("tables") or [])
+                expanded_payload = {**payload, "tables": expanded_tables}
+
+                validated = validate_payload(self.store.registry, expanded_payload, self.store.apply_scope_mappings)
                 conn.execute("BEGIN")
                 self._upsert_writing_message(conn, payload, retry=(mode == "retry"))
                 total_rows = 0
@@ -85,6 +95,49 @@ class IngestionService:
                     conn.rollback()
                 self._record_failed_message(conn, payload, str(exc), error_code="storage_error")
                 return self._failed_response(payload.get("message_id"), "storage_error", str(exc), status="failed")
+
+    def _apply_normalizers(self, tables: list[dict]) -> list[dict]:
+        """Expand tables using plugin normalizers before validation.
+
+        For each table payload, if a normalizer is registered for its table_name,
+        the normalizer handler is called to produce zero or more output table payloads.
+        Tables without normalizers pass through unchanged.
+        """
+        if not self.normalizer_map:
+            return tables
+
+        result: list[dict] = []
+        for table_payload in tables:
+            table_name = table_payload.get("table_name", "")
+            entry = self.normalizer_map.get(table_name)
+            if entry is None:
+                result.append(table_payload)
+                continue
+
+            normalizer, plugin = entry
+            handler = self._get_handler(plugin, normalizer)
+            scope_values = table_payload.get("scope_values") or {}
+            rows = table_payload.get("rows") or []
+            try:
+                expanded = handler(table_name, scope_values, rows)
+                for item in expanded:
+                    result.append({
+                        "table_name": item.get("table_name", ""),
+                        "scope_values": item.get("scope_values", scope_values),
+                        "rows": item.get("rows") or [],
+                    })
+                logger.info("normalizer %s expanded %s -> %d output tables (%d input rows)",
+                            normalizer.handler, table_name, len(expanded), len(rows))
+            except Exception:
+                logger.exception("normalizer %s failed for table %s", normalizer.handler, table_name)
+                raise
+        return result
+
+    def _get_handler(self, plugin: PluginSpec, normalizer: NormalizerSpec) -> Any:
+        cache_key = f"{plugin.name}:{normalizer.handler}"
+        if cache_key not in self._handler_cache:
+            self._handler_cache[cache_key] = load_normalizer_handler(plugin, normalizer)
+        return self._handler_cache[cache_key]
 
     def _upsert_writing_message(self, conn, payload: dict[str, Any], *, retry: bool) -> None:
         raw_payload = self._json(payload)

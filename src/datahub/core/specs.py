@@ -2,12 +2,23 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 
 @dataclass(frozen=True)
 class CommandSpec:
-    job_type: str
+    name: str
+    description: str = ""
     required_params: tuple[str, ...] = ()
+    trigger: dict[str, Any] = field(default_factory=dict)
+    enabled: bool = True
+
+
+@dataclass(frozen=True)
+class NormalizerSpec:
+    source_table: str
+    targets: tuple[str, ...]
+    handler: str
 
 
 @dataclass(frozen=True)
@@ -48,6 +59,7 @@ class PluginSpec:
     commands: tuple[CommandSpec, ...] = ()
     query_routes: tuple[QueryRouteSpec, ...] = ()
     scope_mappings: tuple[ScopeMapping, ...] = ()
+    normalizers: tuple[NormalizerSpec, ...] = ()
     tables_path: Path | None = None
 
 

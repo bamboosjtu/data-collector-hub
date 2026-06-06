@@ -36,7 +36,7 @@ class ExternalSyncClient:
             return json.loads(text) if text else {}
 
 
-def new_producer_job_id(job_type: str, params: dict[str, Any], command: CommandSpec | None = None) -> str:
+def new_producer_job_id(command_name: str, params: dict[str, Any], command: CommandSpec | None = None) -> str:
     suffix = None
     if command:
         for param in command.required_params:
@@ -46,4 +46,4 @@ def new_producer_job_id(job_type: str, params: dict[str, Any], command: CommandS
     if not suffix:
         suffix = uuid4().hex[:12]
     safe_suffix = suffix.replace(":", "_").replace("/", "_").replace("\\", "_")
-    return f"job_{job_type}_{safe_suffix}_{uuid4().hex[:8]}"
+    return f"job_{command_name}_{safe_suffix}_{uuid4().hex[:8]}"

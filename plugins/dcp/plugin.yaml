@@ -1,5 +1,5 @@
 name: dcp
-version: 2
+version: 3
 
 display:
   label: DCP 数据采集
@@ -11,123 +11,154 @@ connector:
   timeout_seconds: 30
 
 commands:
-  - job_type: project_tech_full
+  # 计划域 - 年度计划
+  - name: refresh_annual_plans_history
+    description: 刷新所有历史年度计划
+    required_params: []
+    trigger:
+      type: downloader_sync
+      job_type: plan_sgcc_year_history
+
+  - name: refresh_annual_plans_current
+    description: 刷新今年年度计划
+    required_params: []
+    trigger:
+      type: downloader_sync
+      job_type: plan_sgcc_year_current
+
+  # 计划域 - 项目进度
+  - name: refresh_plan_progress
+    description: 刷新所有项目进度快照
+    required_params: []
+    trigger:
+      type: downloader_sync
+      job_type: plan_progress_current
+
+  # 计划域 - 关键人员
+  - name: refresh_dept_key_personnel
+    description: 刷新项目管理关键人员快照
+    required_params: []
+    trigger:
+      type: downloader_sync
+      job_type: plan_dept_key_personnel
+
+  # 项目域 - 杆塔
+  - name: refresh_towers
+    description: 刷新指定项目的杆塔信息快照
     required_params: [projectCode]
-  - job_type: daily_meeting_today_snapshot
-    required_params: [date]
-  - job_type: daily_meeting_yesterday_final
-    required_params: [date]
-  - job_type: plan_professional_all
-    required_params: [planYear]
-  - job_type: year_progress_project_domain
-    required_params: [year]
-  - job_type: safety_daily_meeting_range
+    trigger:
+      type: downloader_sync
+      job_type: project_towers_each_single_project
+
+  # 项目域 - 变电站
+  - name: refresh_substations
+    description: 刷新指定项目的变电站快照
+    required_params: [projectCode]
+    trigger:
+      type: downloader_sync
+      job_type: project_substations_each_single_project
+
+  # 项目域 - 架线区段
+  - name: refresh_line_sections
+    description: 刷新指定项目的架线区段快照
+    required_params: [projectCode]
+    trigger:
+      type: downloader_sync
+      job_type: project_lines_each_bid_section
+
+  # 安全域 - 站班会历史
+  - name: backfill_daily_meetings
+    description: 补全站班会历史数据
+    required_params: []
+    trigger:
+      type: downloader_sync
+      job_type: safe_daily_meeting_history
+
+  # 安全域 - 站班会增量
+  - name: refresh_daily_meetings
+    description: 增量刷新站班会数据
     required_params: [startDate, endDate]
+    trigger:
+      type: downloader_sync
+      job_type: safe_daily_meeting_range
+
+  # 安全域 - 今日站班会快照
+  - name: refresh_daily_meeting_snapshot
+    description: 刷新今日站班会快照
+    required_params: []
+    trigger:
+      type: downloader_sync
+      job_type: safe_daily_meeting_today
+
+normalizers:
+  - source_table: dcp_plan_sgcc_year
+    targets: [dcp_projects, dcp_single_projects]
+    handler: dcp.normalizers:normalize_plan_sgcc_year
 
 scope_mappings: []
 
 query_routes:
-  - path: /api/v1/plan/blackout-execution
-    table: dcp_plan_blackout_execution
-    query_filters:
-      planYear: planYear
-    default_limit: 200
-    max_limit: 1000
-
-  - path: /api/v1/plan/completion-statistics
-    table: dcp_plan_completion_statistics
-    query_filters:
-      planYear: planYear
-    default_limit: 200
-    max_limit: 1000
-
-  - path: /api/v1/plan/month-blackout-detail
-    table: dcp_plan_month_blackout_detail
-    query_filters:
-      planYear: planYear
-    default_limit: 200
-    max_limit: 1000
-
-  - path: /api/v1/plan/month-blackout-list
-    table: dcp_plan_month_blackout_list
-    query_filters:
-      planYear: planYear
-    default_limit: 200
-    max_limit: 1000
-
-  - path: /api/v1/plan/progress-management
-    table: dcp_plan_progress_management
-    query_filters:
-      planYear: planYear
-    default_limit: 200
-    max_limit: 1000
-
-  - path: /api/v1/plan/project-dept-establishment
-    table: dcp_plan_project_dept_establishment
-    query_filters:
-      planYear: planYear
-    default_limit: 200
-    max_limit: 1000
-
-  - path: /api/v1/plan/project-dept-key-personnel
-    table: dcp_plan_project_dept_key_personnel
-    query_filters:
-      planYear: planYear
-    default_limit: 200
-    max_limit: 1000
-
-  - path: /api/v1/plan/project-search
-    table: dcp_plan_project_search
-    query_filters:
-      planYear: planYear
-    default_limit: 200
-    max_limit: 1000
-
-  - path: /api/v1/plan/service-bidding-statistics
-    table: dcp_plan_service_bidding_statistics
-    query_filters:
-      planYear: planYear
-    default_limit: 200
-    max_limit: 1000
-
-  - path: /api/v1/plan/start-statistics
-    table: dcp_plan_start_statistics
-    query_filters:
-      planYear: planYear
-    default_limit: 200
-    max_limit: 1000
-
-  - path: /api/v1/plan/under-construction-statistics
-    table: dcp_plan_under_construction_statistics
-    query_filters:
-      planYear: planYear
-    default_limit: 200
-    max_limit: 1000
-
-  - path: /api/v1/plan/year-blackout
-    table: dcp_plan_year_blackout
-    query_filters:
-      planYear: planYear
-    default_limit: 200
-    max_limit: 1000
-
-  - path: /api/v1/plan/year-plan-view
-    table: dcp_plan_year_plan_view
-    query_filters:
-      planYear: planYear
-    default_limit: 200
-    max_limit: 1000
-
-  - path: /api/v1/year-progress/project-domain
-    table: dcp_year_progress_project_domain
+  # 计划域
+  - path: /api/v1/plan/projects
+    table: dcp_projects
     query_filters:
       year: year
+      projectCode: projectCode
     default_limit: 200
     max_limit: 1000
 
-  - path: /api/v1/safety/daily-meetings
-    table: dcp_safety_daily_meeting
+  - path: /api/v1/plan/single-projects
+    table: dcp_single_projects
     query_filters:
-      dateRange: dateRange
+      year: year
+      projectCode: projectCode
+      singleProjectCode: singleProjectCode
+    default_limit: 200
+    max_limit: 1000
+
+  - path: /api/v1/plan/progress
+    table: dcp_plan_progress
+    default_limit: 200
+    max_limit: 1000
+
+  - path: /api/v1/plan/dept-key-personnel
+    table: dcp_plan_dept_key_personnel
+    default_limit: 200
+    max_limit: 1000
+
+  # 项目域
+  - path: /api/v1/project/towers
+    table: dcp_tower
+    query_filters:
+      singleProjectCode: singleProjectCode
+    default_limit: 200
+    max_limit: 1000
+
+  - path: /api/v1/project/substations
+    table: dcp_substation
+    query_filters:
+      singleProjectCode: singleProjectCode
+    default_limit: 200
+    max_limit: 1000
+
+  - path: /api/v1/project/line-sections
+    table: dcp_line_section
+    query_filters:
+      biddingSectionCode: biddingSectionCode
+    default_limit: 200
+    max_limit: 1000
+
+  # 安全域
+  - path: /api/v1/safety/daily-meetings
+    table: dcp_daily_meeting
+    query_filters:
+      date: date
+    default_limit: 200
+    max_limit: 1000
+
+  - path: /api/v1/safety/daily-meeting-snapshot
+    table: dcp_daily_meeting_snapshot
+    query_filters:
+      date: date
     default_limit: 200
     max_limit: 1000

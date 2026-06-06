@@ -46,15 +46,29 @@ def load_registry_from_plugins(plugins: list[PluginSpec]) -> SchemaRegistry:
 
 
 def validate_row(table: TableSpec, row: dict[str, Any]) -> dict[str, Any]:
+    extra_column = table.columns.get("extra")
+    has_extra = extra_column is not None and extra_column.type == "json"
     unknown = sorted(set(row) - set(table.columns))
-    if unknown:
+    if unknown and not has_extra:
         raise ValueError(f"schema_mismatch: unknown columns in {table.table_name}: {', '.join(unknown)}")
     normalized: dict[str, Any] = {}
+    overflow: dict[str, Any] = {}
+    for key, value in row.items():
+        if key in table.columns:
+            continue
+        overflow[key] = value
     for name, column in table.columns.items():
+        if name == "extra":
+            continue
         value = row.get(name)
         if value is None and not column.nullable:
             raise ValueError(f"schema_mismatch: {table.table_name}.{name} is required")
         normalized[name] = _coerce(value, column.type, table.table_name, name)
+    if has_extra:
+        existing_extra = row.get("extra")
+        if isinstance(existing_extra, dict):
+            overflow.update(existing_extra)
+        normalized["extra"] = overflow if overflow else (existing_extra if existing_extra is not None else None)
     for key in table.primary_key:
         if normalized.get(key) is None:
             raise ValueError(f"missing_primary_key: {table.table_name}.{key} primary key is required")
@@ -110,8 +124,8 @@ def _validate_table(table: TableSpec) -> None:
             raise ValueError(f"{table.table_name} references unknown column: {name}")
     if table.write_mode == "upsert" and not table.primary_key:
         raise ValueError(f"{table.table_name} upsert requires primary_key")
-    if table.write_mode == "replace_scope" and not table.scope_column_names:
-        raise ValueError(f"{table.table_name} replace_scope requires scope_column_names")
+    if table.write_mode == "replace_scope" and not table.scope_column_names and not table.primary_key:
+        raise ValueError(f"{table.table_name} replace_scope requires scope_column_names or primary_key")
 
 
 def _validate_routes(plugins: list[PluginSpec], registry: SchemaRegistry) -> None:

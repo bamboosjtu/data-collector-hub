@@ -51,7 +51,16 @@ def _plugin_dict(plugin: PluginSpec, registry: SchemaRegistry) -> dict[str, Any]
         "label": plugin.display.label,
         "description": plugin.display.description,
         "connector_type": plugin.connector.type,
-        "commands": [command.job_type for command in plugin.commands],
+        "commands": [
+            {
+                "name": command.name,
+                "description": command.description,
+                "required_params": list(command.required_params),
+                "enabled": command.enabled,
+                "trigger_type": command.trigger.get("type", ""),
+            }
+            for command in plugin.commands
+        ],
         "query_routes": [route.path for route in plugin.query_routes],
         "datasets": sorted(datasets),
     }

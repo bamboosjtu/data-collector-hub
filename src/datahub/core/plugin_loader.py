@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import importlib
+import logging
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-from .specs import CommandSpec, ConnectorSpec, DisplaySpec, PluginSpec, QueryRouteSpec, ScopeMapping
+from .specs import CommandSpec, ConnectorSpec, DisplaySpec, NormalizerSpec, PluginSpec, QueryRouteSpec, ScopeMapping
+
+logger = logging.getLogger(__name__)
 
 
 def load_plugin(plugin_dir: Path) -> PluginSpec:
@@ -30,6 +34,7 @@ def load_plugin(plugin_dir: Path) -> PluginSpec:
         commands=tuple(_parse_command(item) for item in (payload.get("commands") or [])),
         query_routes=tuple(_parse_query_route(item) for item in (payload.get("query_routes") or [])),
         scope_mappings=tuple(_parse_scope_mapping(item) for item in (payload.get("scope_mappings") or [])),
+        normalizers=tuple(_parse_normalizer(item) for item in (payload.get("normalizers") or [])),
         tables_path=(plugin_dir / "tables.yaml") if (plugin_dir / "tables.yaml").exists() else None,
     )
     _validate_plugin(plugin)
@@ -50,23 +55,65 @@ def build_scope_map(plugins: list[PluginSpec]) -> dict[str, dict[str, str]]:
     return result
 
 
-def find_command(plugins: list[PluginSpec], job_type: str) -> CommandSpec | None:
+def build_normalizer_map(plugins: list[PluginSpec]) -> dict[str, tuple[NormalizerSpec, PluginSpec]]:
+    """Build source_table -> (NormalizerSpec, PluginSpec) mapping."""
+    result: dict[str, tuple[NormalizerSpec, PluginSpec]] = {}
+    for plugin in plugins:
+        for norm in plugin.normalizers:
+            result[norm.source_table] = (norm, plugin)
+    return result
+
+
+def find_command(plugins: list[PluginSpec], name: str) -> CommandSpec | None:
     for plugin in plugins:
         for command in plugin.commands:
-            if command.job_type == job_type:
+            if command.name == name and command.enabled:
                 return command
     return None
 
 
-def find_plugin_for_job(plugins: list[PluginSpec], job_type: str) -> PluginSpec | None:
+def find_plugin_for_job(plugins: list[PluginSpec], name: str) -> PluginSpec | None:
     for plugin in plugins:
-        if any(command.job_type == job_type for command in plugin.commands):
+        if any(command.name == name and command.enabled for command in plugin.commands):
             return plugin
     return None
 
 
+def load_normalizer_handler(plugin: PluginSpec, normalizer: NormalizerSpec) -> Any:
+    """Load normalizer handler function, restricted to the plugin's own module path.
+
+    Handler format in YAML: ``dcp.normalizers:normalize_plan_sgcc_year``
+    The prefix before the dot must match the plugin name.
+    """
+    handler_ref = normalizer.handler
+    if ":" not in handler_ref:
+        raise ValueError(f"normalizer handler must be in 'module:function' format, got: {handler_ref}")
+    module_part, func_name = handler_ref.split(":", 1)
+    prefix = module_part.split(".")[0]
+    if prefix != plugin.name:
+        raise ValueError(
+            f"normalizer handler '{handler_ref}' must be scoped to plugin '{plugin.name}' "
+            f"(expected prefix '{plugin.name}.xxx', got '{prefix}')"
+        )
+    full_module = f"plugins.{module_part}"
+    try:
+        mod = importlib.import_module(full_module)
+    except ImportError as exc:
+        raise ImportError(f"cannot import normalizer module '{full_module}': {exc}") from exc
+    handler = getattr(mod, func_name, None)
+    if handler is None:
+        raise AttributeError(f"module '{full_module}' has no function '{func_name}'")
+    return handler
+
+
 def _parse_command(item: dict[str, Any]) -> CommandSpec:
-    return CommandSpec(job_type=str(item["job_type"]), required_params=tuple(item.get("required_params") or ()))
+    return CommandSpec(
+        name=str(item.get("name") or item.get("job_type", "")),
+        description=str(item.get("description", "")),
+        required_params=tuple(item.get("required_params") or ()),
+        trigger=dict(item.get("trigger") or {}),
+        enabled=bool(item.get("enabled", True)),
+    )
 
 
 def _parse_query_route(item: dict[str, Any]) -> QueryRouteSpec:
@@ -84,12 +131,20 @@ def _parse_scope_mapping(item: dict[str, Any]) -> ScopeMapping:
     return ScopeMapping(table=str(item["table"]), map=dict(item.get("map") or {}))
 
 
+def _parse_normalizer(item: dict[str, Any]) -> NormalizerSpec:
+    return NormalizerSpec(
+        source_table=str(item["source_table"]),
+        targets=tuple(item.get("targets") or []),
+        handler=str(item["handler"]),
+    )
+
+
 def _validate_plugin(plugin: PluginSpec) -> None:
-    seen_jobs: set[str] = set()
+    seen_names: set[str] = set()
     for command in plugin.commands:
-        if command.job_type in seen_jobs:
-            raise ValueError(f"duplicate job_type in plugin {plugin.name}: {command.job_type}")
-        seen_jobs.add(command.job_type)
+        if command.name in seen_names:
+            raise ValueError(f"duplicate command name in plugin {plugin.name}: {command.name}")
+        seen_names.add(command.name)
     seen_routes: set[str] = set()
     for route in plugin.query_routes:
         if not route.path.startswith("/"):
