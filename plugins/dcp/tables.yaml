@@ -493,17 +493,44 @@ tables:
       longitudeLook: {type: string, nullable: true}
       latitudeLook: {type: string, nullable: true}
 
-  dcp_line_section:
+  dcp_line_branches:
     dataset_key: line_section
-    description: DCP line section details by bidding section from project.sectionDetails API.
+    description: DCP line branches (outer layer of sectionDetails). Each row is one branch containing tower list, span list, and child sections.
+    write_mode: upsert
+    scope_column_names: [biddingSectionCode]
+    primary_key: [biddingSectionCode, branchId]
+    columns:
+      biddingSectionCode: {type: string, nullable: false}
+      branchId: {type: string, nullable: false}
+      branchName: {type: string, nullable: true}
+      towerNoList: {type: json, nullable: true}
+      spanList: {type: json, nullable: true}
+
+  dcp_line_sections:
+    dataset_key: line_section
+    description: DCP line sections (inner layer from sectionVo.sectionDTOList). Each row is one section within a branch.
     write_mode: upsert
     scope_column_names: [biddingSectionCode]
     primary_key: [biddingSectionCode, sectionId]
     columns:
       biddingSectionCode: {type: string, nullable: false}
+      branchId: {type: string, nullable: true}
       sectionId: {type: string, nullable: false}
+      sectionNo: {type: string, nullable: true}
       sectionName: {type: string, nullable: true}
-      sectionVo: {type: json, nullable: true}
+      startNo: {type: string, nullable: true}
+      terminalNo: {type: string, nullable: true}
+      sectionLength: {type: string, nullable: true}
+      towerTotalNumber: {type: integer, nullable: true}
+      totalTensionTower: {type: integer, nullable: true}
+      sequenceNo: {type: integer, nullable: true}
+      provinceCode: {type: string, nullable: true}
+      frontSpan: {type: integer, nullable: true}
+      backSpan: {type: integer, nullable: true}
+      strartAdjustType: {type: string, nullable: true}
+      startDistance: {type: string, nullable: true}
+      endAdjustType: {type: string, nullable: true}
+      endDistance: {type: string, nullable: true}
 
   # ============================================================
   # 暂缓表 - 安全域（待历史回补策略确定后修正）

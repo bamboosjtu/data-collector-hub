@@ -134,3 +134,59 @@ def normalize_plan_dept_key_personnel(
     return [
         {"table_name": "dcp_plan_dept_key_personnel", "scope_values": scope_values, "rows": personnel_rows},
     ]
+
+
+# Fields allowed in dcp_line_sections (from sectionDTOList)
+_SECTION_DTO_FIELDS = {
+    "id", "biddingSectionCode", "sectionNo", "sectionName",
+    "startNo", "terminalNo", "sectionLength", "towerTotalNumber",
+    "totalTensionTower", "sequenceNo", "provinceCode",
+    "frontSpan", "backSpan", "strartAdjustType", "startDistance",
+    "endAdjustType", "endDistance",
+}
+
+
+def normalize_line_section(
+    table_name: str,
+    scope_values: dict[str, Any],
+    rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Expand dcp_line_section two-layer structure into dcp_line_branches and dcp_line_sections.
+
+    Outer layer (branch): sectionId, sectionName, sectionVo
+    Inner layer (sections): sectionVo.sectionDTOList
+    """
+    branch_rows: list[dict[str, Any]] = []
+    section_rows: list[dict[str, Any]] = []
+
+    for row in rows:
+        bidding_section_code = row.get("biddingSectionCode") or scope_values.get("biddingSectionCode", "")
+        section_id = row.get("sectionId", "")
+        section_name = row.get("sectionName", "")
+        section_vo = row.get("sectionVo") or {}
+
+        # Branch row (outer layer)
+        branch_rows.append({
+            "biddingSectionCode": bidding_section_code,
+            "branchId": section_id,
+            "branchName": section_name,
+            "towerNoList": section_vo.get("towerNoList"),
+            "spanList": section_vo.get("spanList"),
+        })
+
+        # Section rows (inner layer from sectionDTOList)
+        for dto in section_vo.get("sectionDTOList") or []:
+            section_row = {"biddingSectionCode": bidding_section_code, "branchId": section_id}
+            for k, v in dto.items():
+                if k in _SECTION_DTO_FIELDS:
+                    # Map id -> sectionId for the target table
+                    if k == "id":
+                        section_row["sectionId"] = v
+                    else:
+                        section_row[k] = v
+            section_rows.append(section_row)
+
+    return [
+        {"table_name": "dcp_line_branches", "scope_values": scope_values, "rows": branch_rows},
+        {"table_name": "dcp_line_sections", "scope_values": scope_values, "rows": section_rows},
+    ]
