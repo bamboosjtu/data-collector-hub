@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from src.datahub.core.registry import SchemaRegistry, validate_row, validate_scope
+
+logger = logging.getLogger(__name__)
 
 
 def validate_payload(registry: SchemaRegistry, payload: dict[str, Any], apply_scope_mappings) -> list[tuple[Any, dict[str, Any], list[dict[str, Any]]]]:
@@ -19,6 +22,13 @@ def validate_payload(registry: SchemaRegistry, payload: dict[str, Any], apply_sc
         scope_values = dict(table_payload.get("scope_values") or {})
         scope_values = apply_scope_mappings(table.table_name, scope_values)
         validate_scope(table, scope_values)
-        rows = [validate_row(table, dict(row)) for row in (table_payload.get("rows") or [])]
-        validated.append((table, scope_values, rows))
+        raw_rows = table_payload.get("rows") or []
+        valid_rows = []
+        for row in raw_rows:
+            try:
+                valid_rows.append(validate_row(table, dict(row)))
+            except ValueError as exc:
+                logger.warning("skipping row in %s: %s", table.table_name, exc)
+        if valid_rows:
+            validated.append((table, scope_values, valid_rows))
     return validated

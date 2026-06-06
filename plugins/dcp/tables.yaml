@@ -477,6 +477,7 @@ tables:
       zlZcztWzcc: {type: string, nullable: true}
       zwgsNum: {type: string, nullable: true}
       rzlswdNum: {type: string, nullable: true}
+      extra: {type: json, nullable: true}
 
   dcp_substation:
     dataset_key: substation
@@ -492,6 +493,7 @@ tables:
       latitude: {type: string, nullable: true}
       longitudeLook: {type: string, nullable: true}
       latitudeLook: {type: string, nullable: true}
+      extra: {type: json, nullable: true}
 
   dcp_line_branches:
     dataset_key: line_section

@@ -39,6 +39,7 @@ class DataHubStore:
             )
             if not conn.execute("SELECT 1 FROM api_keys LIMIT 1").fetchone():
                 self.create_api_key("local-admin", ["admin", "ingestion", "query"], token="dev-admin-key", conn=conn)
+                self.create_api_key("local-ingestion", ["ingestion"], token="dev-ingestion-key", conn=conn)
 
     def create_ingestion_job(
         self,

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
+import logging
 from typing import Any
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
 from src.datahub.core.plugin_loader import find_command, find_plugin_for_job
@@ -16,6 +18,8 @@ from src.datahub.settings import Settings
 from src.datahub.storage.sqlite import DataHubStore
 
 from .auth import require_scope
+
+logger = logging.getLogger(__name__)
 
 
 class IngestionJobRequest(BaseModel):
@@ -36,9 +40,22 @@ def build_ingestion_router(
     router = APIRouter()
 
     @router.post("/ingestion/v1/table-batches", dependencies=[Depends(require_scope(store, "ingestion"))])
-    def ingest_table_batch(payload: TableBatchPayload) -> dict[str, Any]:
+    async def ingest_table_batch(request: Request) -> dict[str, Any]:
+        body_bytes = await request.body()
+        body_text = body_bytes.decode("utf-8", errors="replace")
+        try:
+            raw = json.loads(body_text)
+        except json.JSONDecodeError as e:
+            logger.error("Invalid JSON in table-batches: %s", e)
+            raise HTTPException(status_code=422, detail={"error": "invalid_json", "message": str(e)}) from e
+        try:
+            payload = TableBatchPayload.model_validate(raw)
+        except Exception as e:
+            logger.error("Pydantic validation failed: %s\nBody preview: %s", e, body_text[:2000])
+            raise HTTPException(status_code=422, detail={"error": "validation_failed", "message": str(e), "body_preview": body_text[:500]}) from e
         result = ingestion_service.ingest_table_batch(payload.model_dump())
         if result["status"] in {"failed", "conflict"}:
+            logger.error("ingest_table_batch returned %s: %s", result["status"], result)
             code = status.HTTP_409_CONFLICT if result["status"] == "conflict" else status.HTTP_422_UNPROCESSABLE_ENTITY
             if result.get("error_code") == "storage_error":
                 code = status.HTTP_500_INTERNAL_SERVER_ERROR
@@ -77,12 +94,14 @@ def build_ingestion_router(
             store.mark_job(ingestion_job_id, status="running")
             try:
                 handler = load_plugin_handler(handler_path)
+                callback_headers = {"X-API-Key": settings.callback_api_key} if settings.callback_api_key else None
                 ctx = build_handler_context(
                     store=store,
                     plugins=plugins,
                     trigger_clients=trigger_clients,
                     ingestion_job_id=ingestion_job_id,
                     callback_base_url=settings.callback_base_url,
+                    callback_headers=callback_headers,
                     params=payload.params,
                     command=command,
                     plugin=plugin,
@@ -114,12 +133,14 @@ def build_ingestion_router(
             raise HTTPException(status_code=422, detail={"error": "invalid_trigger", "message": f"command {payload.command} trigger has no job_type"})
 
         callback_url = f"{settings.callback_base_url}/ingestion/v1/table-batches"
+        callback_headers = {"X-API-Key": settings.callback_api_key} if settings.callback_api_key else None
         try:
             response = client.sync(
                 producer_job_id=producer_job_id,
                 job_type=downloader_job_type,
                 params=payload.params,
                 callback_url=callback_url,
+                callback_headers=callback_headers,
                 debug=payload.debug,
             )
         except Exception as exc:

@@ -14,7 +14,10 @@ class ExternalSyncClient:
         self.base_url = connector.base_url.rstrip("/")
         self.timeout_seconds = connector.timeout_seconds
 
-    def sync(self, *, producer_job_id: str, job_type: str, params: dict[str, Any], callback_url: str, debug: bool = False) -> dict[str, Any]:
+    def sync(self, *, producer_job_id: str, job_type: str, params: dict[str, Any], callback_url: str, callback_headers: dict[str, str] | None = None, debug: bool = False) -> dict[str, Any]:
+        sink: dict[str, Any] = {"type": "http_callback", "url": callback_url}
+        if callback_headers:
+            sink["headers"] = callback_headers
         return self._json(
             "/sync",
             "POST",
@@ -22,7 +25,7 @@ class ExternalSyncClient:
                 "downloader_job_id": producer_job_id,
                 "job_type": job_type,
                 "params": params,
-                "sink": {"type": "http_callback", "url": callback_url},
+                "sink": sink,
                 "debug": debug,
             },
         )

@@ -1,12 +1,17 @@
 from __future__ import annotations
 
-from fastapi import FastAPI
+import logging
+
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 
 from src.datahub.api import (
     build_admin_router,
     build_health_router,
     build_ingestion_router,
     build_metadata_router,
+    build_ops_router,
     register_query_routes,
 )
 from src.datahub.core.plugin_loader import build_normalizer_map, build_scope_map, load_all_plugins
@@ -15,6 +20,8 @@ from src.datahub.core.trigger_runtime import ExternalSyncClient
 from src.datahub.ingestion.service import IngestionService
 from src.datahub.settings import Settings
 from src.datahub.storage.sqlite import DataHubStore
+
+logger = logging.getLogger(__name__)
 
 
 def create_app(
@@ -38,9 +45,16 @@ def create_app(
     app.state.store = active_store
     app.state.trigger_clients = clients
 
+    @app.exception_handler(RequestValidationError)
+    async def validation_error_handler(request: Request, exc: RequestValidationError):
+        errors = exc.errors()
+        logger.warning("RequestValidationError %s %s: %s", request.method, request.url.path, errors)
+        return JSONResponse(status_code=422, content={"detail": errors})
+
     app.include_router(build_health_router(registry))
     app.include_router(build_metadata_router(plugins, registry))
     app.include_router(build_admin_router(active_store))
+    app.include_router(build_ops_router(store=active_store, plugins=plugins))
     app.include_router(
         build_ingestion_router(
             settings=active_settings,

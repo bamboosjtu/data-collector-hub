@@ -70,6 +70,7 @@ def _find_child_command_and_client(plugins, child_command_name, trigger_clients)
 def _run_child_job(
     store, child_plugin, client, downloader_job_type,
     child_command_name, child_params, parent_job_id, callback_base_url,
+    callback_headers=None,
 ):
     """Create and execute a single child ingestion job. Returns (job_id, status, error)."""
     from uuid import uuid4
@@ -96,6 +97,7 @@ def _run_child_job(
             job_type=downloader_job_type,
             params=child_params,
             callback_url=callback_url,
+            callback_headers=callback_headers,
         )
         store.mark_job(child_job_id, status=str(response.get("status") or "accepted"), producer_status=response)
         return child_job_id, response.get("status", "accepted"), None
@@ -196,6 +198,7 @@ def _project_fan_out(
     downloader_job_type = child_cmd.trigger.get("job_type")
 
     # 4. Execute child jobs
+    callback_headers = ctx.get("callback_headers")
     results: list[dict[str, Any]] = []
     succeeded = 0
     failed = 0
@@ -204,6 +207,7 @@ def _project_fan_out(
         job_id, status, err = _run_child_job(
             store, child_plugin, client, downloader_job_type,
             child_command, child_params, parent_job_id, callback_base_url,
+            callback_headers=callback_headers,
         )
         results.append({"params": child_params, "ingestion_job_id": job_id, "status": status})
         if err:
@@ -290,6 +294,7 @@ def _date_range_fan_out(
     downloader_job_type = child_cmd.trigger.get("job_type")
 
     # 4. Execute child jobs
+    callback_headers = ctx.get("callback_headers")
     results: list[dict[str, Any]] = []
     succeeded = 0
     failed = 0
@@ -303,6 +308,7 @@ def _date_range_fan_out(
         job_id, status, err = _run_child_job(
             store, child_plugin, client, downloader_job_type,
             child_command, child_params, parent_job_id, callback_base_url,
+            callback_headers=callback_headers,
         )
         results.append({"params": child_params, "ingestion_job_id": job_id, "status": status})
         if err:
@@ -349,6 +355,7 @@ def refresh_daily_meetings_yesterday(ctx: dict[str, Any]) -> dict[str, Any]:
     job_id, status, err = _run_child_job(
         store, child_plugin, client, downloader_job_type,
         "refresh_daily_meetings_by_range", child_params, parent_job_id, callback_base_url,
+        callback_headers=ctx.get("callback_headers"),
     )
 
     result = {"total": 1, "succeeded": 0 if err else 1, "failed": 1 if err else 0,
