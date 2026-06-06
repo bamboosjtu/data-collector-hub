@@ -1,35 +1,11 @@
-version: 5
+version: 6
 
 tables:
   # ============================================================
-  # Normalizer source 表（Raw，normalizer 消费后不保留）
-  # ============================================================
-
-  dcp_plan_sgcc_year:
-    dataset_key: plan_sgcc_year
-    description: DCP plan yearPlanView raw records, source for normalizer expansion.
-    write_mode: replace_scope
-    scope_column_names: [year]
-    primary_key: [recordKey]
-    columns:
-      year: {type: string, nullable: false}
-      recordKey: {type: string, nullable: false}
-      raw: {type: json, nullable: false}
-      sourceRowIndex: {type: integer, nullable: true}
-
-  dcp_plan_progress:
-    dataset_key: plan_progress
-    description: DCP plan progressManagement raw records, source for normalizer expansion.
-    write_mode: replace_scope
-    scope_column_names: []
-    primary_key: [recordKey]
-    columns:
-      recordKey: {type: string, nullable: false}
-      raw: {type: json, nullable: false}
-      sourceRowIndex: {type: integer, nullable: true}
-
-  # ============================================================
   # Normalizer 产出表 - 年度计划域
+  # source 表 dcp_plan_sgcc_year / dcp_plan_progress 不在此注册，
+  # 仅在 plugin.yaml 的 normalizers 声明中作为 source_table 引用。
+  # normalizer 在 validate 前消费 source，产出 target tables 进入 validate + write。
   # ============================================================
 
   dcp_plan_projects:

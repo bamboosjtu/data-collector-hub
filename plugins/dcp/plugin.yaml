@@ -1,5 +1,5 @@
 name: dcp
-version: 5
+version: 8
 
 display:
   label: DCP 数据采集
@@ -42,45 +42,112 @@ commands:
       type: downloader_sync
       job_type: plan_dept_key_personnel
 
-  # 项目域 - 杆塔
-  - name: refresh_towers
+  # 项目域 - 杆塔（单项目）
+  - name: refresh_towers_for_project
     description: 刷新指定项目的杆塔信息快照
     required_params: [projectCode]
     trigger:
       type: downloader_sync
       job_type: project_towers_each_single_project
 
-  # 项目域 - 变电站
-  - name: refresh_substations
+  # 项目域 - 变电站（单项目）
+  - name: refresh_substations_for_project
     description: 刷新指定项目的变电站快照
     required_params: [projectCode]
     trigger:
       type: downloader_sync
       job_type: project_substations_each_single_project
 
-  # 项目域 - 架线区段
-  - name: refresh_line_sections
+  # 项目域 - 架线区段（单项目）
+  - name: refresh_line_sections_for_project
     description: 刷新指定项目的架线区段快照
     required_params: [projectCode]
     trigger:
       type: downloader_sync
       job_type: project_lines_each_bid_section
 
-  # 安全域 - 站班会历史
-  - name: backfill_daily_meetings
-    description: 补全站班会历史数据
+  # 项目域 - 批量 fan-out：杆塔
+  - name: refresh_towers_for_current_plan_projects
+    description: 批量刷新今年在建项目的杆塔信息（fan-out）
     required_params: []
     trigger:
-      type: downloader_sync
-      job_type: safe_daily_meeting_history
+      type: fan_out
+      source_query:
+        table: dcp_plan_projects
+        filters:
+          year: current
+        columns: [prjCode]
+      child_command: refresh_towers_for_project
+      params_mapping:
+        prjCode: projectCode
+      max_concurrency: 1
+      cooldown_seconds: 3
 
-  # 安全域 - 站班会增量
-  - name: refresh_daily_meetings
-    description: 增量刷新站班会数据
+  # 项目域 - 批量 fan-out：变电站
+  - name: refresh_substations_for_current_plan_projects
+    description: 批量刷新今年在建项目的变电站快照（fan-out）
+    required_params: []
+    trigger:
+      type: fan_out
+      source_query:
+        table: dcp_plan_projects
+        filters:
+          year: current
+        columns: [prjCode]
+      child_command: refresh_substations_for_project
+      params_mapping:
+        prjCode: projectCode
+      max_concurrency: 1
+      cooldown_seconds: 3
+
+  # 项目域 - 批量 fan-out：架线区段
+  - name: refresh_line_sections_for_current_plan_projects
+    description: 批量刷新今年在建项目的架线区段快照（fan-out）
+    required_params: []
+    trigger:
+      type: fan_out
+      source_query:
+        table: dcp_plan_projects
+        filters:
+          year: current
+        columns: [prjCode]
+      child_command: refresh_line_sections_for_project
+      params_mapping:
+        prjCode: projectCode
+      max_concurrency: 1
+      cooldown_seconds: 3
+
+  # 安全域 - 单日期范围查询
+  - name: refresh_daily_meetings_by_range
+    description: 刷新指定日期范围的站班会数据
     required_params: [startDate, endDate]
     trigger:
       type: downloader_sync
       job_type: safe_daily_meeting_range
+
+  # 安全域 - 批量回补（日期切片 fan-out）
+  - name: backfill_daily_meetings_by_range
+    description: 按日期切片批量回补站班会数据（fan-out）
+    required_params: [startDate, endDate]
+    trigger:
+      type: date_range_fan_out
+      child_command: refresh_daily_meetings_by_range
+      start_date_param: startDate
+      end_date_param: endDate
+      chunk_days: 7
+      fallback_chunk_days: 1
+      cooldown_seconds: 2
+
+  # 安全域 - 昨日增量
+  - name: refresh_daily_meetings_yesterday
+    description: 增量刷新昨日站班会数据
+    required_params: []
+    trigger:
+      type: downloader_sync
+      job_type: safe_daily_meeting_range
+      auto_params:
+        startDate: yesterday
+        endDate: yesterday
 
   # 安全域 - 今日站班会快照
   - name: refresh_daily_meeting_snapshot
