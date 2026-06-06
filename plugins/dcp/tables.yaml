@@ -1,8 +1,8 @@
-version: 3
+version: 5
 
 tables:
   # ============================================================
-  # Normalizer source 表（Raw，来自 plan_sgcc_year 采集）
+  # Normalizer source 表（Raw，normalizer 消费后不保留）
   # ============================================================
 
   dcp_plan_sgcc_year:
@@ -17,38 +17,116 @@ tables:
       raw: {type: json, nullable: false}
       sourceRowIndex: {type: integer, nullable: true}
 
+  dcp_plan_progress:
+    dataset_key: plan_progress
+    description: DCP plan progressManagement raw records, source for normalizer expansion.
+    write_mode: replace_scope
+    scope_column_names: []
+    primary_key: [recordKey]
+    columns:
+      recordKey: {type: string, nullable: false}
+      raw: {type: json, nullable: false}
+      sourceRowIndex: {type: integer, nullable: true}
+
   # ============================================================
-  # Normalizer 产出表（来自 dcp_plan_sgcc_year normalizer）
+  # Normalizer 产出表 - 年度计划域
   # ============================================================
 
-  dcp_projects:
+  dcp_plan_projects:
     dataset_key: plan_sgcc_year
     description: DCP plan yearPlanView project-level records, extracted by normalizer.
     write_mode: upsert
     scope_column_names: [year]
-    primary_key: [year, projectCode]
+    primary_key: [year, prjCode]
     columns:
       year: {type: string, nullable: false}
-      projectCode: {type: string, nullable: false}
-      projectName: {type: string, nullable: true}
-      provinceCode: {type: string, nullable: true}
-      provinceName: {type: string, nullable: true}
+      adjustCause: {type: string, nullable: true}
+      adjustType: {type: string, nullable: true}
+      apprFileNo: {type: string, nullable: true}
+      azksTime: {type: string, nullable: true}
+      buildProcessId: {type: string, nullable: true}
       buildUnitCode: {type: string, nullable: true}
       buildUnitName: {type: string, nullable: true}
-      voltageLevel: {type: string, nullable: true}
-      voltageLevelName: {type: string, nullable: true}
+      cbStart: {type: integer, nullable: true}
+      cbStartName: {type: string, nullable: true}
+      cbsjpsTime: {type: string, nullable: true}
+      cbsjpsyjxdTime: {type: string, nullable: true}
+      constrAddress: {type: string, nullable: true}
       constrNature: {type: integer, nullable: true}
       constrNatureName: {type: string, nullable: true}
+      constrTransformerCapacity: {type: number, nullable: true}
+      constrTransformerCapacityList: {type: json, nullable: true}
       constructionCategory: {type: integer, nullable: true}
       constructionCategoryName: {type: string, nullable: true}
-      projectType: {type: string, nullable: true}
+      constructionLineLength: {type: number, nullable: true}
+      constructionLineLengthList: {type: json, nullable: true}
+      createTime: {type: string, nullable: true}
+      createType: {type: integer, nullable: true}
+      createrId: {type: string, nullable: true}
+      cspfTime: {type: string, nullable: true}
+      currentBudget: {type: number, nullable: true}
+      currentInvestment: {type: number, nullable: true}
+      dazlyjTime: {type: string, nullable: true}
+      deleteFlag: {type: integer, nullable: true}
+      durationMonths: {type: integer, nullable: true}
+      feaDinvest: {type: string, nullable: true}
+      feaLineLength: {type: string, nullable: true}
+      feaSinvest: {type: string, nullable: true}
+      feasTransCapacity: {type: string, nullable: true}
+      hbysTime: {type: string, nullable: true}
+      hppfTime: {type: string, nullable: true}
+      hqProcessId: {type: string, nullable: true}
+      hzTime: {type: string, nullable: true}
+      id: {type: string, nullable: true}
+      imageProgress: {type: string, nullable: true}
+      jgjsTime: {type: string, nullable: true}
+      jhjgTime: {type: string, nullable: true}
+      jhkgTime: {type: string, nullable: true}
+      jhkgTimeList: {type: string, nullable: true}
+      jhtcTime: {type: string, nullable: true}
+      jhtcTimeList: {type: string, nullable: true}
+      jlzbTime: {type: string, nullable: true}
+      jlzbjhsbTime: {type: string, nullable: true}
+      kypfTime: {type: string, nullable: true}
+      kypsyjxdTime: {type: string, nullable: true}
+      lineQuantity: {type: integer, nullable: true}
+      mainTransformerQuantity: {type: integer, nullable: true}
+      nonConstrDepartmentImpl: {type: integer, nullable: true}
+      num: {type: string, nullable: true}
       planNature: {type: integer, nullable: true}
       planNatureName: {type: string, nullable: true}
-      constructionLineLength: {type: number, nullable: true}
-      constrTransformerCapacity: {type: number, nullable: true}
-      raw: {type: json, nullable: true}
+      planNatureProduct: {type: string, nullable: true}
+      planNatureStart: {type: string, nullable: true}
+      prjCode: {type: string, nullable: false}
+      prjName: {type: string, nullable: true}
+      prodTransCapacity: {type: string, nullable: true}
+      productionLineLength: {type: string, nullable: true}
+      projectApprovalDocumentNo: {type: string, nullable: true}
+      projectType: {type: string, nullable: true}
+      provinceCode: {type: string, nullable: true}
+      provinceName: {type: string, nullable: true}
+      provinceProcessId: {type: string, nullable: true}
+      sbpfTime: {type: string, nullable: true}
+      sbysTime: {type: string, nullable: true}
+      sgzbTime: {type: string, nullable: true}
+      sgzbjhsbTime: {type: string, nullable: true}
+      sjjgTime: {type: string, nullable: true}
+      sjkgTime: {type: string, nullable: true}
+      sjtcTime: {type: string, nullable: true}
+      sjzbTime: {type: string, nullable: true}
+      sjzbjhsbTime: {type: string, nullable: true}
+      spwzzbTime: {type: string, nullable: true}
+      spwzzbjhsbTime: {type: string, nullable: true}
+      startReadyMonths: {type: integer, nullable: true}
+      stypTime: {type: string, nullable: true}
+      tjksTime: {type: string, nullable: true}
+      tsksTime: {type: string, nullable: true}
+      updateTime: {type: string, nullable: true}
+      updaterId: {type: string, nullable: true}
+      voltageLevel: {type: string, nullable: true}
+      voltageLevelName: {type: string, nullable: true}
 
-  dcp_single_projects:
+  dcp_plan_single_projects:
     dataset_key: plan_sgcc_year
     description: DCP single projects extracted from yearPlanView singleList by normalizer.
     write_mode: upsert
@@ -56,44 +134,234 @@ tables:
     primary_key: [year, singleProjectCode]
     columns:
       year: {type: string, nullable: false}
-      projectCode: {type: string, nullable: false}
-      projectName: {type: string, nullable: true}
+      azksTime: {type: string, nullable: true}
+      buildInterval: {type: string, nullable: true}
+      buildProcessId: {type: string, nullable: true}
+      buildUnitCode: {type: string, nullable: true}
+      buildUnitName: {type: string, nullable: true}
+      cbsjpsTime: {type: string, nullable: true}
+      cbsjpsyjxdTime: {type: string, nullable: true}
+      constrNature: {type: integer, nullable: true}
+      constrNatureName: {type: string, nullable: true}
+      constrTransformerCapacity: {type: number, nullable: true}
+      constructionLineLength: {type: number, nullable: true}
+      createTime: {type: string, nullable: true}
+      createType: {type: integer, nullable: true}
+      createrId: {type: string, nullable: true}
+      cspfTime: {type: string, nullable: true}
+      dazlyjTime: {type: string, nullable: true}
+      deleteFlag: {type: integer, nullable: true}
+      feaLineLength: {type: string, nullable: true}
+      feasTransCapacity: {type: string, nullable: true}
+      hbysTime: {type: string, nullable: true}
+      hppfTime: {type: string, nullable: true}
+      hqProcessId: {type: string, nullable: true}
+      hzTime: {type: string, nullable: true}
+      id: {type: string, nullable: true}
+      imageProgress: {type: string, nullable: true}
+      investEsti: {type: string, nullable: true}
+      jgjsTime: {type: string, nullable: true}
+      jhjgTime: {type: string, nullable: true}
+      jhkgTime: {type: string, nullable: true}
+      jhtcTime: {type: string, nullable: true}
+      jlzbTime: {type: string, nullable: true}
+      jlzbjhsbTime: {type: string, nullable: true}
+      kypfTime: {type: string, nullable: true}
+      kypsyjxdTime: {type: string, nullable: true}
+      lineQuantity: {type: integer, nullable: true}
+      mainTransformerQuantity: {type: integer, nullable: true}
+      num: {type: string, nullable: true}
+      planType: {type: string, nullable: true}
+      prjCode: {type: string, nullable: true}
+      prodTransCapacity: {type: string, nullable: true}
+      productionLineLength: {type: string, nullable: true}
+      prophaseInterval: {type: string, nullable: true}
+      provinceCode: {type: string, nullable: true}
+      provinceName: {type: string, nullable: true}
+      provinceProcessId: {type: string, nullable: true}
+      sbpfTime: {type: string, nullable: true}
+      sbysTime: {type: string, nullable: true}
+      sgzbTime: {type: string, nullable: true}
+      sgzbjhsbTime: {type: string, nullable: true}
       singleProjectCode: {type: string, nullable: false}
+      singleProjectDetailsType: {type: integer, nullable: true}
+      singleProjectDetailsTypeName: {type: string, nullable: true}
       singleProjectName: {type: string, nullable: true}
+      singleProjectPrerType: {type: string, nullable: true}
+      singleProjectPrerTypeName: {type: string, nullable: true}
+      singleProjectType: {type: integer, nullable: true}
       singleProjectTypeName: {type: string, nullable: true}
-      raw: {type: json, nullable: true}
+      sjjgTime: {type: string, nullable: true}
+      sjkgTime: {type: string, nullable: true}
+      sjtcTime: {type: string, nullable: true}
+      sjzbTime: {type: string, nullable: true}
+      sjzbjhsbTime: {type: string, nullable: true}
+      spwzzbTime: {type: string, nullable: true}
+      spwzzbjhsbTime: {type: string, nullable: true}
+      stypTime: {type: string, nullable: true}
+      tjksTime: {type: string, nullable: true}
+      tsksTime: {type: string, nullable: true}
+      updateTime: {type: string, nullable: true}
+      updaterId: {type: string, nullable: true}
+      voltageLevel: {type: string, nullable: true}
+      voltageLevelName: {type: string, nullable: true}
 
   # ============================================================
-  # 直接入库表 - 计划域 Raw 表
+  # Normalizer 产出表 - 项目进度域（三层展开）
+  # type=1 项目, type=2 单项, type=3 标段 — 三张独立表
   # ============================================================
-  # scope_param="" 导致 scope_values={}, scope_key=":"
-  # 使用 replace_scope + 空 scope_column_names 实现每日全量刷新
-  # primary_key=[recordKey] 仅用于批内去重，每次入库先清空再写入
 
-  dcp_plan_progress:
+  dcp_plan_project_progress:
     dataset_key: plan_progress
-    description: DCP plan progressManagement raw records. Daily full refresh via replace_scope.
+    description: DCP plan project-level progress (type=1), extracted by normalizer.
     write_mode: replace_scope
     scope_column_names: []
-    primary_key: [recordKey]
+    primary_key: [prjCode]
     columns:
-      recordKey: {type: string, nullable: false}
-      raw: {type: json, nullable: false}
-      sourceRowIndex: {type: integer, nullable: true}
+      prjCode: {type: string, nullable: false}
+      actualDuration: {type: integer, nullable: true}
+      actualFinDate: {type: string, nullable: true}
+      actualProgress: {type: number, nullable: true}
+      actualStartDate: {type: string, nullable: true}
+      buildUnitCode: {type: string, nullable: true}
+      constrTransformerCapacity: {type: number, nullable: true}
+      constructionLineLength: {type: number, nullable: true}
+      constructionStatus: {type: integer, nullable: true}
+      id: {type: string, nullable: true}
+      messageId: {type: string, nullable: true}
+      monthlyIncrease: {type: number, nullable: true}
+      noUpdateDays: {type: integer, nullable: true}
+      orderNum: {type: string, nullable: true}
+      planDuration: {type: integer, nullable: true}
+      planFinDate: {type: string, nullable: true}
+      planProgress: {type: number, nullable: true}
+      planStartDate: {type: string, nullable: true}
+      prjActualProgress: {type: string, nullable: true}
+      prjName: {type: string, nullable: true}
+      progressStatus: {type: integer, nullable: true}
+      projectType: {type: integer, nullable: true}
+      provinceBuildUnitName: {type: string, nullable: true}
+      provinceCode: {type: string, nullable: true}
+      rectifyFlag: {type: integer, nullable: true}
+      stopFlag: {type: integer, nullable: true}
+      suspensionCause: {type: string, nullable: true}
+      suspensionCauseType: {type: string, nullable: true}
+      updateTime: {type: string, nullable: true}
+      warningFlag: {type: integer, nullable: true}
+      weeklyIncrease: {type: number, nullable: true}
+      weight: {type: integer, nullable: true}
+
+  dcp_plan_single_project_progress:
+    dataset_key: plan_progress
+    description: DCP plan single-project-level progress (type=2), extracted by normalizer.
+    write_mode: replace_scope
+    scope_column_names: []
+    primary_key: [singleProjectCode]
+    columns:
+      singleProjectCode: {type: string, nullable: false}
+      actualDuration: {type: integer, nullable: true}
+      actualFinDate: {type: string, nullable: true}
+      actualProgress: {type: number, nullable: true}
+      actualStartDate: {type: string, nullable: true}
+      buildUnitCode: {type: string, nullable: true}
+      constrTransformerCapacity: {type: number, nullable: true}
+      constructionLineLength: {type: number, nullable: true}
+      constructionStatus: {type: integer, nullable: true}
+      id: {type: string, nullable: true}
+      messageId: {type: string, nullable: true}
+      monthlyIncrease: {type: number, nullable: true}
+      noUpdateDays: {type: integer, nullable: true}
+      orderNum: {type: string, nullable: true}
+      planDuration: {type: integer, nullable: true}
+      planFinDate: {type: string, nullable: true}
+      planProgress: {type: number, nullable: true}
+      planStartDate: {type: string, nullable: true}
+      prjActualProgress: {type: string, nullable: true}
+      prjCode: {type: string, nullable: true}
+      prjName: {type: string, nullable: true}
+      progressStatus: {type: integer, nullable: true}
+      projectType: {type: integer, nullable: true}
+      provinceBuildUnitName: {type: string, nullable: true}
+      provinceCode: {type: string, nullable: true}
+      rectifyFlag: {type: integer, nullable: true}
+      singleActualProgress: {type: string, nullable: true}
+      singleProjectDetailsType: {type: string, nullable: true}
+      stopFlag: {type: integer, nullable: true}
+      suspensionCause: {type: string, nullable: true}
+      suspensionCauseType: {type: string, nullable: true}
+      updateTime: {type: string, nullable: true}
+      warningFlag: {type: integer, nullable: true}
+      weeklyIncrease: {type: number, nullable: true}
+      weight: {type: integer, nullable: true}
+
+  dcp_plan_bidding_section_progress:
+    dataset_key: plan_progress
+    description: DCP plan bidding-section-level progress (type=3), extracted by normalizer.
+    write_mode: replace_scope
+    scope_column_names: []
+    primary_key: [biddingSectionCode]
+    columns:
+      biddingSectionCode: {type: string, nullable: false}
+      actualDuration: {type: integer, nullable: true}
+      actualFinDate: {type: string, nullable: true}
+      actualProgress: {type: number, nullable: true}
+      actualStartDate: {type: string, nullable: true}
+      biddingSectionType: {type: string, nullable: true}
+      buildUnitCode: {type: string, nullable: true}
+      constrTransformerCapacity: {type: number, nullable: true}
+      constructionLineLength: {type: number, nullable: true}
+      constructionStatus: {type: integer, nullable: true}
+      id: {type: string, nullable: true}
+      messageId: {type: string, nullable: true}
+      monthlyIncrease: {type: number, nullable: true}
+      noUpdateDays: {type: integer, nullable: true}
+      orderNum: {type: string, nullable: true}
+      planDuration: {type: integer, nullable: true}
+      planFinDate: {type: string, nullable: true}
+      planProgress: {type: number, nullable: true}
+      planStartDate: {type: string, nullable: true}
+      prjActualProgress: {type: string, nullable: true}
+      prjCode: {type: string, nullable: true}
+      prjName: {type: string, nullable: true}
+      progressStatus: {type: integer, nullable: true}
+      projectType: {type: integer, nullable: true}
+      provinceBuildUnitName: {type: string, nullable: true}
+      provinceCode: {type: string, nullable: true}
+      rectifyFlag: {type: integer, nullable: true}
+      singleProjectCode: {type: string, nullable: false}
+      singleActualProgress: {type: string, nullable: true}
+      singleProjectDetailsType: {type: string, nullable: true}
+      stopFlag: {type: integer, nullable: true}
+      suspensionCause: {type: string, nullable: true}
+      suspensionCauseType: {type: string, nullable: true}
+      updateTime: {type: string, nullable: true}
+      warningFlag: {type: integer, nullable: true}
+      weeklyIncrease: {type: number, nullable: true}
+      weight: {type: integer, nullable: true}
+
+  # ============================================================
+  # Normalizer 产出表 - 关键人员域（字段化）
+  # dcp_plan_dept_key_personnel 既是 normalizer source 又是 target
+  # downloader 发送 raw 数据 -> normalizer 展开为字段化行 -> 同名表入库
+  # ============================================================
 
   dcp_plan_dept_key_personnel:
     dataset_key: plan_dept_key_personnel
-    description: DCP plan projectDeptKeyPersonnel raw records. Daily full refresh via replace_scope.
+    description: DCP plan projectDeptKeyPersonnel field-extracted records.
     write_mode: replace_scope
     scope_column_names: []
-    primary_key: [recordKey]
+    primary_key: [originalIdCard, positionCode]
     columns:
-      recordKey: {type: string, nullable: false}
-      raw: {type: json, nullable: false}
-      sourceRowIndex: {type: integer, nullable: true}
+      originalIdCard: {type: string, nullable: false}
+      positionCode: {type: string, nullable: false}
+      idCard: {type: string, nullable: true}
+      name: {type: string, nullable: true}
+      unitName: {type: string, nullable: true}
+      positionName: {type: string, nullable: true}
+      personnelCertificates: {type: json, nullable: true}
 
   # ============================================================
-  # 直接入库表 - 项目域字段展开表
+  # 直入库表 - 项目域字段展开表
   # ============================================================
 
   dcp_tower:
@@ -106,134 +374,133 @@ tables:
       singleProjectCode: {type: string, nullable: false}
       id: {type: string, nullable: false}
       biddingSectionCode: {type: string, nullable: true}
-      generalDesignFlag: {type: integer, nullable: true}
-      towerNo: {type: string, nullable: true}
-      moduleNo: {type: string, nullable: true}
-      nominalHeight: {type: string, nullable: true}
-      towerFullHeight: {type: string, nullable: true}
-      majorCrossingFlag: {type: integer, nullable: true}
-      topography: {type: string, nullable: true}
-      stentFlag: {type: integer, nullable: true}
-      strStentFlag: {type: string, nullable: true}
-      borrowedFlag: {type: integer, nullable: true}
-      strBorrowedFlag: {type: string, nullable: true}
-      span: {type: string, nullable: true}
-      towerCuircuitNumber: {type: string, nullable: true}
-      circuitQuantity: {type: string, nullable: true}
-      longitude: {type: string, nullable: true}
-      latitude: {type: string, nullable: true}
-      longitudeEdit: {type: string, nullable: true}
-      latitudeEdit: {type: string, nullable: true}
-      eastCoordinate: {type: string, nullable: true}
-      northCoordinate: {type: string, nullable: true}
-      centerPileElevation: {type: string, nullable: true}
-      rotationDegree: {type: string, nullable: true}
-      geology: {type: string, nullable: true}
-      towerLegBaseformFirst: {type: string, nullable: true}
-      towerLegBaseformSecond: {type: string, nullable: true}
-      towerLegBaseformThird: {type: string, nullable: true}
-      towerLegBaseformFourth: {type: string, nullable: true}
-      towerLegMaxDepthFirst: {type: string, nullable: true}
-      towerLegMaxDepthSecond: {type: string, nullable: true}
-      towerLegMaxDepthThird: {type: string, nullable: true}
-      towerLegMaxDepthFourth: {type: string, nullable: true}
-      towerLegBaseformFirstGroupSecond: {type: string, nullable: true}
-      towerLegBaseformSecondGroupSecond: {type: string, nullable: true}
-      towerLegBaseformThirdGroupSecond: {type: string, nullable: true}
-      towerLegBaseformFourthGroupSecond: {type: string, nullable: true}
-      towerLegMaxDepthFirstGroupSecond: {type: string, nullable: true}
-      towerLegMaxDepthSecondGroupSecond: {type: string, nullable: true}
-      towerLegMaxDepthThirdGroupSecond: {type: string, nullable: true}
-      towerLegMaxDepthFourthGroupSecond: {type: string, nullable: true}
-      towerLegBaseformFirstGroupThird: {type: string, nullable: true}
-      towerLegBaseformSecondGroupThird: {type: string, nullable: true}
-      towerLegBaseformThirdGroupThird: {type: string, nullable: true}
-      towerLegBaseformFourthGroupThird: {type: string, nullable: true}
-      towerLegMaxDepthFirstGroupThird: {type: string, nullable: true}
-      towerLegMaxDepthSecondGroupThird: {type: string, nullable: true}
-      towerLegMaxDepthThirdGroupThird: {type: string, nullable: true}
-      towerLegMaxDepthFourthGroupThird: {type: string, nullable: true}
-      towerType: {type: string, nullable: true}
-      tensionTowerFlag: {type: integer, nullable: true}
-      strTensionTowerFlag: {type: string, nullable: true}
-      towerStructure: {type: string, nullable: true}
-      createrId: {type: string, nullable: true}
-      createTime: {type: string, nullable: true}
-      updaterId: {type: string, nullable: true}
-      updateTime: {type: string, nullable: true}
-      deleteFlag: {type: integer, nullable: true}
-      provinceCode: {type: string, nullable: true}
       buildCode: {type: string, nullable: true}
-      towerTypeNo: {type: string, nullable: true}
-      upstreamTowerNo: {type: string, nullable: true}
-      dismantleFlag: {type: integer, nullable: true}
-      strDismantleFlag: {type: string, nullable: true}
-      cover4gFlag: {type: integer, nullable: true}
-      strCover4gFlag: {type: string, nullable: true}
-      towerSequenceNo: {type: string, nullable: true}
-      remark: {type: string, nullable: true}
-      representativeSpan: {type: string, nullable: true}
-      tensionSectionLength: {type: string, nullable: true}
-      county: {type: string, nullable: true}
-      town: {type: string, nullable: true}
-      village: {type: string, nullable: true}
-      runTowerCode: {type: string, nullable: true}
-      groundThingName: {type: string, nullable: true}
-      designChangeNo: {type: string, nullable: true}
-      sectionDividePointFlag: {type: integer, nullable: true}
-      sectionAdjustNum: {type: string, nullable: true}
-      towerWeight: {type: string, nullable: true}
-      slope: {type: string, nullable: true}
-      constructionDeptId: {type: string, nullable: true}
-      supervisionDeptId: {type: string, nullable: true}
-      deviseDeptId: {type: string, nullable: true}
-      ownerDeptId: {type: string, nullable: true}
-      uhvFlag: {type: integer, nullable: true}
-      constructionSequenceNo: {type: string, nullable: true}
-      ownerSequenceNo: {type: string, nullable: true}
-      deviseSequenceNo: {type: string, nullable: true}
-      supervisionSequenceNo: {type: string, nullable: true}
-      updateType: {type: string, nullable: true}
-      sectionId: {type: string, nullable: true}
-      sensitiveAreaType: {type: string, nullable: true}
-      sensitiveAreaName: {type: string, nullable: true}
-      fragileAreaType: {type: string, nullable: true}
-      controlLevel: {type: string, nullable: true}
-      surplusSoilType: {type: string, nullable: true}
-      surplusSoilNum: {type: string, nullable: true}
-      permanentOccupationNum: {type: string, nullable: true}
-      recommendNum: {type: string, nullable: true}
-      pdfhGbNum: {type: string, nullable: true}
-      pdfhZdNum: {type: string, nullable: true}
-      btCpBlType: {type: string, nullable: true}
-      btCpBlNum: {type: string, nullable: true}
-      btCpBlDwdx: {type: string, nullable: true}
+      borrowedFlag: {type: integer, nullable: true}
       btCpBlBlhd: {type: string, nullable: true}
+      btCpBlDwdx: {type: string, nullable: true}
+      btCpBlNum: {type: string, nullable: true}
+      btCpBlType: {type: string, nullable: true}
+      bthfNum: {type: string, nullable: true}
       btllNum: {type: string, nullable: true}
       btsgNum: {type: string, nullable: true}
-      bthfNum: {type: string, nullable: true}
-      dqjckwNum: {type: string, nullable: true}
-      dqqtqzNum: {type: string, nullable: true}
-      lsldNum: {type: string, nullable: true}
-      lssgNum: {type: string, nullable: true}
-      lspsNum: {type: string, nullable: true}
-      lscsNum: {type: string, nullable: true}
-      yzlswdNum: {type: string, nullable: true}
-      rzlswdNum: {type: string, nullable: true}
-      hpdcclNum: {type: string, nullable: true}
-      hpczNum: {type: string, nullable: true}
-      jpsjckwNum: {type: string, nullable: true}
-      jpscstczNum: {type: string, nullable: true}
       cdqlNum: {type: string, nullable: true}
       cdpzNum: {type: string, nullable: true}
-      ktfgNum: {type: string, nullable: true}
+      centerPileElevation: {type: string, nullable: true}
+      circuitQuantity: {type: string, nullable: true}
+      constructionDeptId: {type: string, nullable: true}
+      constructionSequenceNo: {type: string, nullable: true}
+      controlLevel: {type: string, nullable: true}
+      county: {type: string, nullable: true}
+      cover4gFlag: {type: integer, nullable: true}
+      createrId: {type: string, nullable: true}
+      createTime: {type: string, nullable: true}
+      deleteFlag: {type: integer, nullable: true}
+      designChangeNo: {type: string, nullable: true}
+      deviseDeptId: {type: string, nullable: true}
+      deviseSequenceNo: {type: string, nullable: true}
+      dismantleFlag: {type: integer, nullable: true}
+      dqjckwNum: {type: string, nullable: true}
+      dqqtqzNum: {type: string, nullable: true}
+      eastCoordinate: {type: string, nullable: true}
       fgNum: {type: string, nullable: true}
+      fragileAreaType: {type: string, nullable: true}
       gcgsNum: {type: string, nullable: true}
-      zwgsNum: {type: string, nullable: true}
-      zlZcztWzcc: {type: string, nullable: true}
-      zlNum: {type: string, nullable: true}
+      geology: {type: string, nullable: true}
+      generalDesignFlag: {type: integer, nullable: true}
+      groundThingName: {type: string, nullable: true}
+      hpdcclNum: {type: string, nullable: true}
+      hpczNum: {type: string, nullable: true}
+      jpscstczNum: {type: string, nullable: true}
+      jpsjckwNum: {type: string, nullable: true}
+      ktfgNum: {type: string, nullable: true}
+      latitude: {type: string, nullable: true}
+      latitudeEdit: {type: string, nullable: true}
+      longitude: {type: string, nullable: true}
+      longitudeEdit: {type: string, nullable: true}
+      lsldNum: {type: string, nullable: true}
+      lscsNum: {type: string, nullable: true}
+      lspsNum: {type: string, nullable: true}
+      lssgNum: {type: string, nullable: true}
+      majorCrossingFlag: {type: string, nullable: true}
+      moduleNo: {type: string, nullable: true}
+      nominalHeight: {type: string, nullable: true}
+      northCoordinate: {type: string, nullable: true}
+      ownerDeptId: {type: string, nullable: true}
+      ownerSequenceNo: {type: string, nullable: true}
+      pdfhGbNum: {type: string, nullable: true}
+      pdfhZdNum: {type: string, nullable: true}
+      permanentOccupationNum: {type: string, nullable: true}
+      provinceCode: {type: string, nullable: true}
+      recommendNum: {type: string, nullable: true}
+      remark: {type: string, nullable: true}
+      representativeSpan: {type: string, nullable: true}
+      rotationDegree: {type: string, nullable: true}
+      runTowerCode: {type: string, nullable: true}
+      sectionAdjustNum: {type: string, nullable: true}
+      sectionDividePointFlag: {type: integer, nullable: true}
+      sectionId: {type: string, nullable: true}
+      sensitiveAreaName: {type: string, nullable: true}
+      sensitiveAreaType: {type: string, nullable: true}
+      slope: {type: string, nullable: true}
+      span: {type: string, nullable: true}
+      strBorrowedFlag: {type: string, nullable: true}
+      strCover4gFlag: {type: string, nullable: true}
+      strDismantleFlag: {type: string, nullable: true}
+      strStentFlag: {type: string, nullable: true}
+      strTensionTowerFlag: {type: string, nullable: true}
+      stentFlag: {type: integer, nullable: true}
+      supervisionDeptId: {type: string, nullable: true}
+      supervisionSequenceNo: {type: string, nullable: true}
+      surplusSoilNum: {type: string, nullable: true}
+      surplusSoilType: {type: string, nullable: true}
+      tensionSectionLength: {type: string, nullable: true}
+      tensionTowerFlag: {type: integer, nullable: true}
+      topography: {type: string, nullable: true}
+      towerCuircuitNumber: {type: string, nullable: true}
+      towerFullHeight: {type: string, nullable: true}
+      towerLegBaseformFirst: {type: string, nullable: true}
+      towerLegBaseformFirstGroupSecond: {type: string, nullable: true}
+      towerLegBaseformFirstGroupThird: {type: string, nullable: true}
+      towerLegBaseformFourth: {type: string, nullable: true}
+      towerLegBaseformFourthGroupSecond: {type: string, nullable: true}
+      towerLegBaseformFourthGroupThird: {type: string, nullable: true}
+      towerLegBaseformSecond: {type: string, nullable: true}
+      towerLegBaseformSecondGroupSecond: {type: string, nullable: true}
+      towerLegBaseformSecondGroupThird: {type: string, nullable: true}
+      towerLegBaseformThird: {type: string, nullable: true}
+      towerLegBaseformThirdGroupSecond: {type: string, nullable: true}
+      towerLegBaseformThirdGroupThird: {type: string, nullable: true}
+      towerLegMaxDepthFirst: {type: string, nullable: true}
+      towerLegMaxDepthFirstGroupSecond: {type: string, nullable: true}
+      towerLegMaxDepthFirstGroupThird: {type: string, nullable: true}
+      towerLegMaxDepthFourth: {type: string, nullable: true}
+      towerLegMaxDepthFourthGroupSecond: {type: string, nullable: true}
+      towerLegMaxDepthFourthGroupThird: {type: string, nullable: true}
+      towerLegMaxDepthSecond: {type: string, nullable: true}
+      towerLegMaxDepthSecondGroupSecond: {type: string, nullable: true}
+      towerLegMaxDepthSecondGroupThird: {type: string, nullable: true}
+      towerLegMaxDepthThird: {type: string, nullable: true}
+      towerLegMaxDepthThirdGroupSecond: {type: string, nullable: true}
+      towerLegMaxDepthThirdGroupThird: {type: string, nullable: true}
+      towerNo: {type: string, nullable: true}
+      towerSequenceNo: {type: string, nullable: true}
+      towerStructure: {type: string, nullable: true}
+      towerType: {type: string, nullable: true}
+      towerTypeNo: {type: string, nullable: true}
+      towerWeight: {type: string, nullable: true}
+      town: {type: string, nullable: true}
+      uhvFlag: {type: integer, nullable: true}
+      updateType: {type: string, nullable: true}
+      updaterId: {type: string, nullable: true}
+      updateTime: {type: string, nullable: true}
+      upstreamTowerNo: {type: string, nullable: true}
+      village: {type: string, nullable: true}
+      yzlswdNum: {type: string, nullable: true}
       zcNum: {type: string, nullable: true}
-      extra: {type: json, nullable: true}
+      zlNum: {type: string, nullable: true}
+      zlZcztWzcc: {type: string, nullable: true}
+      zwgsNum: {type: string, nullable: true}
+      rzlswdNum: {type: string, nullable: true}
 
   dcp_substation:
     dataset_key: substation
@@ -249,7 +516,6 @@ tables:
       latitude: {type: string, nullable: true}
       longitudeLook: {type: string, nullable: true}
       latitudeLook: {type: string, nullable: true}
-      extra: {type: json, nullable: true}
 
   dcp_line_section:
     dataset_key: line_section
@@ -262,174 +528,29 @@ tables:
       sectionId: {type: string, nullable: false}
       sectionName: {type: string, nullable: true}
       sectionVo: {type: json, nullable: true}
-      extra: {type: json, nullable: true}
 
   # ============================================================
-  # 直入库表 - 安全域
+  # 暂缓表 - 安全域（待历史回补策略确定后修正）
   # ============================================================
 
   dcp_daily_meeting:
     dataset_key: daily_meeting
-    description: DCP safety daily meeting records for a date range.
+    description: DCP safety daily meeting records for a date range. DEFERRED - pending history backfill strategy.
     write_mode: upsert
     scope_column_names: []
     primary_key: [date, id]
     columns:
       date: {type: string, nullable: false}
       id: {type: string, nullable: false}
-      prjCode: {type: string, nullable: true}
-      prjName: {type: string, nullable: true}
-      provinceCode: {type: string, nullable: true}
-      provinceName: {type: string, nullable: true}
-      buildUnitCode: {type: string, nullable: true}
-      buildUnitName: {type: string, nullable: true}
-      singleProjectCode: {type: string, nullable: true}
-      singleProjectName: {type: string, nullable: true}
-      biddingSectionCode: {type: string, nullable: true}
-      biddingSectionName: {type: string, nullable: true}
-      voltageLevel: {type: string, nullable: true}
-      currentConstrDate: {type: string, nullable: true}
-      currentConstructionStatus: {type: string, nullable: true}
-      currentConstrStatusName: {type: string, nullable: true}
-      currentConstrHeadcount: {type: integer, nullable: true}
-      constructionHeadcount: {type: integer, nullable: true}
-      leaderId: {type: string, nullable: true}
-      leaderName: {type: string, nullable: true}
-      createrId: {type: string, nullable: true}
-      workStartTime: {type: string, nullable: true}
-      workProcedure: {type: string, nullable: true}
-      workContents: {type: string, nullable: true}
-      workSiteName: {type: string, nullable: true}
-      workSiteNum: {type: string, nullable: true}
-      workOvernightFlag: {type: integer, nullable: true}
-      workAcrossFlagName: {type: string, nullable: true}
-      ticketId: {type: string, nullable: true}
-      ticketName: {type: string, nullable: true}
-      ticketNo: {type: string, nullable: true}
-      toolBoxTalkAddress: {type: string, nullable: true}
-      toolBoxTalkLongitude: {type: string, nullable: true}
-      toolBoxTalkLatitude: {type: string, nullable: true}
-      lonAndLatString: {type: string, nullable: true}
-      cameraNum: {type: integer, nullable: true}
-      cameraBindFlag: {type: string, nullable: true}
-      offOnlineFlag: {type: integer, nullable: true}
-      huvFlag: {type: integer, nullable: true}
-      reAssessmentRiskLevel: {type: integer, nullable: true}
-      reAssessmentRiskLevelChines: {type: string, nullable: true}
-      rate: {type: string, nullable: true}
-      constructionUnitName: {type: string, nullable: true}
-      constrUnifiedSocialCreditId: {type: string, nullable: true}
-      supervisionUnitName: {type: string, nullable: true}
-      supervisionSocialCreditCode: {type: string, nullable: true}
-      subcontractUnitName: {type: string, nullable: true}
-      safeStringIds: {type: string, nullable: true}
-      safeStringNames: {type: string, nullable: true}
-      safeIds: {type: string, nullable: true}
-      safeNames: {type: string, nullable: true}
-      safeUserNameList: {type: string, nullable: true}
-      technologyNames: {type: string, nullable: true}
-      jobUserNameList: {type: string, nullable: true}
-      abnormalRiskCause: {type: string, nullable: true}
-      addSafetyCtrlMeasure: {type: string, nullable: true}
-      num: {type: string, nullable: true}
-      mcWorkSiteId: {type: string, nullable: true}
-      subSinId: {type: string, nullable: true}
-      subSinName: {type: string, nullable: true}
-      subEntryProjectId: {type: string, nullable: true}
-      subEntryProjectName: {type: string, nullable: true}
-      subSectionProjectId: {type: string, nullable: true}
-      subSectionProjectName: {type: string, nullable: true}
-      jlDeptDuty: {type: string, nullable: true}
-      sgDeptDuty: {type: string, nullable: true}
-      yzDeptDuty: {type: string, nullable: true}
-      currentConstrDateString: {type: string, nullable: true}
-      endTimeString: {type: string, nullable: true}
-      opStartTimeString: {type: string, nullable: true}
-      traceId: {type: string, nullable: true}
-      cameraNoList: {type: json, nullable: true}
-      dailyMeetingFileList: {type: json, nullable: true}
-      dailySubEntryS: {type: json, nullable: true}
       extra: {type: json, nullable: true}
 
   dcp_daily_meeting_snapshot:
     dataset_key: daily_meeting_snapshot
-    description: DCP safety daily meeting snapshot for today.
+    description: DCP safety daily meeting snapshot for today. DEFERRED - pending history backfill strategy.
     write_mode: upsert
     scope_column_names: []
     primary_key: [date, id]
     columns:
       date: {type: string, nullable: false}
       id: {type: string, nullable: false}
-      prjCode: {type: string, nullable: true}
-      prjName: {type: string, nullable: true}
-      provinceCode: {type: string, nullable: true}
-      provinceName: {type: string, nullable: true}
-      buildUnitCode: {type: string, nullable: true}
-      buildUnitName: {type: string, nullable: true}
-      singleProjectCode: {type: string, nullable: true}
-      singleProjectName: {type: string, nullable: true}
-      biddingSectionCode: {type: string, nullable: true}
-      biddingSectionName: {type: string, nullable: true}
-      voltageLevel: {type: string, nullable: true}
-      currentConstrDate: {type: string, nullable: true}
-      currentConstructionStatus: {type: string, nullable: true}
-      currentConstrStatusName: {type: string, nullable: true}
-      currentConstrHeadcount: {type: integer, nullable: true}
-      constructionHeadcount: {type: integer, nullable: true}
-      leaderId: {type: string, nullable: true}
-      leaderName: {type: string, nullable: true}
-      createrId: {type: string, nullable: true}
-      workStartTime: {type: string, nullable: true}
-      workProcedure: {type: string, nullable: true}
-      workContents: {type: string, nullable: true}
-      workSiteName: {type: string, nullable: true}
-      workSiteNum: {type: string, nullable: true}
-      workOvernightFlag: {type: integer, nullable: true}
-      workAcrossFlagName: {type: string, nullable: true}
-      ticketId: {type: string, nullable: true}
-      ticketName: {type: string, nullable: true}
-      ticketNo: {type: string, nullable: true}
-      toolBoxTalkAddress: {type: string, nullable: true}
-      toolBoxTalkLongitude: {type: string, nullable: true}
-      toolBoxTalkLatitude: {type: string, nullable: true}
-      lonAndLatString: {type: string, nullable: true}
-      cameraNum: {type: integer, nullable: true}
-      cameraBindFlag: {type: string, nullable: true}
-      offOnlineFlag: {type: integer, nullable: true}
-      huvFlag: {type: integer, nullable: true}
-      reAssessmentRiskLevel: {type: integer, nullable: true}
-      reAssessmentRiskLevelChines: {type: string, nullable: true}
-      rate: {type: string, nullable: true}
-      constructionUnitName: {type: string, nullable: true}
-      constrUnifiedSocialCreditId: {type: string, nullable: true}
-      supervisionUnitName: {type: string, nullable: true}
-      supervisionSocialCreditCode: {type: string, nullable: true}
-      subcontractUnitName: {type: string, nullable: true}
-      safeStringIds: {type: string, nullable: true}
-      safeStringNames: {type: string, nullable: true}
-      safeIds: {type: string, nullable: true}
-      safeNames: {type: string, nullable: true}
-      safeUserNameList: {type: string, nullable: true}
-      technologyNames: {type: string, nullable: true}
-      jobUserNameList: {type: string, nullable: true}
-      abnormalRiskCause: {type: string, nullable: true}
-      addSafetyCtrlMeasure: {type: string, nullable: true}
-      num: {type: string, nullable: true}
-      mcWorkSiteId: {type: string, nullable: true}
-      subSinId: {type: string, nullable: true}
-      subSinName: {type: string, nullable: true}
-      subEntryProjectId: {type: string, nullable: true}
-      subEntryProjectName: {type: string, nullable: true}
-      subSectionProjectId: {type: string, nullable: true}
-      subSectionProjectName: {type: string, nullable: true}
-      jlDeptDuty: {type: string, nullable: true}
-      sgDeptDuty: {type: string, nullable: true}
-      yzDeptDuty: {type: string, nullable: true}
-      currentConstrDateString: {type: string, nullable: true}
-      endTimeString: {type: string, nullable: true}
-      opStartTimeString: {type: string, nullable: true}
-      traceId: {type: string, nullable: true}
-      cameraNoList: {type: json, nullable: true}
-      dailyMeetingFileList: {type: json, nullable: true}
-      dailySubEntryS: {type: json, nullable: true}
       extra: {type: json, nullable: true}

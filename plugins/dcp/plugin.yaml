@@ -1,5 +1,5 @@
 name: dcp
-version: 3
+version: 5
 
 display:
   label: DCP 数据采集
@@ -92,37 +92,69 @@ commands:
 
 normalizers:
   - source_table: dcp_plan_sgcc_year
-    targets: [dcp_projects, dcp_single_projects]
+    targets: [dcp_plan_projects, dcp_plan_single_projects]
     handler: dcp.normalizers:normalize_plan_sgcc_year
+
+  - source_table: dcp_plan_progress
+    targets: [dcp_plan_project_progress, dcp_plan_single_project_progress, dcp_plan_bidding_section_progress]
+    handler: dcp.normalizers:normalize_plan_progress
+
+  - source_table: dcp_plan_dept_key_personnel
+    targets: [dcp_plan_dept_key_personnel]
+    handler: dcp.normalizers:normalize_plan_dept_key_personnel
 
 scope_mappings: []
 
 query_routes:
-  # 计划域
+  # 计划域 - 年度计划
   - path: /api/v1/plan/projects
-    table: dcp_projects
+    table: dcp_plan_projects
     query_filters:
       year: year
-      projectCode: projectCode
+      prjCode: prjCode
     default_limit: 200
     max_limit: 1000
 
   - path: /api/v1/plan/single-projects
-    table: dcp_single_projects
+    table: dcp_plan_single_projects
     query_filters:
       year: year
-      projectCode: projectCode
+      prjCode: prjCode
       singleProjectCode: singleProjectCode
     default_limit: 200
     max_limit: 1000
 
-  - path: /api/v1/plan/progress
-    table: dcp_plan_progress
+  # 计划域 - 项目进度
+  - path: /api/v1/plan/project-progress
+    table: dcp_plan_project_progress
+    query_filters:
+      prjCode: prjCode
+      provinceCode: provinceCode
     default_limit: 200
     max_limit: 1000
 
+  - path: /api/v1/plan/single-project-progress
+    table: dcp_plan_single_project_progress
+    query_filters:
+      prjCode: prjCode
+      singleProjectCode: singleProjectCode
+    default_limit: 200
+    max_limit: 1000
+
+  - path: /api/v1/plan/bidding-section-progress
+    table: dcp_plan_bidding_section_progress
+    query_filters:
+      prjCode: prjCode
+      biddingSectionCode: biddingSectionCode
+    default_limit: 200
+    max_limit: 1000
+
+  # 计划域 - 关键人员
   - path: /api/v1/plan/dept-key-personnel
     table: dcp_plan_dept_key_personnel
+    query_filters:
+      positionCode: positionCode
+      unitName: unitName
     default_limit: 200
     max_limit: 1000
 
@@ -148,7 +180,7 @@ query_routes:
     default_limit: 200
     max_limit: 1000
 
-  # 安全域
+  # 安全域 (DEFERRED)
   - path: /api/v1/safety/daily-meetings
     table: dcp_daily_meeting
     query_filters:

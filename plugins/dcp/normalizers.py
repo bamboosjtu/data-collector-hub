@@ -8,24 +8,36 @@ from __future__ import annotations
 
 from typing import Any
 
+# Fields to exclude from all normalizer outputs (DCP system fields)
+_SKIP_FIELDS = {"extra", "traceId", "children", "singleList", "raw", "recordKey", "sourceRowIndex"}
+
+# Fields specific to each progress type level
+_PROJECT_PROGRESS_FIELDS = {
+    "id", "prjCode", "prjName", "provinceCode", "buildUnitCode",
+    "provinceBuildUnitName", "projectType", "weight",
+    "constructionStatus", "constructionLineLength", "constrTransformerCapacity",
+    "progressStatus", "planProgress", "actualProgress", "prjActualProgress",
+    "weeklyIncrease", "monthlyIncrease", "noUpdateDays", "planDuration",
+    "planStartDate", "planFinDate", "actualDuration", "actualStartDate",
+    "actualFinDate", "rectifyFlag", "stopFlag", "warningFlag",
+    "suspensionCause", "suspensionCauseType", "updateTime", "orderNum", "messageId",
+}
+
+_SINGLE_PROJECT_PROGRESS_FIELDS = _PROJECT_PROGRESS_FIELDS | {
+    "singleProjectCode", "singleActualProgress", "singleProjectDetailsType",
+}
+
+_BIDDING_SECTION_PROGRESS_FIELDS = _SINGLE_PROJECT_PROGRESS_FIELDS | {
+    "biddingSectionCode", "biddingSectionType",
+}
+
 
 def normalize_plan_sgcc_year(
     table_name: str,
     scope_values: dict[str, Any],
     rows: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Expand dcp_plan_sgcc_year raw rows into dcp_projects and dcp_single_projects.
-
-    Input rows come from downloader's RawDcpApiCollectExecutor, each row has:
-      - year: scope year (from planner scope_values)
-      - recordKey: sha256 hash of the original record
-      - raw: the complete original project record from yearPlanView API
-      - sourceRowIndex: row index
-
-    The raw record contains:
-      - prjCode, prjName, provinceCode, provinceName, buildUnitCode, buildUnitName, ...
-      - singleList: list of single project dicts with singleProjectCode, singleProjectName, ...
-    """
+    """Expand dcp_plan_sgcc_year raw rows into dcp_plan_projects and dcp_plan_single_projects."""
     project_rows: list[dict[str, Any]] = []
     single_project_rows: list[dict[str, Any]] = []
 
@@ -34,41 +46,91 @@ def normalize_plan_sgcc_year(
         year = row.get("year") or scope_values.get("year", "")
 
         # Project-level row
-        project_rows.append({
-            "year": year,
-            "projectCode": raw.get("prjCode"),
-            "projectName": raw.get("prjName"),
-            "provinceCode": raw.get("provinceCode"),
-            "provinceName": raw.get("provinceName"),
-            "buildUnitCode": raw.get("buildUnitCode"),
-            "buildUnitName": raw.get("buildUnitName"),
-            "voltageLevel": raw.get("voltageLevel"),
-            "voltageLevelName": raw.get("voltageLevelName"),
-            "constrNature": raw.get("constrNature"),
-            "constrNatureName": raw.get("constrNatureName"),
-            "constructionCategory": raw.get("constructionCategory"),
-            "constructionCategoryName": raw.get("constructionCategoryName"),
-            "projectType": raw.get("projectType"),
-            "planNature": raw.get("planNature"),
-            "planNatureName": raw.get("planNatureName"),
-            "constructionLineLength": raw.get("constructionLineLength"),
-            "constrTransformerCapacity": raw.get("constrTransformerCapacity"),
-            "raw": raw,
-        })
+        proj = {"year": year}
+        for k, v in raw.items():
+            if k not in _SKIP_FIELDS:
+                proj[k] = v
+        project_rows.append(proj)
 
         # Single project rows from singleList
         for item in raw.get("singleList") or []:
-            single_project_rows.append({
-                "year": year,
-                "projectCode": raw.get("prjCode"),
-                "projectName": raw.get("prjName"),
-                "singleProjectCode": item.get("singleProjectCode"),
-                "singleProjectName": item.get("singleProjectName"),
-                "singleProjectTypeName": item.get("singleProjectTypeName"),
-                "raw": item,
-            })
+            sp = {"year": year}
+            for k, v in item.items():
+                if k not in _SKIP_FIELDS:
+                    sp[k] = v
+            single_project_rows.append(sp)
 
     return [
-        {"table_name": "dcp_projects", "scope_values": scope_values, "rows": project_rows},
-        {"table_name": "dcp_single_projects", "scope_values": scope_values, "rows": single_project_rows},
+        {"table_name": "dcp_plan_projects", "scope_values": scope_values, "rows": project_rows},
+        {"table_name": "dcp_plan_single_projects", "scope_values": scope_values, "rows": single_project_rows},
+    ]
+
+
+def normalize_plan_progress(
+    table_name: str,
+    scope_values: dict[str, Any],
+    rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Expand dcp_plan_progress raw rows into three progress tables.
+
+    The raw data has a tree structure:
+      - type=1: project-level progress (primary key: prjCode)
+      - type=2: single-project-level progress (primary key: singleProjectCode)
+      - type=3: bidding-section-level progress (primary key: biddingSectionCode)
+    """
+    project_progress: list[dict[str, Any]] = []
+    single_project_progress: list[dict[str, Any]] = []
+    bidding_section_progress: list[dict[str, Any]] = []
+
+    def _extract_row(raw: dict[str, Any], allowed_fields: set[str]) -> dict[str, Any]:
+        """Extract business fields from a raw progress record, filtering by allowed fields."""
+        result = {}
+        for k, v in raw.items():
+            if k not in _SKIP_FIELDS and k in allowed_fields:
+                result[k] = v
+        return result
+
+    def _flatten(raw_list: list[dict[str, Any]]) -> None:
+        for raw in raw_list:
+            row_type = raw.get("type")
+
+            if row_type == 1:
+                project_progress.append(_extract_row(raw, _PROJECT_PROGRESS_FIELDS))
+            elif row_type == 2:
+                single_project_progress.append(_extract_row(raw, _SINGLE_PROJECT_PROGRESS_FIELDS))
+            elif row_type == 3:
+                bidding_section_progress.append(_extract_row(raw, _BIDDING_SECTION_PROGRESS_FIELDS))
+
+            for child in raw.get("children") or []:
+                _flatten([child])
+
+    for row in rows:
+        raw = row.get("raw") or {}
+        _flatten([raw])
+
+    return [
+        {"table_name": "dcp_plan_project_progress", "scope_values": scope_values, "rows": project_progress},
+        {"table_name": "dcp_plan_single_project_progress", "scope_values": scope_values, "rows": single_project_progress},
+        {"table_name": "dcp_plan_bidding_section_progress", "scope_values": scope_values, "rows": bidding_section_progress},
+    ]
+
+
+def normalize_plan_dept_key_personnel(
+    table_name: str,
+    scope_values: dict[str, Any],
+    rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Expand dcp_plan_dept_key_personnel raw rows into field-extracted business table."""
+    personnel_rows: list[dict[str, Any]] = []
+
+    for row in rows:
+        raw = row.get("raw") or {}
+        extracted = {}
+        for k, v in raw.items():
+            if k not in _SKIP_FIELDS:
+                extracted[k] = v
+        personnel_rows.append(extracted)
+
+    return [
+        {"table_name": "dcp_plan_dept_key_personnel", "scope_values": scope_values, "rows": personnel_rows},
     ]
