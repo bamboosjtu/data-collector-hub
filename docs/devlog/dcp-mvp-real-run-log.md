@@ -1087,6 +1087,109 @@ All 12 jobs (4 projects x 3 commands) succeeded. No hard stop conditions trigger
 
 ---
 
+## Batch 10 — max_items=50 Sequential Verification (2026-06-07)
+
+All 3 fan-outs executed sequentially (no concurrency). WAL mode + busy_timeout active.
+
+### Run #41 — refresh_towers_for_current_plan_projects (max_items=50)
+
+- command: refresh_towers_for_current_plan_projects
+- params: {max_items: "50", max_concurrency: "1", cooldown_seconds: "5"}
+- parent_job_id: ing_refresh_towers_for_current_plan_projects_6be6f12a7909
+- child_jobs: total=50, succeeded=50, failed=0
+- parent_status: running → succeeded (aggregated)
+- duration: ~4.5 min (10:37 → 10:41)
+- table_counts: dcp_tower: 15520 (upsert, no delta)
+- schema_mismatch: none
+- extra_violations: none
+- database_locked: 0
+- disk_io_error: 0
+- retry_count: 0
+- notes: All 50 children succeeded. Zero errors.
+
+### Run #42 — refresh_substations_for_current_plan_projects (max_items=50)
+
+- command: refresh_substations_for_current_plan_projects
+- params: {max_items: "50", max_concurrency: "1", cooldown_seconds: "5"}
+- parent_job_id: ing_refresh_substations_for_current_plan_projects_727936a83ae6
+- child_jobs: total=50, succeeded=48, failed=2
+- parent_status: running → partial (aggregated)
+- duration: ~5 min (10:48 → 10:53)
+- failed_children:
+    - projectCode=1616A124002Y: "planning failed: project.substationSingleProjects failed: fetch failed" (DCP API network error)
+    - projectCode=1716M0250009: "sink error: no more rows available" (downloader-dcp internal error)
+- table_counts: dcp_substation: 36 → 84 (delta=+48)
+- schema_mismatch: none
+- extra_violations: none
+- database_locked: 0
+- disk_io_error: 0
+- retry_count: 0 (failures are DCP source errors, not Hub errors)
+- notes: 2 children failed due to DCP source/downloader errors, not Hub issues. Parent correctly aggregated to partial.
+
+### Run #43 — refresh_line_sections_for_current_plan_projects (max_items=50)
+
+- command: refresh_line_sections_for_current_plan_projects
+- params: {max_items: "50", max_concurrency: "1", cooldown_seconds: "5"}
+- parent_job_id: ing_refresh_line_sections_for_current_plan_projects_cf15666760d7
+- child_jobs: total=50, succeeded=50, failed=0
+- parent_status: running → succeeded (aggregated)
+- duration: ~4.5 min (10:58 → 11:03)
+- table_counts: dcp_line_sections: 201 → 612 (delta=+411), dcp_line_branches: 42 → 72 (delta=+30)
+- schema_mismatch: none
+- extra_violations: none
+- database_locked: 0
+- disk_io_error: 0
+- retry_count: 0
+- notes: All 50 children succeeded.
+
+### Batch 10 Summary
+
+| Command | max_items | Children | Succeeded | Failed | Parent Status | db_locked | disk_io | retries |
+|---------|-----------|----------|-----------|--------|---------------|-----------|---------|---------|
+| towers | 50 | 50 | 50 | 0 | succeeded | 0 | 0 | 0 |
+| substations | 50 | 50 | 48 | 2 | partial | 0 | 0 | 0 |
+| line_sections | 50 | 50 | 50 | 0 | succeeded | 0 | 0 | 0 |
+
+### Final Table Counts (after all batches)
+
+| Table | Count |
+|-------|-------|
+| dcp_plan_projects | 416 |
+| dcp_plan_single_projects | 1288 |
+| dcp_plan_project_progress | 767 |
+| dcp_plan_single_project_progress | 2328 |
+| dcp_plan_bidding_section_progress | 2631 |
+| dcp_plan_dept_key_personnel | 1055 |
+| dcp_tower | 15520 |
+| dcp_substation | 84 |
+| dcp_line_sections | 612 |
+| dcp_line_branches | 72 |
+
+### Acceptance Check (max_items=50)
+
+| # | Criterion | Result |
+|---|-----------|--------|
+| 1 | Correct child count (50 each) | PASS |
+| 2 | Each child has projectCode | PASS |
+| 3 | All children reach terminal state | PASS (148/150 succeeded, 2 failed from DCP source) |
+| 4 | Parent correctly aggregates | PASS (succeeded/partial) |
+| 5 | No schema_mismatch | PASS |
+| 6 | No callback 401/403 | PASS |
+| 7 | No real business rows skipped | PASS |
+| 8 | No extra violations | PASS |
+| 9 | No database_locked | PASS (0 occurrences with WAL + busy_timeout) |
+| 10 | No disk I/O error | PASS (sequential execution) |
+| 11 | Retry count ≤ 2 | PASS (0 retries needed) |
+
+### Key Findings
+
+1. **WAL + busy_timeout + sequential execution = zero SQLite errors**: 150 child jobs, 0 database locked, 0 disk I/O error.
+2. **DCP source errors are expected**: 2/50 substations children failed due to DCP API fetch errors or downloader-dcp internal errors. These are not Hub issues.
+3. **Parent aggregation works correctly**: succeeded (all pass) vs partial (some fail) distinction is accurate.
+4. **~4.5 min per 50-item fan-out**: With max_concurrency=1 and cooldown_seconds=5, each fan-out takes about 4-5 minutes for 50 projects.
+
+---
+
 ## Issues Found
 
 ### Issue 1: Auth 401 on callback (FIXED)
@@ -1109,6 +1212,121 @@ All 12 jobs (4 projects x 3 commands) succeeded. No hard stop conditions trigger
 - Previously: downloader-dcp reports "stalled: no collect task completed within 180s"
 - Fixed: downloader-dcp side fix resolved the issue
 - Batch 3 verification: plan_progress succeeded with 767+2328+2631 rows
+
+### Issue 5: dcp_substation empty shell rows (FIXED)
+- Symptom: dcp_substation contained rows with only singleProjectCode + wrapper fields (code/message/success/traceId/data=null), no business data
+- Root cause: DCP API returns data=null for projects without substation coordinates; Hub ingested these as valid rows
+- Fix: Added normalize_substation normalizer in plugins/dcp/normalizers.py
+  - Only outputs rows with at least one non-null business field (id/prjCode/longitude/latitude/longitudeLook/latitudeLook)
+  - Strips API wrapper fields (code/message/success/traceId/data/extra) from output and extra
+  - Same source→target table name does not cause recursion
+- plugin.yaml declaration: source_table: dcp_substation, targets: [dcp_substation], handler: dcp.normalizers:normalize_substation
+- Historical cleanup: 84 rows → 28 rows (56 empty shell rows deleted)
+- Verification after rerun (max_items=50): empty_shell_rows=0, total=28, has_extra=0
+
+### Run #44 — refresh_substations_for_current_plan_projects (max_items=50, normalizer verification)
+
+- command: refresh_substations_for_current_plan_projects
+- params: {max_items: "50", max_concurrency: "1", cooldown_seconds: "5"}
+- parent_job_id: ing_refresh_substations_for_current_plan_projects_c9ffa9d213fe
+- child_jobs: total=50, succeeded=49, partial=1
+- parent_status: partial
+- table_counts: dcp_substation: 28 (after cleanup + normalizer)
+- empty_shell_rows: 0
+- wrapper_fields_in_extra: 0
+- has_id: 28, has_coords: 28, has_prjCode: 28
+- notes: Normalizer successfully filters empty shell rows. 1 child partial (DCP source issue, not Hub).
+
+---
+
+## Batch 11: Post-Normalizer Full Re-verification (2026-06-07)
+
+### Run #45 — refresh_annual_plans_current (re-verification)
+
+- command: refresh_annual_plans_current
+- params: none
+- job_id: ing_refresh_annual_plans_current_c92976671d39
+- status: succeeded
+
+### Run #46 — refresh_plan_progress (re-verification)
+
+- command: refresh_plan_progress
+- params: none
+- job_id: ing_refresh_plan_progress_4c675cc27d0f
+- status: succeeded
+
+### Run #47 — refresh_dept_key_personnel (re-verification)
+
+- command: refresh_dept_key_personnel
+- params: none
+- job_id: ing_refresh_dept_key_personnel_8b0edf39a48d
+- status: succeeded
+
+### Run #48 — refresh_towers_for_project × 50 projects
+
+- command: refresh_towers_for_project
+- params: 50 prjCodes from dcp_plan_projects
+- total_jobs: 50
+- succeeded: 50, failed: 0, partial: 0
+- table_counts: dcp_tower: 0 → 4816 (delta=+4816)
+
+### Run #49 — refresh_substations_for_project × 50 projects
+
+- command: refresh_substations_for_project
+- params: 50 prjCodes from dcp_plan_projects
+- total_jobs: 50
+- succeeded: 50, failed: 0, partial: 0
+- table_counts: dcp_substation: 0 → 37 (delta=+37)
+- empty_shell_rows: 0
+- notes: Normalizer correctly filters data=null wrapper rows. Only 37 out of 50 projects have substation coordinates.
+
+### Run #50 — refresh_line_sections_for_project × 50 projects
+
+- command: refresh_line_sections_for_project
+- params: 50 prjCodes from dcp_plan_projects
+- total_jobs: 50
+- succeeded: 50, failed: 0, partial: 0
+- table_counts: dcp_line_sections: 0 → 1552 (delta=+1552), dcp_line_branches: 0 → 193 (delta=+193)
+
+### Batch 11 Summary
+
+| Phase | Command | Jobs | Succeeded | Failed | Table | Rows |
+|-------|---------|------|-----------|--------|-------|------|
+| Basic | refresh_annual_plans_current | 1 | 1 | 0 | dcp_plan_projects | 416 |
+| Basic | refresh_plan_progress | 1 | 1 | 0 | dcp_plan_*_progress | 5726 |
+| Basic | refresh_dept_key_personnel | 1 | 1 | 0 | dcp_plan_dept_key_personnel | 1053 |
+| Single | refresh_towers_for_project × 50 | 50 | 50 | 0 | dcp_tower | 4816 |
+| Single | refresh_substations_for_project × 50 | 50 | 50 | 0 | dcp_substation | 37 |
+| Single | refresh_line_sections_for_project × 50 | 50 | 50 | 0 | dcp_line_sections | 1552 |
+| Single | refresh_line_sections_for_project × 50 | 50 | 50 | 0 | dcp_line_branches | 193 |
+
+### Final Table Counts (Batch 11)
+
+| Table | Count |
+|-------|-------|
+| dcp_plan_projects | 416 |
+| dcp_plan_single_projects | 1288 |
+| dcp_plan_project_progress | 767 |
+| dcp_plan_single_project_progress | 2328 |
+| dcp_plan_bidding_section_progress | 2631 |
+| dcp_plan_dept_key_personnel | 1053 |
+| dcp_tower | 4816 |
+| dcp_substation | 37 |
+| dcp_line_sections | 1552 |
+| dcp_line_branches | 193 |
+
+### Acceptance Check (Batch 11)
+
+| # | Criterion | Result |
+|---|-----------|--------|
+| 1 | All basic data commands succeeded | PASS (3/3) |
+| 2 | All single-project commands succeeded | PASS (150/150) |
+| 3 | No schema_mismatch | PASS |
+| 4 | No callback 401/403 | PASS |
+| 5 | No real business rows skipped | PASS |
+| 6 | No extra violations | PASS |
+| 7 | dcp_substation empty_shell_rows = 0 | PASS |
+| 8 | No database_locked / disk_io_error | PASS |
 
 ## Quick Reference: Available Commands
 

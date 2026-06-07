@@ -11,6 +11,12 @@ from typing import Any
 # Fields to exclude from all normalizer outputs (DCP system fields)
 _SKIP_FIELDS = {"extra", "traceId", "children", "singleList", "raw", "recordKey", "sourceRowIndex"}
 
+# API wrapper fields that must not appear in substation output or extra
+_SUBSTATION_WRAPPER_FIELDS = {"code", "message", "success", "traceId", "data", "extra"}
+
+# Business fields for dcp_substation output
+_SUBSTATION_BUSINESS_FIELDS = {"id", "prjCode", "longitude", "latitude", "longitudeLook", "latitudeLook"}
+
 # Fields specific to each progress type level
 _PROJECT_PROGRESS_FIELDS = {
     "id", "prjCode", "prjName", "provinceCode", "buildUnitCode",
@@ -189,4 +195,53 @@ def normalize_line_section(
     return [
         {"table_name": "dcp_line_branches", "scope_values": scope_values, "rows": branch_rows},
         {"table_name": "dcp_line_sections", "scope_values": scope_values, "rows": section_rows},
+    ]
+
+
+def normalize_substation(
+    table_name: str,
+    scope_values: dict[str, Any],
+    rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Filter and clean dcp_substation rows.
+
+    Removes API wrapper-only rows (data=null) and strips wrapper fields.
+    Only outputs rows with at least one non-null business field.
+
+    Rules:
+    - singleProjectCode is scope, not a business field for validity check.
+    - A row is valid only if at least one of id/prjCode/longitude/latitude/
+      longitudeLook/latitudeLook is non-null.
+    - Wrapper fields (code/message/success/traceId/data/extra) are never output.
+    - If business fields exist but singleProjectCode is missing, the row passes
+      through so the validator will catch the missing primary key.
+    """
+    output_rows: list[dict[str, Any]] = []
+
+    for row in rows:
+        single_project_code = row.get("singleProjectCode")
+
+        # Extract only business fields
+        out: dict[str, Any] = {}
+        if single_project_code is not None:
+            out["singleProjectCode"] = single_project_code
+
+        for field in _SUBSTATION_BUSINESS_FIELDS:
+            value = row.get(field)
+            if value is not None:
+                out[field] = value
+
+        # Check if any business field is non-null
+        has_business_data = any(
+            row.get(field) is not None for field in _SUBSTATION_BUSINESS_FIELDS
+        )
+
+        if not has_business_data:
+            # Wrapper-only row (e.g. data=null API response) — skip entirely
+            continue
+
+        output_rows.append(out)
+
+    return [
+        {"table_name": "dcp_substation", "scope_values": scope_values, "rows": output_rows},
     ]

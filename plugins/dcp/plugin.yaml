@@ -139,6 +139,10 @@ normalizers:
     targets: [dcp_line_branches, dcp_line_sections]
     handler: dcp.normalizers:normalize_line_section
 
+  - source_table: dcp_substation
+    targets: [dcp_substation]
+    handler: dcp.normalizers:normalize_substation
+
 scope_mappings: []
 
 query_routes:
