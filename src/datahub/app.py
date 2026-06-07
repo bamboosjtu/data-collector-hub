@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import threading
+import time
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -16,12 +18,31 @@ from src.datahub.api import (
 )
 from src.datahub.core.plugin_loader import build_normalizer_map, build_scope_map, load_all_plugins
 from src.datahub.core.registry import load_registry_from_plugins
-from src.datahub.core.trigger_runtime import ExternalSyncClient
+from src.datahub.core.trigger_runtime import ExternalSyncClient, poll_downloader_jobs
 from src.datahub.ingestion.service import IngestionService
 from src.datahub.settings import Settings
 from src.datahub.storage.sqlite import DataHubStore
 
 logger = logging.getLogger(__name__)
+
+
+def _start_status_poller(store: DataHubStore, trigger_clients: dict[str, ExternalSyncClient], interval: float = 15.0) -> threading.Event:
+    """Start a background thread that polls downloader job status."""
+    stop_event = threading.Event()
+
+    def _poll_loop():
+        while not stop_event.is_set():
+            try:
+                summary = poll_downloader_jobs(store, trigger_clients)
+                if summary["updated"] > 0 or summary["stale"] > 0:
+                    logger.info("status poll: %s", summary)
+            except Exception:
+                logger.exception("status poll error")
+            stop_event.wait(timeout=interval)
+
+    thread = threading.Thread(target=_poll_loop, daemon=True, name="hub-status-poller")
+    thread.start()
+    return stop_event
 
 
 def create_app(
@@ -65,6 +86,12 @@ def create_app(
         )
     )
     register_query_routes(app, plugins, active_store)
+
+    # Start background status poller for downloader_sync jobs
+    if clients:
+        app.state.status_poller_stop = _start_status_poller(active_store, clients, interval=15.0)
+        logger.info("status poller started (interval=15s)")
+
     return app
 
 

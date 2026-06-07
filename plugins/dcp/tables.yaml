@@ -484,10 +484,10 @@ tables:
     description: DCP substation coordinates detail by single project.
     write_mode: upsert
     scope_column_names: [singleProjectCode]
-    primary_key: [singleProjectCode, id]
+    primary_key: [singleProjectCode]
     columns:
       singleProjectCode: {type: string, nullable: false}
-      id: {type: string, nullable: false}
+      id: {type: string, nullable: true}
       prjCode: {type: string, nullable: true}
       longitude: {type: string, nullable: true}
       latitude: {type: string, nullable: true}
