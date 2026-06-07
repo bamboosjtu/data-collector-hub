@@ -68,6 +68,8 @@ def validate_row(table: TableSpec, row: dict[str, Any]) -> dict[str, Any]:
         existing_extra = row.get("extra")
         if isinstance(existing_extra, dict):
             overflow.update(existing_extra)
+        # Filter out forbidden keys that must not be stored in extra
+        overflow = _filter_extra_overflow(table, overflow)
         normalized["extra"] = overflow if overflow else (existing_extra if existing_extra is not None else None)
     for key in table.primary_key:
         if normalized.get(key) is None:
@@ -140,6 +142,22 @@ def _validate_routes(plugins: list[PluginSpec], registry: SchemaRegistry) -> Non
             for column in list(route.path_filters) + list(route.query_filters):
                 if column not in table.columns:
                     raise ValueError(f"query route {route.path} references unknown column {route.table}.{column}")
+
+
+def _filter_extra_overflow(table: TableSpec, overflow: dict[str, Any]) -> dict[str, Any]:
+    """Remove keys that must not be stored in the extra column.
+
+    Forbidden keys:
+    - raw, extra.raw, payload, response, result: these are API envelope fields,
+      not business data, and must not leak into extra.
+    - Any key that matches a declared column: prevents duplication.
+    """
+    _FORBIDDEN_EXTRA_KEYS = frozenset({"raw", "extra.raw", "payload", "response", "result"})
+    declared = set(table.columns)
+    return {
+        k: v for k, v in overflow.items()
+        if k not in _FORBIDDEN_EXTRA_KEYS and k not in declared
+    }
 
 
 def _coerce(value: Any, column_type: str, table_name: str, column_name: str) -> Any:

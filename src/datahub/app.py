@@ -33,7 +33,7 @@ def create_app(
     plugins = load_all_plugins(active_settings.plugin_dir)
     registry = load_registry_from_plugins(plugins)
     active_store = store or DataHubStore(active_settings.db_path, registry, scope_mappings=build_scope_map(plugins))
-    active_store.init_schema()
+    active_store.init_schema(dev_mode=active_settings.dev_mode)
     clients = trigger_clients or {plugin.name: ExternalSyncClient(plugin.connector) for plugin in plugins if plugin.connector.base_url}
     normalizer_map = build_normalizer_map(plugins)
     ingestion_service = IngestionService(active_store, normalizer_map=normalizer_map)

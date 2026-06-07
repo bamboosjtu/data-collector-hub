@@ -26,7 +26,7 @@ class DataHubStore:
         conn.row_factory = sqlite3.Row
         return conn
 
-    def init_schema(self) -> None:
+    def init_schema(self, *, dev_mode: bool = True) -> None:
         with closing(self.connect()) as conn, conn:
             create_metadata_tables(conn)
             for table in self.registry.tables.values():
@@ -37,7 +37,7 @@ class DataHubStore:
                 "INSERT OR IGNORE INTO schema_versions(schema_version, registry_json, checksum, active) VALUES (?, ?, ?, 1)",
                 (f"v{self.registry.version}", raw, checksum),
             )
-            if not conn.execute("SELECT 1 FROM api_keys LIMIT 1").fetchone():
+            if dev_mode and not conn.execute("SELECT 1 FROM api_keys LIMIT 1").fetchone():
                 self.create_api_key("local-admin", ["admin", "ingestion", "query"], token="dev-admin-key", conn=conn)
                 self.create_api_key("local-ingestion", ["ingestion"], token="dev-ingestion-key", conn=conn)
 

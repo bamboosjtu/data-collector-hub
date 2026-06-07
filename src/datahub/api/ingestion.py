@@ -93,7 +93,7 @@ def build_ingestion_router(
             )
             store.mark_job(ingestion_job_id, status="running")
             try:
-                handler = load_plugin_handler(handler_path)
+                handler = load_plugin_handler(handler_path, plugin_name=plugin.name)
                 callback_headers = {"X-API-Key": settings.callback_api_key} if settings.callback_api_key else None
                 ctx = build_handler_context(
                     store=store,
@@ -164,6 +164,19 @@ def build_ingestion_router(
     def list_child_jobs(ingestion_job_id: str) -> dict[str, Any]:
         children = store.list_child_jobs(ingestion_job_id)
         return {"parent_job_id": ingestion_job_id, "total": len(children), "items": children}
+
+    @router.post("/ingestion/v1/jobs/{ingestion_job_id}/retry", status_code=202, dependencies=[Depends(require_scope(store, "ingestion"))])
+    def retry_ingestion_job(ingestion_job_id: str) -> dict[str, Any]:
+        """Retry a failed job by re-creating it with the same command and params."""
+        original = store.get_job(ingestion_job_id)
+        if not original:
+            raise HTTPException(status_code=404, detail="ingestion job not found")
+        command_name = original.get("trigger_key")
+        if not command_name:
+            raise HTTPException(status_code=422, detail="original job has no command")
+        params = json.loads(original.get("params_json") or "{}")
+        payload = IngestionJobRequest(command=command_name, params=params)
+        return create_ingestion_job(payload)
 
     @router.get("/ingestion/v1/messages", dependencies=[Depends(require_scope(store, "admin"))])
     def list_messages(limit: int = Query(default=50, ge=1, le=200)) -> dict[str, Any]:

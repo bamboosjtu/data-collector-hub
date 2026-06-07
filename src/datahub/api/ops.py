@@ -102,8 +102,18 @@ input,select{padding:4px 8px;border-radius:4px;border:1px solid #475569;backgrou
 
 <script>
 const API = '';
-const KEY = 'dev-admin-key';
+const KEY = localStorage.getItem('datahub_api_key') || '';
 const headers = {'X-API-Key': KEY, 'Content-Type': 'application/json'};
+
+if (!KEY) {
+  document.addEventListener('DOMContentLoaded', function() {
+    const key = prompt('Enter API Key (X-API-Key):');
+    if (key) {
+      localStorage.setItem('datahub_api_key', key);
+      location.reload();
+    }
+  });
+}
 
 function statusBadge(s) {
   const m = {succeeded:'green',accepted:'blue',running:'yellow',triggering:'yellow',partial:'yellow',failed:'red',conflict:'red'};
@@ -276,15 +286,9 @@ async function showJobDetail(jobId) {
 }
 
 async function retryJob(jobId) {
-  const r = await fetch(API+`/ingestion/v1/jobs/${jobId}`, {headers});
-  const j = await r.json();
-  const params = JSON.parse(j.params_json || '{}');
-  const cmd = j.trigger_key;
-  if (!cmd) return alert('No command found for this job');
   try {
-    const resp = await fetch(API+'/ingestion/v1/jobs', {
-      method: 'POST', headers,
-      body: JSON.stringify({command: cmd, params})
+    const resp = await fetch(API+`/ingestion/v1/jobs/${jobId}/retry`, {
+      method: 'POST', headers
     });
     const result = await resp.json();
     alert(resp.ok ? `Retry job created: ${result.ingestion_job_id}` : `Error: ${JSON.stringify(result)}`);

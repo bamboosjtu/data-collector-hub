@@ -21,14 +21,27 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
-def load_plugin_handler(handler_path: str):
+def load_plugin_handler(handler_path: str, *, plugin_name: str | None = None):
     """Load a handler function from a module:path string.
 
     Example: "dcp.fan_out:refresh_towers_for_current_plan_projects"
+
+    If plugin_name is provided, validates that the handler module prefix
+    matches the plugin name (e.g. "dcp.xxx" must belong to plugin "dcp").
     """
     if ":" not in handler_path:
         raise ValueError(f"Invalid handler path: {handler_path!r} — expected 'module:function'")
     module_path, func_name = handler_path.rsplit(":", 1)
+
+    # Validate handler belongs to the declaring plugin
+    if plugin_name is not None:
+        prefix = module_path.split(".")[0]
+        if prefix != plugin_name:
+            raise ValueError(
+                f"plugin_handler '{handler_path}' must be scoped to plugin '{plugin_name}' "
+                f"(expected prefix '{plugin_name}.xxx', got '{prefix}')"
+            )
+
     import importlib
     module = importlib.import_module(f"plugins.{module_path}")
     handler = getattr(module, func_name)

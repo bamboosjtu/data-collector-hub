@@ -1227,96 +1227,14 @@ DataCollectorHub/
 
 ---
 
-## 17. 重构实施顺序
+## 17. 实施与验收记录
 
-建议按以下顺序重构：
-
-### 阶段 1：core 骨架
-
-```text
-1. 建立 src/datahub 包结构。
-2. 实现 settings。
-3. 实现 plugin_loader。
-4. 实现 registry。
-5. 定义 PluginSpec / TableSpec / TriggerSpec / QueryRouteSpec。
-6. 编写 plugin_loader 和 registry 测试。
-```
-
-### 阶段 2：storage 与 schema
-
-```text
-1. 实现 SQLite 连接和事务封装。
-2. 实现元数据表 DDL。
-3. 实现业务表 DDL 生成。
-4. 实现 upsert / replace_scope / append。
-5. 编写 write_modes 测试。
-```
-
-### 阶段 3：TableBatch ingestion
-
-```text
-1. 定义 TableBatch v1 models。
-2. 实现 validator。
-3. 实现 idempotency。
-4. 实现 ingestion service。
-5. 实现 POST /ingestion/v1/table-batches。
-6. 编写 TableBatch fixtures 和测试。
-```
-
-### 阶段 4：DCP plugin
-
-```text
-1. 创建 plugins/dcp/plugin.yaml。
-2. 创建 plugins/dcp/tables.yaml。
-3. 将年度计划、安全站班会等 MVP 表放入 tables.yaml。
-4. 声明 downloader-dcp /sync trigger。
-5. 声明 query_routes。
-6. 验证 registry 聚合结果。
-```
-
-### 阶段 5：trigger 与 scheduler
-
-```text
-1. 实现 trigger_runtime。
-2. 实现 POST /ingestion/v1/jobs。
-3. 实现 scheduler。
-4. 打通 DataHub → downloader-dcp /sync → callback ingestion。
-```
-
-### 阶段 6：query 与 admin
-
-```text
-1. 实现 query_router。
-2. 实现 metadata / schemas / plugins API。
-3. 实现 jobs / messages / table-writes 查询 API。
-4. 实现最小 Admin UI 或保留 API 优先。
-```
+> 实施顺序、验收标准和分级验收定义已迁移至 [docs/devlog/mvp-implementation-record.md](docs/devlog/mvp-implementation-record.md)。
+> 本文档仅保留长期稳定的架构设计决策。
 
 ---
 
-## 18. 验收标准
-
-MVP 重构完成后，必须满足：
-
-```text
-1. core 中没有 DCP 协议逻辑。
-2. core 中没有 dcp_sdk import。
-3. core 中没有 downloader-dcp 专用业务分支。
-4. DCP 相关配置集中在 plugins/dcp。
-5. 删除或停用 DCP plugin 后，core 仍可启动。
-6. 新增 plugin 不需要修改 core 代码。
-7. TableBatch v1 fixture 能通过 validation。
-8. 重复 message_id + 相同 payload_hash 返回 duplicate_accepted。
-9. 重复 message_id + 不同 payload_hash 返回 conflict。
-10. upsert / replace_scope / append 均有自动化测试。
-11. query_routes 能动态注册并查询 SQLite。
-12. DataHub 能触发 downloader-dcp /sync 并接收 callback 入库。
-13. ingestion_jobs / ingestion_messages / table_writes 可用于排查失败。
-```
-
----
-
-## 19. 架构摘要
+## 18. 架构摘要
 
 DataCollectorHub MVP 的目标架构是：
 
@@ -1334,7 +1252,7 @@ core + plugin
 5. DCP 通过 plugins/dcp 接入。
 6. 所有正式入库都经过 /ingestion/v1/table-batches。
 7. 所有业务表由 plugin 声明，core 创建、校验和写入。
-8. MVP 保持 SQLite、本地部署、简单元数据表和明确状态模型。
+8. 当前保持 SQLite、本地部署、简单元数据表和明确状态模型。
 ```
 
 最终边界：
@@ -1353,45 +1271,4 @@ DataCollectorHub plugin:
   负责数据源和数据集相关声明，包括 trigger、schema、write_mode、query_routes。
 ```
 
----
 
-## 20. 验收标准定义
-
-### 20.1 三级验收定义
-
-| 验收级别 | 定义 | 说明 |
-|---|---|---|
-| 结构验收 | 表结构、DDL、schema 注册、API 路由正确 | 不依赖 downloader 可达 |
-| 调度验收 | command 触发链路、fan-out 分片、父子关联正确 | 不依赖 downloader 可达，502/failed 可接受 |
-| 真实数据入库验收 | downloader 可达时，业务表有数据或明确返回无数据 | 需要 downloader-dcp 运行 |
-
-### 20.2 结构验收标准
-
-```text
-1. normalizer source_table 不作为业务表持久化。
-2. 业务表均无 raw 字段。
-3. extra 只保存未声明字段，不保存完整 raw。
-4. core 无数据源特定业务逻辑硬编码。
-5. 所有表 schema 由 plugin tables.yaml 声明，core 不硬编码。
-```
-
-### 20.3 调度验收标准
-
-```text
-1. command 全部注册且可触发。
-2. downloader_sync / fan_out / date_range_fan_out 三种 trigger 类型正确路由。
-3. auto_params 正确解析日期占位符。
-4. fan-out 父子任务关联（parent_job_id）可查询。
-5. 子任务可独立重试。
-```
-
-### 20.4 真实数据入库验收标准
-
-```text
-1. downloader 可达时，单项目 command 返回 202 且业务表有数据。
-2. fan-out command 逐项目触发，每个 projectCode 独立记录成功/失败。
-3. date_range_fan_out 按日期切片，每个切片独立 job。
-4. 失败项目/日期段可单独重试。
-```
-
-当前 DCP Plugin MVP 验收记录见 [docs/devlog/2026-06-06-dcp-plugin-mvp-validation.md](docs/devlog/2026-06-06-dcp-plugin-mvp-validation.md)。

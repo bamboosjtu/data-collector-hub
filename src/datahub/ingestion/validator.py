@@ -11,6 +11,10 @@ logger = logging.getLogger(__name__)
 # A row containing most of these is likely an empty wrapper, not real business data.
 _API_WRAPPER_FIELDS = frozenset({"code", "message", "success", "traceId"})
 
+# Fields that indicate real business payload — if any of these are non-empty,
+# the row is NOT an empty wrapper even if it has API wrapper fields.
+_PAYLOAD_FIELDS = frozenset({"raw", "data", "result", "payload", "response"})
+
 
 def _is_empty_wrapper_row(table: TableSpec, row: dict[str, Any], exc: ValueError) -> bool:
     """Determine if a row is an empty API wrapper that should be skipped.
@@ -19,11 +23,13 @@ def _is_empty_wrapper_row(table: TableSpec, row: dict[str, Any], exc: ValueError
     1. The ValueError is specifically about missing primary key or missing required field.
     2. The row contains at least 3 of the known API wrapper fields.
     3. All primary key columns have None values in the row.
+    4. No payload fields (raw/data/result/payload/response) have non-empty values.
+    5. No declared business columns (other than scope columns) have non-None values.
     """
     msg = str(exc)
     is_pk_or_required_error = (
         msg.startswith("missing_primary_key:") or
-        msg.startswith("schema_mismatch:") and "is required" in msg
+        (msg.startswith("schema_mismatch:") and "is required" in msg)
     )
     if not is_pk_or_required_error:
         return False
@@ -35,6 +41,23 @@ def _is_empty_wrapper_row(table: TableSpec, row: dict[str, Any], exc: ValueError
     # All primary key values must be None/missing
     for pk in table.primary_key:
         val = row.get(pk)
+        if val is not None:
+            return False
+
+    # Payload fields must be empty — non-empty means real data
+    for field in _PAYLOAD_FIELDS:
+        val = row.get(field)
+        if val is not None and val != "" and val != [] and val != {}:
+            return False
+
+    # No declared business columns (excluding scope and extra) should have values
+    scope_cols = set(table.scope_column_names)
+    for col_name in table.columns:
+        if col_name == "extra" or col_name in scope_cols:
+            continue
+        if col_name in _API_WRAPPER_FIELDS:
+            continue
+        val = row.get(col_name)
         if val is not None:
             return False
 
