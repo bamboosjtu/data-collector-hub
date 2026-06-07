@@ -221,7 +221,9 @@ def _project_fan_out(
             time.sleep(cooldown_seconds)
 
     summary = {"total": len(param_sets), "total_available": total_available, "succeeded": succeeded, "failed": failed, "items": results}
-    store.mark_job(parent_job_id, status="succeeded" if failed == 0 else "partial", result=summary)
+    # Mark parent as running — _aggregate_parent_jobs will set final status
+    # once all children reach terminal state
+    store.mark_job(parent_job_id, status="running", result=summary)
     return summary
 
 
@@ -323,7 +325,9 @@ def _date_range_fan_out(
 
     summary = {"total": len(chunks), "succeeded": succeeded, "failed": failed,
                "date_range": f"{start_date}~{end_date}", "chunk_days": chunk_days, "items": results}
-    store.mark_job(parent_job_id, status="succeeded" if failed == 0 else "partial", result=summary)
+    # Mark parent as running — _aggregate_parent_jobs will set final status
+    # once all children reach terminal state
+    store.mark_job(parent_job_id, status="running", result=summary)
     return summary
 
 

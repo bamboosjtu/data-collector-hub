@@ -814,6 +814,168 @@ All 12 jobs (4 projects x 3 commands) succeeded. No hard stop conditions trigger
 
 ---
 
+## Batch 7 — Clean Fan-out Retest max_items=5 (2026-06-07)
+
+### Fix Applied Before Retest
+
+**Issue 7: Fan-out parent marks succeeded prematurely (FIXED)**
+- `_project_fan_out` and `_date_range_fan_out` called `store.mark_job(parent_job_id, status="succeeded"/"partial")` immediately after creating all children, before children had completed
+- Fixed: fan-out handlers now mark parent as `running`, letting `_aggregate_parent_jobs` set the final status once all children reach terminal state
+- This ensures parent status correctly reflects child outcomes (e.g., 4 succeeded + 1 failed = partial)
+
+### Run #31 — refresh_towers_for_current_plan_projects (max_items=5, clean retest)
+
+- command: refresh_towers_for_current_plan_projects
+- params: {max_items: "5", max_concurrency: "1", cooldown_seconds: "5"}
+- parent_job_id: ing_refresh_towers_for_current_plan_projects_26486d910795
+- child_jobs: total=5, succeeded=5, failed=0
+- parent_status: running → succeeded (aggregated by _aggregate_parent_jobs)
+- table_counts: dcp_tower: 15520 (upsert, no delta on re-run)
+- schema_mismatch: none
+- extra_violations: none
+- database_locked: none
+- notes: All 5 children succeeded. Parent correctly aggregated to succeeded.
+
+### Run #32 — refresh_substations_for_current_plan_projects (max_items=5, clean retest)
+
+- command: refresh_substations_for_current_plan_projects
+- params: {max_items: "5", max_concurrency: "1", cooldown_seconds: "5"}
+- parent_job_id: ing_refresh_substations_for_current_plan_projects_1f36c151f22f
+- child_jobs: total=5, succeeded=5, failed=0
+- parent_status: running → succeeded
+- table_counts: dcp_substation: 13 (upsert, no delta)
+- schema_mismatch: none
+- extra_violations: none
+- database_locked: none
+- notes: All 5 children succeeded.
+
+### Run #33 — refresh_line_sections_for_current_plan_projects (max_items=5, clean retest)
+
+- command: refresh_line_sections_for_current_plan_projects
+- params: {max_items: "5", max_concurrency: "1", cooldown_seconds: "5"}
+- parent_job_id: ing_refresh_line_sections_for_current_plan_projects_5834ec9372da
+- child_jobs: total=5, succeeded=5, failed=0
+- parent_status: running → succeeded
+- table_counts: dcp_line_sections: 108, dcp_line_branches: 27 (upsert, no delta)
+- schema_mismatch: none
+- extra_violations: none
+- database_locked: none
+- notes: All 5 children succeeded.
+
+### Batch 7 Acceptance Check
+
+| # | Criterion | Result |
+|---|-----------|--------|
+| 1 | Each parent creates exactly 5 children | PASS |
+| 2 | Each child has projectCode | PASS |
+| 3 | All children reach terminal state | PASS (15/15 succeeded) |
+| 4 | Parent correctly aggregates child status | PASS (3/3 succeeded) |
+| 5 | No schema_mismatch | PASS |
+| 6 | No callback 401/403 | PASS |
+| 7 | No real business rows skipped | PASS |
+| 8 | No extra violations | PASS |
+| 9 | No database locked (this round) | PASS |
+
+**All 9 acceptance criteria passed. Proceeding to max_items=10.**
+
+---
+
+## Batch 8 — Fan-out max_items=10 (2026-06-07)
+
+### Run #34 — refresh_towers_for_current_plan_projects (max_items=10)
+
+- command: refresh_towers_for_current_plan_projects
+- params: {max_items: "10", max_concurrency: "1", cooldown_seconds: "5"}
+- parent_job_id: ing_refresh_towers_for_current_plan_projects_bb68cc0753f4
+- child_jobs: total=10, succeeded=10, failed=0
+- parent_status: running → succeeded (aggregated by _aggregate_parent_jobs)
+- table_counts: dcp_tower: 15520 (upsert, no delta)
+- schema_mismatch: none
+- extra_violations: none
+- database_locked: none
+- notes: All 10 children succeeded. Parent correctly aggregated.
+
+### Run #35 — refresh_substations_for_current_plan_projects (max_items=10)
+
+- command: refresh_substations_for_current_plan_projects
+- params: {max_items: "10", max_concurrency: "1", cooldown_seconds: "5"}
+- parent_job_id: ing_refresh_substations_for_current_plan_projects_89749b7df22b
+- child_jobs: total=10, succeeded=10, failed=0
+- parent_status: running → succeeded
+- table_counts: dcp_substation: 13 → 19 (delta=+6)
+- schema_mismatch: none
+- extra_violations: none
+- database_locked: none
+- notes: All 10 children succeeded.
+
+### Run #36 — refresh_line_sections_for_current_plan_projects (max_items=10)
+
+- command: refresh_line_sections_for_current_plan_projects
+- params: {max_items: "10", max_concurrency: "1", cooldown_seconds: "5"}
+- parent_job_id: ing_refresh_line_sections_for_current_plan_projects_204b0ba3203d
+- child_jobs: total=10, succeeded=9, failed=1
+- failed_child: projectCode=1716G02100DQ, error="sink error: database is locked"
+- parent_status: running → partial (9 succeeded + 1 failed)
+- table_counts: dcp_line_sections: 108 → 118 (after retry: +10), dcp_line_branches: 27 → 29 (+2)
+- schema_mismatch: none
+- extra_violations: none
+- database_locked: 1 (retried successfully)
+- notes: 1 child failed due to SQLite concurrent write. Retry succeeded. Parent correctly aggregated to partial.
+
+### Retry #1 — refresh_line_sections_for_project (1716G02100DQ)
+
+- original_job: ing_refresh_line_sections_for_project_c2e4d687ae74
+- retry_job: ing_refresh_line_sections_for_project_6bcf76f658f0
+- status: succeeded
+- row_count: 2 (1 section + 1 branch)
+
+### Batch 8 Summary
+
+| Command | max_items | Children | Succeeded | Failed | Parent Status |
+|---------|-----------|----------|-----------|--------|---------------|
+| towers | 10 | 10 | 10 | 0 | succeeded |
+| substations | 10 | 10 | 10 | 0 | succeeded |
+| line_sections | 10 | 10 | 9 | 1 (db locked, retried OK) | partial |
+
+### Final Table Counts (after all batches)
+
+| Table | Count |
+|-------|-------|
+| dcp_plan_projects | 416 |
+| dcp_plan_single_projects | 1288 |
+| dcp_plan_project_progress | 767 |
+| dcp_plan_single_project_progress | 2328 |
+| dcp_plan_bidding_section_progress | 2631 |
+| dcp_plan_dept_key_personnel | 1055 |
+| dcp_tower | 15520 |
+| dcp_substation | 19 |
+| dcp_line_sections | 118 |
+| dcp_line_branches | 29 |
+
+### Acceptance Check
+
+| # | Criterion | max_items=5 | max_items=10 |
+|---|-----------|-------------|--------------|
+| 1 | Correct child count | PASS | PASS |
+| 2 | Each child has projectCode | PASS | PASS |
+| 3 | All children reach terminal state | PASS | PASS (after retry) |
+| 4 | Parent correctly aggregates | PASS | PASS |
+| 5 | No schema_mismatch | PASS | PASS |
+| 6 | No callback 401/403 | PASS | PASS |
+| 7 | No real business rows skipped | PASS | PASS |
+| 8 | No extra violations | PASS | PASS |
+| 9 | No database locked | PASS | 1 occurrence (retried OK) |
+
+### P2 Issue: SQLite "database is locked"
+
+- Occurs when multiple child jobs try to write to the same table concurrently
+- Frequency: ~1 in 30 child jobs
+- Mitigation: retry failed child jobs
+- Root cause: SQLite default journal mode doesn't handle concurrent writes well
+- Future fix: enable WAL mode or serialize writes through a queue
+
+---
+
 ## Issues Found
 
 ### Issue 1: Auth 401 on callback (FIXED)
