@@ -40,7 +40,7 @@ class IngestionService:
                 expanded_tables = self._apply_normalizers(payload.get("tables") or [])
                 expanded_payload = {**payload, "tables": expanded_tables}
 
-                validated = validate_payload(self.store.registry, expanded_payload, self.store.apply_scope_mappings)
+                validated, skipped_rows = validate_payload(self.store.registry, expanded_payload, self.store.apply_scope_mappings)
                 conn.execute("BEGIN")
                 self._upsert_writing_message(conn, payload, retry=(mode == "retry"))
                 total_rows = 0
@@ -67,6 +67,10 @@ class IngestionService:
                             stats["deleted_count"],
                         ),
                     )
+                skipped_summary = [s.to_dict() for s in skipped_rows]
+                if skipped_rows:
+                    logger.info("message %s skipped %d empty wrapper rows: %s",
+                                payload["message_id"], len(skipped_rows), skipped_summary)
                 conn.execute(
                     """
                     UPDATE ingestion_messages
@@ -84,7 +88,14 @@ class IngestionService:
                     (total_rows, payload["downloader_job_id"]),
                 )
                 conn.commit()
-                return {"status": "accepted", "message_id": payload["message_id"], "table_count": len(validated), "row_count": total_rows}
+                return {
+                    "status": "accepted",
+                    "message_id": payload["message_id"],
+                    "table_count": len(validated),
+                    "row_count": total_rows,
+                    "skipped_rows": len(skipped_rows),
+                    "skipped_details": skipped_summary,
+                }
             except ValueError as exc:
                 if conn.in_transaction:
                     conn.rollback()
