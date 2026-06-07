@@ -24,10 +24,12 @@ class DataHubStore:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout = 5000")
         return conn
 
     def init_schema(self, *, dev_mode: bool = True) -> None:
         with closing(self.connect()) as conn, conn:
+            conn.execute("PRAGMA journal_mode = WAL")
             create_metadata_tables(conn)
             for table in self.registry.tables.values():
                 create_business_table(conn, table)

@@ -976,6 +976,117 @@ All 12 jobs (4 projects x 3 commands) succeeded. No hard stop conditions trigger
 
 ---
 
+## Batch 9 — Cleanup + max_items=20 Verification (2026-06-07)
+
+### Fixes Applied
+
+**Fix 8: CLI --params supports both styles (FIXED)**
+- Changed `nargs="*"` to `nargs="+", action="append"` to support both:
+  - `--params max_items=5 max_concurrency=1` (space-separated)
+  - `--params max_items=5 --params max_concurrency=1` (repeated flags)
+- Added 8 test cases in `tests/test_cli.py` — all pass
+
+**Fix 9: SQLite stability — busy_timeout + WAL (FIXED)**
+- Added `PRAGMA busy_timeout = 5000` in `connect()` (5s wait on lock)
+- Added `PRAGMA journal_mode = WAL` in `init_schema()` (set once, persists)
+- WAL mode enables concurrent reads during writes, eliminating most "database is locked" errors
+- Note: `PRAGMA journal_mode = WAL` removed from `connect()` after initial "disk I/O error" when 3 fan-outs ran concurrently
+
+### Run #37 — refresh_towers_for_current_plan_projects (max_items=20)
+
+- command: refresh_towers_for_current_plan_projects
+- params: {max_items: "20", max_concurrency: "1", cooldown_seconds: "5"}
+- parent_job_id: ing_refresh_towers_for_current_plan_projects_bfbe86604c64
+- child_jobs: total=20, succeeded=20, failed=0
+- parent_status: running → succeeded (aggregated)
+- table_counts: dcp_tower: 15520 (upsert, no delta)
+- schema_mismatch: none
+- extra_violations: none
+- database_locked: 0 (this round)
+- notes: All 20 children succeeded. WAL mode + busy_timeout eliminated database locked errors.
+
+### Run #38 — refresh_substations_for_current_plan_projects (max_items=20, first attempt)
+
+- command: refresh_substations_for_current_plan_projects
+- params: {max_items: "20", max_concurrency: "1", cooldown_seconds: "5"}
+- parent_job_id: ing_refresh_substations_for_current_plan_projects_c5875b4ae727
+- child_jobs: total=0
+- parent_status: running → failed
+- error: "disk I/O error"
+- notes: **Failed because 3 fan-outs ran concurrently.** `PRAGMA journal_mode = WAL` in every `connect()` caused I/O conflict when multiple threads executed it simultaneously. Fixed by moving WAL PRAGMA to `init_schema()` only.
+
+### Run #39 — refresh_substations_for_current_plan_projects (max_items=20, retry)
+
+- command: refresh_substations_for_current_plan_projects
+- params: {max_items: "20", max_concurrency: "1", cooldown_seconds: "5"}
+- parent_job_id: ing_refresh_substations_for_current_plan_projects_34493f5271f8
+- child_jobs: total=20, succeeded=20, failed=0
+- parent_status: running → succeeded (aggregated)
+- table_counts: dcp_substation: 19 → 36 (delta=+17)
+- schema_mismatch: none
+- extra_violations: none
+- database_locked: 0
+- notes: All 20 children succeeded after WAL PRAGMA fix.
+
+### Run #40 — refresh_line_sections_for_current_plan_projects (max_items=20)
+
+- command: refresh_line_sections_for_current_plan_projects
+- params: {max_items: "20", max_concurrency: "1", cooldown_seconds: "5"}
+- parent_job_id: ing_refresh_line_sections_for_current_plan_projects_2140639dd1b8
+- child_jobs: total=20, succeeded=20, failed=0
+- parent_status: running → succeeded (aggregated)
+- table_counts: dcp_line_sections: 118 → 201 (delta=+83), dcp_line_branches: 27 → 42 (delta=+15)
+- schema_mismatch: none
+- extra_violations: none
+- database_locked: 0
+- notes: All 20 children succeeded.
+
+### Batch 9 Summary
+
+| Command | max_items | Children | Succeeded | Failed | Parent Status | database_locked |
+|---------|-----------|----------|-----------|--------|---------------|-----------------|
+| towers | 20 | 20 | 20 | 0 | succeeded | 0 |
+| substations (1st) | 20 | 0 | - | - | failed (disk I/O) | - |
+| substations (2nd) | 20 | 20 | 20 | 0 | succeeded | 0 |
+| line_sections | 20 | 20 | 20 | 0 | succeeded | 0 |
+
+### Final Table Counts (after all batches)
+
+| Table | Count |
+|-------|-------|
+| dcp_plan_projects | 416 |
+| dcp_plan_single_projects | 1288 |
+| dcp_plan_project_progress | 767 |
+| dcp_plan_single_project_progress | 2328 |
+| dcp_plan_bidding_section_progress | 2631 |
+| dcp_plan_dept_key_personnel | 1055 |
+| dcp_tower | 15520 |
+| dcp_substation | 36 |
+| dcp_line_sections | 201 |
+| dcp_line_branches | 42 |
+
+### Acceptance Check (max_items=20)
+
+| # | Criterion | Result |
+|---|-----------|--------|
+| 1 | Correct child count (20 each) | PASS |
+| 2 | Each child has projectCode | PASS |
+| 3 | All children reach terminal state | PASS (60/60 succeeded) |
+| 4 | Parent correctly aggregates | PASS |
+| 5 | No schema_mismatch | PASS |
+| 6 | No callback 401/403 | PASS |
+| 7 | No real business rows skipped | PASS |
+| 8 | No extra violations | PASS |
+| 9 | No database locked (with WAL + busy_timeout) | PASS |
+
+### Key Findings
+
+1. **WAL + busy_timeout eliminates "database is locked"**: After enabling WAL mode and 5s busy_timeout, zero database locked errors in 60 child jobs.
+2. **Concurrent fan-outs can cause "disk I/O error"**: 3 fan-outs running simultaneously with `PRAGMA journal_mode = WAL` in every `connect()` caused I/O conflict. Fixed by setting WAL only in `init_schema()`.
+3. **Fan-outs should be run sequentially**: Avoid triggering multiple fan-out commands at the same time. The current architecture uses a single SQLite database; concurrent fan-out handlers create connection contention.
+
+---
+
 ## Issues Found
 
 ### Issue 1: Auth 401 on callback (FIXED)
