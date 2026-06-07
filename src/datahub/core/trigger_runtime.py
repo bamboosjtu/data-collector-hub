@@ -103,7 +103,7 @@ def poll_downloader_jobs(
     store: Any,
     trigger_clients: dict[str, ExternalSyncClient],
     *,
-    max_polls: int = 50,
+    max_polls: int = 500,
     stale_threshold_seconds: int = _DEFAULT_STALE_THRESHOLD_SECONDS,
 ) -> dict[str, int]:
     """Poll downloader for non-terminal downloader_sync jobs and sync status.
@@ -120,7 +120,6 @@ def poll_downloader_jobs(
             FROM ingestion_jobs
             WHERE status NOT IN ('succeeded', 'partial', 'failed', 'cancelled')
               AND downloader_job_id IS NOT NULL
-              AND parent_job_id IS NULL
             ORDER BY id DESC LIMIT ?
             """,
             (max_polls,),

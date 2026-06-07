@@ -157,7 +157,7 @@ def main():
 
     p_trigger = sub.add_parser("trigger", help="Trigger a command")
     p_trigger.add_argument("command", help="Command name")
-    p_trigger.add_argument("--params", nargs="*", help="key=value params")
+    p_trigger.add_argument("--params", nargs="*", help="key=value params (space-separated, e.g. --params max_items=5 cooldown=3)")
     p_trigger.set_defaults(func=cmd_trigger)
 
     p_jobs = sub.add_parser("jobs", help="List ingestion jobs")
