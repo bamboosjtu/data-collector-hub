@@ -297,3 +297,61 @@ class TestExtraFieldRules:
         row = {"id": "r1", "name": "test", "scope_col": "s1"}
         result = validate_row(table, row)
         assert result["extra"] is None
+
+
+# --- dcp_substation schema tests ---
+
+class TestSubstationSchema:
+    """Tests for dcp_substation: id nullable, singleProjectCode as sole primary key."""
+
+    @staticmethod
+    def _make_substation_table() -> TableSpec:
+        columns = {
+            "singleProjectCode": ColumnSpec(name="singleProjectCode", type="string", nullable=False),
+            "id": ColumnSpec(name="id", type="string", nullable=True),
+            "prjCode": ColumnSpec(name="prjCode", type="string", nullable=True),
+            "longitude": ColumnSpec(name="longitude", type="string", nullable=True),
+            "latitude": ColumnSpec(name="latitude", type="string", nullable=True),
+            "longitudeLook": ColumnSpec(name="longitudeLook", type="string", nullable=True),
+            "latitudeLook": ColumnSpec(name="latitudeLook", type="string", nullable=True),
+            "extra": ColumnSpec(name="extra", type="json", nullable=True),
+        }
+        return TableSpec(
+            table_name="dcp_substation",
+            dataset_key="substation",
+            description="test substation",
+            write_mode="upsert",
+            primary_key=("singleProjectCode",),
+            scope_column_names=("singleProjectCode",),
+            columns=columns,
+        )
+
+    def test_substation_with_id_succeeds(self):
+        """Substation with both id and singleProjectCode -> normal入库."""
+        table = self._make_substation_table()
+        row = {"singleProjectCode": "SP001", "id": "sub_123", "prjCode": "P001", "longitude": "116.4", "latitude": "39.9"}
+        result = validate_row(table, row)
+        assert result["singleProjectCode"] == "SP001"
+        assert result["id"] == "sub_123"
+
+    def test_substation_without_id_succeeds(self):
+        """Substation without id but with singleProjectCode -> normal入库."""
+        table = self._make_substation_table()
+        row = {"singleProjectCode": "SP001", "prjCode": "P001", "longitude": "116.4", "latitude": "39.9"}
+        result = validate_row(table, row)
+        assert result["singleProjectCode"] == "SP001"
+        assert result["id"] is None
+
+    def test_substation_missing_singleProjectCode_fails(self):
+        """Substation without singleProjectCode -> must fail."""
+        table = self._make_substation_table()
+        row = {"id": "sub_123", "prjCode": "P001", "longitude": "116.4", "latitude": "39.9"}
+        with pytest.raises(ValueError, match="schema_mismatch.*singleProjectCode is required"):
+            validate_row(table, row)
+
+    def test_substation_empty_singleProjectCode_fails(self):
+        """Substation with empty singleProjectCode (None) -> must fail."""
+        table = self._make_substation_table()
+        row = {"singleProjectCode": None, "id": "sub_123"}
+        with pytest.raises(ValueError, match="schema_mismatch.*singleProjectCode is required"):
+            validate_row(table, row)

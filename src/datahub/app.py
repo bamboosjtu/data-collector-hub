@@ -26,14 +26,14 @@ from src.datahub.storage.sqlite import DataHubStore
 logger = logging.getLogger(__name__)
 
 
-def _start_status_poller(store: DataHubStore, trigger_clients: dict[str, ExternalSyncClient], interval: float = 15.0) -> threading.Event:
+def _start_status_poller(store: DataHubStore, trigger_clients: dict[str, ExternalSyncClient], interval: float = 5.0, stale_threshold: int = 1800) -> threading.Event:
     """Start a background thread that polls downloader job status."""
     stop_event = threading.Event()
 
     def _poll_loop():
         while not stop_event.is_set():
             try:
-                summary = poll_downloader_jobs(store, trigger_clients)
+                summary = poll_downloader_jobs(store, trigger_clients, stale_threshold_seconds=stale_threshold)
                 if summary["updated"] > 0 or summary["stale"] > 0:
                     logger.info("status poll: %s", summary)
             except Exception:
@@ -89,8 +89,8 @@ def create_app(
 
     # Start background status poller for downloader_sync jobs
     if clients:
-        app.state.status_poller_stop = _start_status_poller(active_store, clients, interval=15.0)
-        logger.info("status poller started (interval=15s)")
+        app.state.status_poller_stop = _start_status_poller(active_store, clients, interval=5.0, stale_threshold=1800)
+        logger.info("status poller started (interval=5s, stale_threshold=1800s)")
 
     return app
 

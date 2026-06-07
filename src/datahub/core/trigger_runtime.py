@@ -63,6 +63,10 @@ def new_producer_job_id(command_name: str, params: dict[str, Any], command: Comm
 # Downloader job status poller
 # ---------------------------------------------------------------------------
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 # Map downloader status -> Hub status
 _DOWNLOADER_STATUS_MAP = {
     "accepted": "accepted",
@@ -77,8 +81,22 @@ _DOWNLOADER_STATUS_MAP = {
 # Terminal states — no further polling needed
 _TERMINAL_STATUSES = frozenset({"succeeded", "partial", "failed", "cancelled"})
 
-# Stale threshold: if a job hasn't been updated for this many seconds, mark stale
-_STALE_THRESHOLD_SECONDS = 600  # 10 minutes
+# Default stale threshold: 30 minutes
+_DEFAULT_STALE_THRESHOLD_SECONDS = 1800
+
+
+def _extract_producer_result(dl_status: dict[str, Any]) -> dict[str, Any]:
+    """Extract relevant fields from downloader job status for Hub result_json."""
+    return {
+        "collect_total": dl_status.get("collect_total"),
+        "collect_done": dl_status.get("collect_done"),
+        "collect_failed": dl_status.get("collect_failed"),
+        "row_count": dl_status.get("row_count"),
+        "message_count": dl_status.get("message_count"),
+        "outbox_delivered": dl_status.get("outbox_delivered"),
+        "outbox_failed": dl_status.get("outbox_failed"),
+        "current_message": dl_status.get("current_message"),
+    }
 
 
 def poll_downloader_jobs(
@@ -86,6 +104,7 @@ def poll_downloader_jobs(
     trigger_clients: dict[str, ExternalSyncClient],
     *,
     max_polls: int = 50,
+    stale_threshold_seconds: int = _DEFAULT_STALE_THRESHOLD_SECONDS,
 ) -> dict[str, int]:
     """Poll downloader for non-terminal downloader_sync jobs and sync status.
 
@@ -129,16 +148,18 @@ def poll_downloader_jobs(
             error = None
             if mapped_status in ("failed", "partial"):
                 error = dl_status.get("current_message") or dl_status.get("error") or None
-            store.mark_job(job_id, status=mapped_status, producer_status=dl_status, error=error)
+            producer_result = _extract_producer_result(dl_status)
+            store.mark_job(job_id, status=mapped_status, producer_status=dl_status, result=producer_result, error=error)
             summary["updated"] += 1
             if mapped_status == "failed":
                 summary["failed"] += 1
                 logger.warning("downloader job %s -> failed: %s", dl_job_id, error)
         elif mapped_status and mapped_status == current_status:
             # Status unchanged — update producer_status_json anyway
-            store.mark_job(job_id, status=current_status, producer_status=dl_status)
+            producer_result = _extract_producer_result(dl_status)
+            store.mark_job(job_id, status=current_status, producer_status=dl_status, result=producer_result)
 
-    # Mark stale jobs (non-terminal for too long)
+    # Mark stale jobs (non-terminal for too long based on started_at)
     with store.connect() as conn:
         stale_rows = conn.execute(
             """
@@ -146,17 +167,65 @@ def poll_downloader_jobs(
             WHERE status NOT IN ('succeeded', 'partial', 'failed', 'cancelled')
               AND downloader_job_id IS NOT NULL
               AND parent_job_id IS NULL
-              AND updated_at < datetime('now', ?)
+              AND started_at < datetime('now', ?)
             """,
-            (f"-{_STALE_THRESHOLD_SECONDS} seconds",),
+            (f"-{stale_threshold_seconds} seconds",),
         ).fetchall()
     for row in stale_rows:
         store.mark_job(row["ingestion_job_id"], status="failed", error="job stale: no status update within threshold")
         summary["stale"] += 1
 
+    # Aggregate parent job status from children
+    _aggregate_parent_jobs(store)
+
     return summary
 
 
-import logging
+def _aggregate_parent_jobs(store: Any) -> None:
+    """Update parent job status based on child job statuses."""
+    with store.connect() as conn:
+        # Find parent jobs that are still non-terminal
+        parents = conn.execute(
+            """
+            SELECT DISTINCT j1.ingestion_job_id
+            FROM ingestion_jobs j1
+            WHERE j1.parent_job_id IS NULL
+              AND j1.status NOT IN ('succeeded', 'partial', 'failed', 'cancelled')
+              AND EXISTS (
+                SELECT 1 FROM ingestion_jobs j2 WHERE j2.parent_job_id = j1.ingestion_job_id
+              )
+            """,
+        ).fetchall()
 
-logger = logging.getLogger(__name__)
+    for parent_row in parents:
+        parent_id = parent_row["ingestion_job_id"]
+        with store.connect() as conn:
+            children = conn.execute(
+                "SELECT status, error FROM ingestion_jobs WHERE parent_job_id = ?",
+                (parent_id,),
+            ).fetchall()
+
+        if not children:
+            continue
+
+        total = len(children)
+        terminal = [c for c in children if c["status"] in _TERMINAL_STATUSES]
+        if len(terminal) < total:
+            # Not all children are terminal yet — parent stays running
+            continue
+
+        succeeded = sum(1 for c in terminal if c["status"] == "succeeded")
+        failed = sum(1 for c in terminal if c["status"] == "failed")
+        partial = sum(1 for c in terminal if c["status"] == "partial")
+
+        if failed == 0 and partial == 0:
+            parent_status = "succeeded"
+        elif succeeded == 0:
+            parent_status = "failed"
+        else:
+            parent_status = "partial"
+
+        errors = [c["error"] for c in terminal if c["error"]]
+        error_msg = "; ".join(errors[:3]) if errors else None
+        result = {"total": total, "succeeded": succeeded, "failed": failed, "partial": partial}
+        store.mark_job(parent_id, status=parent_status, result=result, error=error_msg)
