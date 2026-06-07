@@ -1224,6 +1224,13 @@ All 3 fan-outs executed sequentially (no concurrency). WAL mode + busy_timeout a
 - Historical cleanup: 84 rows → 28 rows (56 empty shell rows deleted)
 - Verification after rerun (max_items=50): empty_shell_rows=0, total=28, has_extra=0
 
+### Issue 6: Fan-out parent stale threshold (FIXED)
+- Symptom: Fan-out parent jobs could be marked stale (failed) by the 30min threshold while children were still running
+- Root cause: Stale query condition `parent_job_id IS NULL` matched fan-out parent jobs
+- Fix: Added `NOT EXISTS (children)` to stale query — fan-out parents excluded from stale check
+- Fan-out parent terminal state determined solely by `_aggregate_parent_jobs`
+- Standalone downloader_sync jobs still subject to stale threshold
+
 ### Run #44 — refresh_substations_for_current_plan_projects (max_items=50, normalizer verification)
 
 - command: refresh_substations_for_current_plan_projects
@@ -1327,6 +1334,100 @@ All 3 fan-outs executed sequentially (no concurrency). WAL mode + busy_timeout a
 | 6 | No extra violations | PASS |
 | 7 | dcp_substation empty_shell_rows = 0 | PASS |
 | 8 | No database_locked / disk_io_error | PASS |
+
+---
+
+## Batch 12: Fan-out Stale Fix + max_items=100 Verification (2026-06-07)
+
+### Fix: Fan-out parent excluded from stale threshold
+
+- Problem: Fan-out parent jobs (with children) could be marked stale by the 30min threshold while children were still running
+- Fix: Added `NOT EXISTS (SELECT 1 FROM ingestion_jobs j2 WHERE j2.parent_job_id = ingestion_jobs.ingestion_job_id)` to stale query
+- Fan-out parent terminal state is now determined solely by `_aggregate_parent_jobs`
+- Standalone downloader_sync jobs still subject to stale threshold
+- Tests: 14/14 passed (including new `test_fan_out_parent_not_stale` and `test_standalone_job_still_stale`)
+
+### Run #51 — refresh_towers_for_current_plan_projects (max_items=100)
+
+- command: refresh_towers_for_current_plan_projects
+- params: {max_items: "100", max_concurrency: "1", cooldown_seconds: "5"}
+- parent_job_id: ing_refresh_towers_for_current_plan_projects_c2c74c2d126a
+- child_jobs: total=100, succeeded=100, failed=0, partial=0
+- parent_status: succeeded
+- duration: ~8 min
+- table_counts: dcp_tower: 4816 → 7704 (delta=+2888)
+- db_locked: 0, disk_io: 0, schema_mismatch: 0, skipped_rows: 0, extra_violation: 0
+- dcp_substation empty_shells: 0
+- failed_children_retryable: n/a
+
+### Run #52 — refresh_substations_for_current_plan_projects (max_items=100)
+
+- command: refresh_substations_for_current_plan_projects
+- params: {max_items: "100", max_concurrency: "1", cooldown_seconds: "5"}
+- parent_job_id: ing_refresh_substations_for_current_plan_projects_12b565ce6c5f
+- child_jobs: total=100, succeeded=100, failed=0, partial=0
+- parent_status: succeeded
+- duration: ~8 min
+- table_counts: dcp_substation: 37 → 77 (delta=+40)
+- db_locked: 0, disk_io: 0, schema_mismatch: 0, skipped_rows: 0, extra_violation: 0
+- dcp_substation empty_shells: 0
+- failed_children_retryable: n/a
+
+### Run #53 — refresh_line_sections_for_current_plan_projects (max_items=100)
+
+- command: refresh_line_sections_for_current_plan_projects
+- params: {max_items: "100", max_concurrency: "1", cooldown_seconds: "5"}
+- parent_job_id: ing_refresh_line_sections_for_current_plan_projects_5d1568a889a7
+- child_jobs: total=100, succeeded=100, failed=0, partial=0
+- parent_status: succeeded
+- duration: ~8.5 min
+- table_counts: dcp_line_sections: 1552 → 2541 (delta=+989), dcp_line_branches: 193 → 312 (delta=+119)
+- db_locked: 0, disk_io: 0, schema_mismatch: 0, skipped_rows: 0, extra_violation: 0
+- dcp_substation empty_shells: 0
+- failed_children_retryable: n/a
+
+### Batch 12 Summary
+
+| Command | max_items | Children | Succeeded | Failed | Parent Status | db_locked | disk_io | Duration |
+|---------|-----------|----------|-----------|--------|---------------|-----------|---------|----------|
+| towers | 100 | 100 | 100 | 0 | succeeded | 0 | 0 | ~8 min |
+| substations | 100 | 100 | 100 | 0 | succeeded | 0 | 0 | ~8 min |
+| line_sections | 100 | 100 | 100 | 0 | succeeded | 0 | 0 | ~8.5 min |
+
+### Final Table Counts (Batch 12)
+
+| Table | Count |
+|-------|-------|
+| dcp_plan_projects | 416 |
+| dcp_plan_single_projects | 1288 |
+| dcp_plan_project_progress | 767 |
+| dcp_plan_single_project_progress | 2328 |
+| dcp_plan_bidding_section_progress | 2631 |
+| dcp_plan_dept_key_personnel | 1053 |
+| dcp_tower | 7704 |
+| dcp_substation | 77 |
+| dcp_line_sections | 2541 |
+| dcp_line_branches | 312 |
+
+### Acceptance Check (max_items=100)
+
+| # | Criterion | Result |
+|---|-----------|--------|
+| 1 | Parent not stale-failed | PASS |
+| 2 | All children terminal | PASS (300/300 succeeded) |
+| 3 | Parent aggregation correct | PASS (all succeeded) |
+| 4 | dcp_substation empty_shells = 0 | PASS |
+| 5 | No schema_mismatch | PASS |
+| 6 | No callback 401/403 | PASS |
+| 7 | No SQLite lock errors | PASS |
+| 8 | No disk I/O error | PASS |
+
+### Key Findings
+
+1. **Fan-out parent stale fix works**: 100-item fan-outs take ~8 min, well under 30 min threshold, but fix ensures safety for longer runs (e.g. full 416).
+2. **300/300 child jobs succeeded**: Zero failures across all three fan-out commands.
+3. **Normalizer continues to work**: dcp_substation empty_shells=0 after substations fan-out.
+4. **~8 min per 100-item fan-out**: With max_concurrency=1 and cooldown_seconds=5.
 
 ## Quick Reference: Available Commands
 

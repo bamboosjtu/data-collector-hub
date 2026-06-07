@@ -204,6 +204,42 @@ class TestPollDownloaderJobs:
         job = store.get_job("job_6")
         assert job["status"] == "accepted"  # unchanged
 
+    def test_fan_out_parent_not_stale(self):
+        """Fan-out parent jobs (with children) should NOT be marked stale.
+        Their terminal state is determined solely by _aggregate_parent_jobs."""
+        store = _make_store("poll_parent_not_stale")
+        with store.connect() as conn:
+            _insert_job(conn, job_id="parent_stale", producer_job_id="dl_ps", status="running")
+            _insert_job(conn, job_id="child_stale", producer_job_id="dl_cs", status="running", parent_job_id="parent_stale")
+            # Set parent started_at to 31 minutes ago
+            conn.execute("UPDATE ingestion_jobs SET started_at = datetime('now', '-1860 seconds') WHERE ingestion_job_id = 'parent_stale'")
+
+        client = MagicMock(spec=ExternalSyncClient)
+        client.get_job_status.return_value = {"status": "running"}
+
+        summary = poll_downloader_jobs(store, {"dcp": client}, stale_threshold_seconds=1800)
+        assert summary["stale"] == 0
+
+        parent = store.get_job("parent_stale")
+        assert parent["status"] == "running"  # NOT marked stale
+
+    def test_standalone_job_still_stale(self):
+        """Standalone jobs (no children) should still be marked stale."""
+        store = _make_store("poll_standalone_stale")
+        with store.connect() as conn:
+            _insert_job(conn, job_id="standalone_stale", producer_job_id="dl_ss", status="running")
+            conn.execute("UPDATE ingestion_jobs SET started_at = datetime('now', '-1860 seconds') WHERE ingestion_job_id = 'standalone_stale'")
+
+        client = MagicMock(spec=ExternalSyncClient)
+        client.get_job_status.return_value = {"status": "running"}
+
+        summary = poll_downloader_jobs(store, {"dcp": client}, stale_threshold_seconds=1800)
+        assert summary["stale"] == 1
+
+        job = store.get_job("standalone_stale")
+        assert job["status"] == "failed"
+        assert "stale" in (job["error"] or "")
+
 
 class TestAggregateParentJobs:
     def test_all_children_succeeded_parent_succeeded(self):

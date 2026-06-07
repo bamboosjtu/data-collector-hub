@@ -158,7 +158,9 @@ def poll_downloader_jobs(
             producer_result = _extract_producer_result(dl_status)
             store.mark_job(job_id, status=current_status, producer_status=dl_status, result=producer_result)
 
-    # Mark stale jobs (non-terminal for too long based on started_at)
+    # Mark stale jobs (non-terminal for too long based on started_at).
+    # Exclude fan-out parent jobs (those with children) — their terminal
+    # state is determined solely by _aggregate_parent_jobs.
     with store.connect() as conn:
         stale_rows = conn.execute(
             """
@@ -166,6 +168,9 @@ def poll_downloader_jobs(
             WHERE status NOT IN ('succeeded', 'partial', 'failed', 'cancelled')
               AND downloader_job_id IS NOT NULL
               AND parent_job_id IS NULL
+              AND NOT EXISTS (
+                SELECT 1 FROM ingestion_jobs j2 WHERE j2.parent_job_id = ingestion_jobs.ingestion_job_id
+              )
               AND started_at < datetime('now', ?)
             """,
             (f"-{stale_threshold_seconds} seconds",),
