@@ -359,6 +359,137 @@ class TestCircuitBreaker:
         assert result["skipped_remaining_dates"] == 7
 
 
+class TestChildParamsCleanup:
+    """Verify fan-out control params are not passed to child jobs."""
+
+    def _run_fan_out_capture_child_params(self, params):
+        """Run fan-out and capture the child_params passed to _run_child_job."""
+        store = _make_store()
+        plugins = _make_plugins()
+        client = _make_client()
+        ctx = _make_ctx(store, plugins, client, params)
+
+        captured_params = []
+
+        with patch("plugins.dcp.fan_out._wait_for_child_terminal") as mock_wait, \
+             patch("plugins.dcp.fan_out._run_child_job") as mock_run:
+            mock_wait.return_value = _succeeded_job()
+
+            def capture_run(store, child_plugin, client, dl_job_type, cmd_name, child_params, parent_id, cb_url, **kw):
+                captured_params.append(dict(child_params))
+                return (f"ing_child_{len(captured_params)}", "accepted", None)
+
+            mock_run.side_effect = capture_run
+            _date_range_fan_out(
+                ctx=ctx,
+                child_command="refresh_daily_meetings_by_range",
+                start_date_param="startDate",
+                end_date_param="endDate",
+                chunk_days=1,
+                cooldown_seconds=0,
+            )
+
+        return captured_params
+
+    def test_cooldown_seconds_not_in_child_params(self):
+        """cooldown_seconds should not be passed to child jobs."""
+        params = {
+            "startDate": "2026-01-01", "endDate": "2026-01-03",
+            "chunk_days": 1, "cooldown_seconds": 3,
+        }
+        captured = self._run_fan_out_capture_child_params(params)
+        for cp in captured:
+            assert "cooldown_seconds" not in cp
+
+    def test_max_concurrency_not_in_child_params(self):
+        """max_concurrency should not be passed to child jobs."""
+        params = {
+            "startDate": "2026-01-01", "endDate": "2026-01-03",
+            "chunk_days": 1, "max_concurrency": 2,
+        }
+        captured = self._run_fan_out_capture_child_params(params)
+        for cp in captured:
+            assert "max_concurrency" not in cp
+
+    def test_chunk_days_not_in_child_params(self):
+        """chunk_days should not be passed to child jobs."""
+        params = {
+            "startDate": "2026-01-01", "endDate": "2026-01-03",
+            "chunk_days": 1,
+        }
+        captured = self._run_fan_out_capture_child_params(params)
+        for cp in captured:
+            assert "chunk_days" not in cp
+
+    def test_consecutive_failure_threshold_not_in_child_params(self):
+        """consecutive_failure_threshold should not be passed to child jobs."""
+        params = {
+            "startDate": "2026-01-01", "endDate": "2026-01-03",
+            "chunk_days": 1, "consecutive_failure_threshold": 5,
+        }
+        captured = self._run_fan_out_capture_child_params(params)
+        for cp in captured:
+            assert "consecutive_failure_threshold" not in cp
+
+
+class TestParameterValidation:
+    """Verify parameter validation rejects invalid values."""
+
+    def _run_fan_out(self, params):
+        """Run fan-out and return (result, store)."""
+        store = _make_store()
+        plugins = _make_plugins()
+        client = _make_client()
+        ctx = _make_ctx(store, plugins, client, params)
+
+        result = _date_range_fan_out(
+            ctx=ctx,
+            child_command="refresh_daily_meetings_by_range",
+            start_date_param="startDate",
+            end_date_param="endDate",
+            chunk_days=1,
+            cooldown_seconds=0,
+        )
+        return result, store
+
+    def test_chunk_days_zero_parent_failed(self):
+        """chunk_days=0 should fail parent without creating children."""
+        result, store = self._run_fan_out({
+            "startDate": "2026-01-01", "endDate": "2026-01-10",
+            "chunk_days": 0,
+        })
+        assert result["total"] == 0
+        assert "chunk_days must be >= 1" in result.get("error", "")
+        # Verify mark_job was called with failed status
+        mark_calls = store.mark_job.call_args_list
+        failed_calls = [c for c in mark_calls if c[1].get("status") == "failed"]
+        assert len(failed_calls) >= 1
+
+    def test_consecutive_failure_threshold_zero_parent_failed(self):
+        """consecutive_failure_threshold=0 should fail parent without creating children."""
+        result, store = self._run_fan_out({
+            "startDate": "2026-01-01", "endDate": "2026-01-10",
+            "chunk_days": 1, "consecutive_failure_threshold": 0,
+        })
+        assert result["total"] == 0
+        assert "consecutive_failure_threshold must be >= 1" in result.get("error", "")
+        mark_calls = store.mark_job.call_args_list
+        failed_calls = [c for c in mark_calls if c[1].get("status") == "failed"]
+        assert len(failed_calls) >= 1
+
+    def test_cooldown_seconds_negative_parent_failed(self):
+        """cooldown_seconds<0 should fail parent without creating children."""
+        result, store = self._run_fan_out({
+            "startDate": "2026-01-01", "endDate": "2026-01-10",
+            "chunk_days": 1, "cooldown_seconds": -1,
+        })
+        assert result["total"] == 0
+        assert "cooldown_seconds must be >= 0" in result.get("error", "")
+        mark_calls = store.mark_job.call_args_list
+        failed_calls = [c for c in mark_calls if c[1].get("status") == "failed"]
+        assert len(failed_calls) >= 1
+
+
 class TestProjectFanOutUnaffected:
     """Verify project fan-out is not affected by circuit breaker changes."""
 

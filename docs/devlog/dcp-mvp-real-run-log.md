@@ -2012,6 +2012,79 @@ This affects ALL dates, including 2026-03-09 which was previously successful in 
 - 7 circuit breaker integration tests (5 consecutive → stop, parent failed, error message, skipped_remaining, success resets counter, normal path unaffected, custom threshold)
 - 1 project fan-out unaffected test
 
+**Additional hardening (3 items):**
+1. Child params cleanup: `chunk_days`, `cooldown_seconds`, `consecutive_failure_threshold`, `max_concurrency` removed from child params before passing to downloader
+2. Parameter validation: `chunk_days >= 1`, `cooldown_seconds >= 0`, `consecutive_failure_threshold >= 1`; invalid → parent failed immediately
+3. 7 additional tests: 4 child params cleanup + 3 parameter validation
+
+Total: 23 tests in `tests/test_fan_out_circuit_breaker.py`
+
+### Run #71 — Single date re-test (2026-03-10, post-downloader restart)
+
+- command: refresh_daily_meetings_by_range
+- params: startDate=2026-03-10 endDate=2026-03-10
+- job_id: ing_refresh_daily_meetings_by_range_41fb48c85923
+- status: succeeded
+- row_count: 158
+- DCP session restored after downloader-dcp restart
+
+### Run #72 — Yesterday re-test
+
+- command: refresh_daily_meetings_yesterday
+- parent job_id: ing_refresh_daily_meetings_yesterday_8a208a14d613
+- child: refresh_daily_meetings_by_range startDate=2026-06-07 endDate=2026-06-07
+- child status: succeeded
+- row_count: 364
+
+### Run #73 — 7-day backfill (2025-12-08 ~ 2025-12-14, with circuit breaker)
+
+- command: backfill_daily_meetings_by_range
+- params: startDate=2025-12-08 endDate=2025-12-14 chunk_days=1 cooldown_seconds=3 consecutive_failure_threshold=5
+- parent job_id: ing_backfill_daily_meetings_by_range_7640ded141aa
+- parent status: succeeded
+- child_jobs: total=7, succeeded=7, failed=0
+- rows per day: 452, 477, 470, 476, 481, 493, 515
+- circuit breaker: NOT triggered (0 consecutive failures)
+
+### Run #74 — 180-day backfill (2025-12-08 ~ 2026-06-07, with circuit breaker)
+
+- command: backfill_daily_meetings_by_range
+- params: startDate=2025-12-08 endDate=2026-06-07 chunk_days=1 cooldown_seconds=3 consecutive_failure_threshold=5
+- parent job_id: ing_backfill_daily_meetings_by_range_bb8fcc2fa812
+- parent status: succeeded
+- child_jobs: total=182, succeeded=182, failed=0, partial=0
+- duration: ~75 min (sequential, 3s cooldown)
+- dcp_daily_meeting: 53320 rows, 169 distinct dates
+- schema_mismatch: 0, callback 401/403: 0, database locked: 0, disk I/O: 0
+- extra NOT NULL: 0/53320
+- id/date null: 0
+- count(*) = count(distinct date:id): 53320 = 53320
+- key fields: singleProjectCode 53320/53320, biddingSectionCode 53320/53320, leaderName 53320/53320
+- daily avg: 315.5, max: 515 (2025-12-14), min: 1 (2026-02-13)
+- circuit breaker: NOT triggered (0 consecutive failures)
+
+### 180-Day Backfill Evaluation
+
+| Metric | Value |
+|--------|-------|
+| Total rows | 53,320 |
+| Dates | 169 |
+| Daily avg | 315.5 |
+| Daily max | 515 |
+| Daily min | 1 |
+| Failed children | 0 |
+| Retry count | 0 |
+| Database locked | 0 |
+| Disk I/O error | 0 |
+| Schema mismatch | 0 |
+| DCP rate limiting/WAF | None observed |
+| Circuit breaker triggered | No |
+| Parent duration | ~75 min (182 children) |
+
+**Conclusion: 180-day backfill stable with circuit breaker. Ready for 365-day evaluation.**
+
+Data trend: Dec 2025 has higher volume (452-515/day), Jan 2026 moderate (164-421/day), Feb 2026 low start then ramps up (1-215/day), Mar-Jun 2026 steady (158-440/day).
+
 ## Quick Reference: Available Commands
 
 | Command | Params | Type |

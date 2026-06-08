@@ -1,11 +1,11 @@
-"""90-day backfill acceptance verification for dcp_daily_meeting."""
+"""Acceptance verification for dcp_daily_meeting."""
 import sqlite3
 
 conn = sqlite3.connect("data/datahub_mvp.db")
 conn.row_factory = sqlite3.Row
 cur = conn.cursor()
 
-print("=== 90-Day Backfill Acceptance Check ===\n")
+print("=== Daily Meeting Acceptance Check ===\n")
 
 # 1. Total count
 cur.execute("SELECT count(*) as cnt FROM dcp_daily_meeting")

@@ -344,6 +344,23 @@ def _date_range_fan_out(
     if "consecutive_failure_threshold" in params:
         consecutive_failure_threshold = int(params["consecutive_failure_threshold"])
 
+    # Parameter validation
+    if chunk_days < 1:
+        error_msg = f"date_range_fan_out: chunk_days must be >= 1, got {chunk_days}"
+        logger.error(error_msg)
+        store.mark_job(parent_job_id, status="failed", error=error_msg)
+        return {"total": 0, "succeeded": 0, "failed": 0, "items": [], "error": error_msg}
+    if cooldown_seconds < 0:
+        error_msg = f"date_range_fan_out: cooldown_seconds must be >= 0, got {cooldown_seconds}"
+        logger.error(error_msg)
+        store.mark_job(parent_job_id, status="failed", error=error_msg)
+        return {"total": 0, "succeeded": 0, "failed": 0, "items": [], "error": error_msg}
+    if consecutive_failure_threshold < 1:
+        error_msg = f"date_range_fan_out: consecutive_failure_threshold must be >= 1, got {consecutive_failure_threshold}"
+        logger.error(error_msg)
+        store.mark_job(parent_job_id, status="failed", error=error_msg)
+        return {"total": 0, "succeeded": 0, "failed": 0, "items": [], "error": error_msg}
+
     # 1. Parse dates
     start_str = params.get(start_date_param)
     end_str = params.get(end_date_param)
@@ -389,8 +406,11 @@ def _date_range_fan_out(
         child_params = dict(params)
         child_params[start_date_param] = chunk_start.strftime(date_format)
         child_params[end_date_param] = chunk_end.strftime(date_format)
+        # Remove fan-out control params — must not be passed to downloader child
         child_params.pop("chunk_days", None)
+        child_params.pop("cooldown_seconds", None)
         child_params.pop("consecutive_failure_threshold", None)
+        child_params.pop("max_concurrency", None)
 
         job_id, status, err = _run_child_job(
             store, child_plugin, client, downloader_job_type,
