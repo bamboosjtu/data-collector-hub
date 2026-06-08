@@ -1,7 +1,7 @@
 # DCP MVP Real Run Log
 
 Template version: 1
-Tag: mvp-dcp-plugin-ingestion-beta2
+Tag: mvp-dcp-safety-daily-meeting-fieldized
 
 ## Run Record Template
 
@@ -1848,6 +1848,106 @@ The current schema violates this principle — 72 business fields are in extra, 
 ### Decision
 
 **Daily meeting field-normalization COMPLETE.** The critical issue from Batch 15 (72 business fields in extra) is now resolved. All 4 verification steps passed with 0 schema_mismatch and 0 extra dependency.
+
+---
+
+## Checkpoint: mvp-dcp-safety-daily-meeting-fieldized
+
+**Date: 2026-06-08**
+
+### Completed Milestones
+
+1. **项目域全量完成**
+   - towers 415/416, substations 408/416, line_sections 414/416 (full 416 fan-out)
+   - 11/11 retry children recovered after downloader-dcp SQLite fix
+   - Total: 1237/1248 succeeded (99.1%), all failures retried to success
+
+2. **downloader-dcp SQLite 稳定性完成**
+   - connection-per-operation fix verified
+   - WAL mode + busy_timeout=5000
+
+3. **DataHub fan-out 调度修复完成**
+   - Fan-out parent NOT polled as downloader job (NOT EXISTS children)
+   - Fan-out parent NOT subject to stale threshold (NOT EXISTS children)
+   - Parent aggregation: all succeeded→succeeded, all failed→failed, mixed→partial
+
+4. **Daily meeting 字段化完成**
+   - dcp_daily_meeting: 3 columns → 42 columns
+   - dcp_daily_meeting_snapshot: 3 columns → 42 columns
+   - normalize_daily_meeting: filters wrapper fields, outputs only declared fields
+   - 12 unit tests passing
+
+5. **14 天回补完成**
+   - 5294 rows, 14 dates, extra NOT NULL = 0
+   - schema_mismatch = 0, callback 401/403 = 0
+   - query_routes: date, singleProjectCode, biddingSectionCode, leaderName, etc.
+
+### Current Data State
+
+| Table | Rows |
+|-------|------|
+| dcp_daily_meeting | 5294 (14 dates) |
+| dcp_daily_meeting_snapshot | 276 |
+
+### Next Phase
+
+Safety domain daily meeting extended backfill:
+- 30-day → 90-day → evaluate full history
+
+### Run #68 — 30-day backfill (2026-05-09 ~ 2026-06-07)
+
+- command: backfill_daily_meetings_by_range (plugin_handler fan-out)
+- params: startDate=2026-05-09 endDate=2026-06-07 chunk_days=1 cooldown_seconds=3
+- parent job_id: ing_backfill_daily_meetings_by_range_108efc7be410
+- parent status: succeeded
+- child_jobs: total=30, succeeded=30, failed=0, partial=0
+- duration: ~5 min 15 sec
+- dcp_daily_meeting: 11015 rows, 30 distinct dates
+- schema_mismatch: 0, callback 401/403: 0, database locked: 0, disk I/O: 0
+- extra NOT NULL: 0/11015
+- id/date null: 0
+- count(*) = count(distinct date:id): 11015 = 11015
+- key fields: singleProjectCode 11015/11015, biddingSectionCode 11015/11015, leaderName 11015/11015
+- daily avg: 367.2, max: 412, min: 85 (2026-05-11, weekend/holiday)
+
+### Run #69 — 90-day backfill (2026-03-10 ~ 2026-06-07)
+
+- command: backfill_daily_meetings_by_range (plugin_handler fan-out)
+- params: startDate=2026-03-10 endDate=2026-06-07 chunk_days=1 cooldown_seconds=3
+- parent job_id: ing_backfill_daily_meetings_by_range_576c2a4eb62a
+- parent status: succeeded
+- child_jobs: total=90, succeeded=90, failed=0, partial=0
+- duration: ~14 min
+- dcp_daily_meeting: 30628 rows, 90 distinct dates
+- schema_mismatch: 0, callback 401/403: 0, database locked: 0, disk I/O: 0
+- extra NOT NULL: 0/30628
+- id/date null: 0
+- count(*) = count(distinct date:id): 30628 = 30628
+- key fields: singleProjectCode 30628/30628, biddingSectionCode 30628/30628, leaderName 30628/30628
+- daily avg: 340.3, max: 440 (2026-04-26), min: 85 (2026-05-11)
+
+### 90-Day Backfill Evaluation
+
+| Metric | Value |
+|--------|-------|
+| Total rows | 30,628 |
+| Dates | 90 |
+| Daily avg | 340.3 |
+| Daily max | 440 |
+| Daily min | 85 |
+| Failed children | 0 |
+| Retry count | 0 |
+| Database locked | 0 |
+| Disk I/O error | 0 |
+| Schema mismatch | 0 |
+| DCP rate limiting/WAF | None observed |
+| Parent duration | ~14 min (90 children) |
+
+**Conclusion: 90-day backfill stable. Ready for full history planning.**
+- Recommend phased approach: 180-day → 365-day → full history
+- Each phase independently verified
+- chunk_days=1 maintained throughout
+- No evidence of DCP source throttling
 
 ## Quick Reference: Available Commands
 
