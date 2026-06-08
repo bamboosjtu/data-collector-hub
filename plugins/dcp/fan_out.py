@@ -222,6 +222,11 @@ def _project_fan_out(
     logger.info("project fan-out %s: %d projects (of %d available, circuit_breaker=%d)",
                 child_command, len(param_sets), total_available, consecutive_failure_threshold)
 
+    # Mark parent as running with fan_out_in_progress flag to prevent
+    # _aggregate_parent_jobs from prematurely aggregating while we
+    # are still creating children sequentially.
+    store.mark_job(parent_job_id, status="running", result={"fan_out_in_progress": True, "total_available": total_available})
+
     # 3. Find child command
     child_cmd, child_plugin, client, error = _find_child_command_and_client(plugins, child_command, trigger_clients)
     if error:
@@ -503,6 +508,11 @@ def _date_range_fan_out(
 
     logger.info("date_range_fan_out %s: %d chunks from %s to %s (chunk_days=%d, circuit_breaker=%d)",
                 child_command, len(chunks), start_date, end_date, chunk_days, consecutive_failure_threshold)
+
+    # Mark parent as running with fan_out_in_progress flag to prevent
+    # _aggregate_parent_jobs from prematurely aggregating while we
+    # are still creating children sequentially.
+    store.mark_job(parent_job_id, status="running", result={"fan_out_in_progress": True, "total_chunks": len(chunks)})
 
     # 3. Find child command
     child_cmd, child_plugin, client, error = _find_child_command_and_client(plugins, child_command, trigger_clients)

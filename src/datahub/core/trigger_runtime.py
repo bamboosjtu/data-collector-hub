@@ -191,12 +191,16 @@ def poll_downloader_jobs(
 
 
 def _aggregate_parent_jobs(store: Any) -> None:
-    """Update parent job status based on child job statuses."""
+    """Update parent job status based on child job statuses.
+
+    Skips parents that have fan_out_in_progress=True in their result_json,
+    as the fan-out handler is still creating children sequentially.
+    """
     with store.connect() as conn:
         # Find parent jobs that are still non-terminal
         parents = conn.execute(
             """
-            SELECT DISTINCT j1.ingestion_job_id
+            SELECT DISTINCT j1.ingestion_job_id, j1.result_json
             FROM ingestion_jobs j1
             WHERE j1.parent_job_id IS NULL
               AND j1.status NOT IN ('succeeded', 'partial', 'failed', 'cancelled')
@@ -208,6 +212,16 @@ def _aggregate_parent_jobs(store: Any) -> None:
 
     for parent_row in parents:
         parent_id = parent_row["ingestion_job_id"]
+
+        # Skip parents that are still in the process of creating children
+        result_json_str = parent_row["result_json"]
+        if result_json_str:
+            try:
+                rj = json.loads(result_json_str) if isinstance(result_json_str, str) else result_json_str
+                if rj.get("fan_out_in_progress"):
+                    continue
+            except (json.JSONDecodeError, TypeError):
+                pass
         with store.connect() as conn:
             children = conn.execute(
                 "SELECT status, error FROM ingestion_jobs WHERE parent_job_id = ?",
