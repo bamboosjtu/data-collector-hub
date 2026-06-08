@@ -1949,6 +1949,69 @@ Safety domain daily meeting extended backfill:
 - chunk_days=1 maintained throughout
 - No evidence of DCP source throttling
 
+### Run #70 — 180-day backfill (2025-12-08 ~ 2026-06-07) — PAUSED
+
+- command: backfill_daily_meetings_by_range (plugin_handler fan-out)
+- params: startDate=2025-12-08 endDate=2026-06-07 chunk_days=1 cooldown_seconds=3
+- parent job_id: ing_backfill_daily_meetings_by_range_d0ef0c42b0bd
+- parent status: **failed** (all children partial)
+- child_jobs: total=182, succeeded=0, failed=0, partial=182
+- dcp_daily_meeting: 30628 rows (unchanged — no new data ingested)
+- duration: ~12 min (all children finished quickly with no data)
+
+**Root Cause: DCP API request_failed for ALL dates**
+
+Every child job's downloader-dcp collect failed with:
+```
+{'api': 'safe.dailyMeeting', 'stage': 'time_slice_collection', 'message': '1 slice(s) failed for safe.dailyMeeting', 'error_type': 'request_failed', 'retry_count': 0, 'details': None}
+```
+
+This affects ALL dates, including 2026-03-09 which was previously successful in the 90-day backfill. This indicates a DCP source-side issue (likely session expiration or WAF blocking), not a DataHub or date-range problem.
+
+**Stop Condition Triggered: #10 (同类 DCP 源端失败连续出现)**
+
+**Impact Assessment:**
+- 90-day data (3/10~6/7) intact: 30628 rows, 0 extra, 0 schema_mismatch
+- 180-day backfill added 0 rows (all children had message_received=0)
+- No data corruption or inconsistency
+- Parent correctly aggregated as failed (182 partial = all children had no data)
+
+**Next Steps:**
+1. Restart downloader-dcp to refresh DCP session
+2. Re-test with a single date (e.g., 2026-03-10) to confirm DCP API is accessible
+3. If DCP API recovers, re-run 180-day backfill
+4. If DCP API remains blocked, investigate DCP session/WAF issue in downloader-dcp
+
+### Issue 8: Date fan-out continues creating children after DCP source failure (FIXED)
+
+**Problem:** During 180-day backfill (Run #70), DCP `safe.dailyMeeting` API started returning `request_failed` for all dates. The date-range fan-out continued creating all 182 child jobs, each of which immediately failed. This wasted resources and hammered the already-failing DCP source.
+
+**Root Cause:** `_date_range_fan_out` in `plugins/dcp/fan_out.py` had no circuit breaker. It created all child jobs upfront without checking if previous children were failing.
+
+**Fix:** Added consecutive failure circuit breaker to `_date_range_fan_out`:
+
+1. After each child job is created and reaches terminal state, check if it failed
+2. Track consecutive failure count; reset to 0 on any success
+3. If consecutive failures reach threshold (default 5), stop creating further children
+4. Parent marked as `failed` with error: `circuit breaker opened: N consecutive child jobs failed for <job_type>`
+5. `result_json` includes: `skipped_remaining_dates`, `first_failed_date`, `last_failed_date`, `consecutive_failure_threshold`
+6. Threshold configurable via `params`: `consecutive_failure_threshold=3/5/10`
+
+**New functions:**
+- `_is_child_failed(job)`: determines if a terminal child is a failure (failed/cancelled status, error non-empty, request_failed in producer_status, partial with no data)
+- `_wait_for_child_terminal(store, job_id)`: polls store until child reaches terminal state (5s interval, 30min timeout)
+
+**Key design decisions:**
+- Only affects date-range fan-out (`_date_range_fan_out`), not project fan-out (`_project_fan_out`)
+- Child jobs are now awaited sequentially (fan-out was already sequential for SQLite stability)
+- `consecutive_failure_threshold` and `cooldown_seconds` also cleaned from child params before passing to downloader
+- Parent status set to `failed` immediately when circuit opens (not waiting for `_aggregate_parent_jobs`)
+
+**Tests:** 16 new tests in `tests/test_fan_out_circuit_breaker.py`:
+- 8 `_is_child_failed` unit tests (none, succeeded, failed, cancelled, error, request_failed, partial empty, partial with data)
+- 7 circuit breaker integration tests (5 consecutive → stop, parent failed, error message, skipped_remaining, success resets counter, normal path unaffected, custom threshold)
+- 1 project fan-out unaffected test
+
 ## Quick Reference: Available Commands
 
 | Command | Params | Type |
