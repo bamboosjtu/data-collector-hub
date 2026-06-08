@@ -147,13 +147,46 @@ def _project_fan_out(
     params_mapping: dict[str, str],
     cooldown_seconds: float = 3.0,
 ) -> dict[str, Any]:
-    """Generic project fan-out: query dcp_plan_projects for current year, trigger child per row."""
+    """Generic project fan-out: query dcp_plan_projects for current year, trigger child per row.
+
+    Includes consecutive failure circuit breaker: if N child jobs fail
+    consecutively, the fan-out stops creating further children.
+    """
     store = ctx["store"]
     plugins = ctx["plugins"]
     trigger_clients = ctx["trigger_clients"]
     parent_job_id = ctx["ingestion_job_id"]
     callback_base_url = ctx["callback_base_url"]
     params = ctx.get("params", {})
+
+    # Allow cooldown_seconds override from params
+    if "cooldown_seconds" in params:
+        cooldown_seconds = float(params["cooldown_seconds"])
+
+    # Circuit breaker threshold
+    consecutive_failure_threshold = _DEFAULT_CONSECUTIVE_FAILURE_THRESHOLD
+    if "consecutive_failure_threshold" in params:
+        consecutive_failure_threshold = int(params["consecutive_failure_threshold"])
+
+    # Parameter validation
+    if cooldown_seconds < 0:
+        error_msg = f"project_fan_out: cooldown_seconds must be >= 0, got {cooldown_seconds}"
+        logger.error(error_msg)
+        store.mark_job(parent_job_id, status="failed", error=error_msg)
+        return {"total": 0, "succeeded": 0, "failed": 0, "items": [], "error": error_msg}
+    if consecutive_failure_threshold < 1:
+        error_msg = f"project_fan_out: consecutive_failure_threshold must be >= 1, got {consecutive_failure_threshold}"
+        logger.error(error_msg)
+        store.mark_job(parent_job_id, status="failed", error=error_msg)
+        return {"total": 0, "succeeded": 0, "failed": 0, "items": [], "error": error_msg}
+    max_items_param = params.get("max_items")
+    if max_items_param is not None:
+        max_items_param = int(max_items_param)
+        if max_items_param < 1:
+            error_msg = f"project_fan_out: max_items must be >= 1, got {max_items_param}"
+            logger.error(error_msg)
+            store.mark_job(parent_job_id, status="failed", error=error_msg)
+            return {"total": 0, "succeeded": 0, "failed": 0, "items": [], "error": error_msg}
 
     # 1. Query dcp_plan_projects for current year
     current_year = str(datetime.now().year)
@@ -181,13 +214,13 @@ def _project_fan_out(
                 param_sets.append(child_params)
 
     # Apply max_items limit
-    max_items = params.get("max_items")
+    max_items = max_items_param
     total_available = len(param_sets)
     if max_items is not None:
-        max_items = int(max_items)
         param_sets = param_sets[:max_items]
 
-    logger.info("project fan-out %s: %d projects (of %d available)", child_command, len(param_sets), total_available)
+    logger.info("project fan-out %s: %d projects (of %d available, circuit_breaker=%d)",
+                child_command, len(param_sets), total_available, consecutive_failure_threshold)
 
     # 3. Find child command
     child_cmd, child_plugin, client, error = _find_child_command_and_client(plugins, child_command, trigger_clients)
@@ -197,33 +230,99 @@ def _project_fan_out(
 
     downloader_job_type = child_cmd.trigger.get("job_type")
 
-    # 4. Execute child jobs
+    # 4. Execute child jobs with circuit breaker
     callback_headers = ctx.get("callback_headers")
     results: list[dict[str, Any]] = []
     succeeded = 0
     failed = 0
+    consecutive_failures = 0
+    circuit_opened = False
+    first_failed_projectCode: str | None = None
+    last_failed_projectCode: str | None = None
+    skipped_remaining = 0
 
     for i, child_params in enumerate(param_sets):
+        # Clean child params — remove fan-out control params
+        clean_params = {k: v for k, v in child_params.items()
+                        if k not in ("max_items", "max_concurrency", "cooldown_seconds", "consecutive_failure_threshold")}
+
         job_id, status, err = _run_child_job(
             store, child_plugin, client, downloader_job_type,
-            child_command, child_params, parent_job_id, callback_base_url,
+            child_command, clean_params, parent_job_id, callback_base_url,
             callback_headers=callback_headers,
         )
-        results.append({"params": child_params, "ingestion_job_id": job_id, "status": status})
+
+        # If _run_child_job itself failed (exception), count as immediate failure
         if err:
             failed += 1
-            logger.warning("project fan-out [%d/%d] %s FAILED: %s", i + 1, len(param_sets), child_params, err)
+            consecutive_failures += 1
+            project_code = clean_params.get("projectCode", f"project_{i}")
+            if first_failed_projectCode is None:
+                first_failed_projectCode = project_code
+            last_failed_projectCode = project_code
+            results.append({"params": clean_params, "ingestion_job_id": job_id, "status": status, "failed": True})
+            logger.warning("project fan-out [%d/%d] %s FAILED: %s (consecutive=%d/%d)",
+                           i + 1, len(param_sets), clean_params, err,
+                           consecutive_failures, consecutive_failure_threshold)
         else:
-            succeeded += 1
-            logger.info("project fan-out [%d/%d] %s -> %s", i + 1, len(param_sets), child_params, status)
+            # Wait for child to reach terminal state
+            child_job = _wait_for_child_terminal(store, job_id)
+            child_failed = _is_child_failed(child_job)
+
+            if child_failed:
+                failed += 1
+                consecutive_failures += 1
+                project_code = clean_params.get("projectCode", f"project_{i}")
+                if first_failed_projectCode is None:
+                    first_failed_projectCode = project_code
+                last_failed_projectCode = project_code
+                child_status = child_job.get("status", "unknown") if child_job else "unknown"
+                results.append({"params": clean_params, "ingestion_job_id": job_id, "status": child_status, "failed": True})
+                logger.warning("project fan-out [%d/%d] %s child FAILED (consecutive=%d/%d)",
+                               i + 1, len(param_sets), clean_params,
+                               consecutive_failures, consecutive_failure_threshold)
+            else:
+                succeeded += 1
+                consecutive_failures = 0  # Reset on success
+                child_status = child_job.get("status", "unknown") if child_job else "unknown"
+                results.append({"params": clean_params, "ingestion_job_id": job_id, "status": child_status, "failed": False})
+                logger.info("project fan-out [%d/%d] %s -> %s",
+                            i + 1, len(param_sets), clean_params, child_status)
+
+        # Circuit breaker check
+        if consecutive_failures >= consecutive_failure_threshold:
+            skipped_remaining = len(param_sets) - i - 1
+            circuit_opened = True
+            logger.error("project fan-out CIRCUIT BREAKER: %d consecutive failures reached threshold %d, "
+                         "skipping remaining %d projects",
+                         consecutive_failures, consecutive_failure_threshold, skipped_remaining)
+            break
 
         if i < len(param_sets) - 1 and cooldown_seconds > 0:
             time.sleep(cooldown_seconds)
 
-    summary = {"total": len(param_sets), "total_available": total_available, "succeeded": succeeded, "failed": failed, "items": results}
-    # Mark parent as running — _aggregate_parent_jobs will set final status
-    # once all children reach terminal state
-    store.mark_job(parent_job_id, status="running", result=summary)
+    # 5. Build summary
+    summary: dict[str, Any] = {
+        "total_available": total_available,
+        "created_children": len(results),
+        "succeeded_children": succeeded,
+        "failed_children": failed,
+        "items": results,
+    }
+
+    if circuit_opened:
+        summary["skipped_remaining_projects"] = skipped_remaining
+        summary["first_failed_projectCode"] = first_failed_projectCode
+        summary["last_failed_projectCode"] = last_failed_projectCode
+        summary["consecutive_failure_threshold"] = consecutive_failure_threshold
+        circuit_error = (f"circuit breaker opened: {consecutive_failures} consecutive project child jobs failed")
+        store.mark_job(parent_job_id, status="failed", error=circuit_error, result=summary)
+        logger.error("project fan-out parent %s FAILED: %s", parent_job_id, circuit_error)
+    else:
+        # Mark parent as running — _aggregate_parent_jobs will set final status
+        # once all children reach terminal state
+        store.mark_job(parent_job_id, status="running", result=summary)
+
     return summary
 
 
@@ -248,10 +347,15 @@ def _is_child_failed(job: dict[str, Any] | None) -> bool:
     """Determine if a child job in terminal state represents a failure.
 
     A child is considered failed if:
-    - status is failed or partial
+    - status is failed or cancelled
     - error is non-empty
-    - row_count == 0 and message_received == 0 (no data produced)
     - producer_status contains request_failed
+    - producer_status contains planning failed / fetch failed (project domain)
+    - partial with no data and no indication of legitimate completion
+
+    A child is NOT considered failed if:
+    - status is succeeded (even with row_count=0 — some projects have no data)
+    - current_message indicates "all tasks already completed" or "all messages delivered"
     """
     if job is None:
         return True
@@ -264,15 +368,32 @@ def _is_child_failed(job: dict[str, Any] | None) -> bool:
     if error:
         return True
 
-    # Check producer_status_json for request_failed
-    producer_status_str = job.get("producer_status_json")
-    if producer_status_str and "request_failed" in str(producer_status_str):
+    # Check producer_status_json for failure indicators
+    producer_status_str = str(job.get("producer_status_json") or "")
+    if "request_failed" in producer_status_str:
+        return True
+    if "planning failed" in producer_status_str:
+        return True
+    if "fetch failed" in producer_status_str:
         return True
 
-    # partial with no data is effectively a failure
+    # Check result_json for failure indicators
+    result_str = str(job.get("result_json") or "")
+    if "request_failed" in result_str:
+        return True
+    if "planning failed" in result_str:
+        return True
+    if "fetch failed" in result_str:
+        return True
+
+    # partial with no data — check if it's a legitimate empty result
     if status == "partial":
         row_count = job.get("row_count") or 0
         message_received = job.get("message_received") or 0
+        # If current_message indicates legitimate completion, not a failure
+        current_msg = str(job.get("current_message") or "")
+        if "all tasks already completed" in current_msg or "all messages delivered" in current_msg:
+            return False
         if row_count == 0 and message_received == 0:
             return True
 
