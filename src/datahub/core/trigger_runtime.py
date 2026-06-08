@@ -112,7 +112,9 @@ def poll_downloader_jobs(
     """
     summary = {"polled": 0, "updated": 0, "failed": 0, "stale": 0}
 
-    # Find non-terminal jobs that have a downloader_job_id
+    # Find non-terminal jobs that have a downloader_job_id.
+    # Exclude fan-out parent jobs (those with children) — they are not
+    # real downloader jobs and should not be polled against /sync/jobs/{id}.
     with store.connect() as conn:
         rows = conn.execute(
             """
@@ -120,6 +122,9 @@ def poll_downloader_jobs(
             FROM ingestion_jobs
             WHERE status NOT IN ('succeeded', 'partial', 'failed', 'cancelled')
               AND downloader_job_id IS NOT NULL
+              AND NOT EXISTS (
+                SELECT 1 FROM ingestion_jobs j2 WHERE j2.parent_job_id = ingestion_jobs.ingestion_job_id
+              )
             ORDER BY id DESC LIMIT ?
             """,
             (max_polls,),

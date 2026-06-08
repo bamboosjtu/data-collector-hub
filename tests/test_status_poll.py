@@ -240,6 +240,82 @@ class TestPollDownloaderJobs:
         assert job["status"] == "failed"
         assert "stale" in (job["error"] or "")
 
+    def test_fan_out_parent_not_polled(self):
+        """Fan-out parent jobs (with children) should NOT be polled via downloader /sync/jobs/{id}.
+        They are not real downloader jobs — polling them produces 404."""
+        store = _make_store("poll_parent_not_polled")
+        with store.connect() as conn:
+            _insert_job(conn, job_id="parent_poll", producer_job_id="dl_pp", status="running")
+            _insert_job(conn, job_id="child_poll", producer_job_id="dl_cp", status="running", parent_job_id="parent_poll")
+
+        client = MagicMock(spec=ExternalSyncClient)
+        client.get_job_status.return_value = {"status": "running"}
+
+        summary = poll_downloader_jobs(store, {"dcp": client})
+        # Parent should NOT be polled — only child should be
+        assert summary["polled"] == 1  # only the child
+        # Verify parent was not polled by checking call args
+        called_ids = [call.args[0] for call in client.get_job_status.call_args_list]
+        assert "dl_pp" not in called_ids  # parent's downloader_job_id not called
+        assert "dl_cp" in called_ids  # child's downloader_job_id called
+
+    def test_fan_out_child_is_polled(self):
+        """Fan-out child jobs should still be polled normally."""
+        store = _make_store("poll_child_polled")
+        with store.connect() as conn:
+            _insert_job(conn, job_id="parent_cp", producer_job_id="dl_pcp", status="running")
+            _insert_job(conn, job_id="child_cp", producer_job_id="dl_ccp", status="running", parent_job_id="parent_cp")
+
+        client = MagicMock(spec=ExternalSyncClient)
+        client.get_job_status.return_value = {"status": "succeeded", "collect_total": 1, "collect_done": 1, "row_count": 10}
+
+        summary = poll_downloader_jobs(store, {"dcp": client})
+        assert summary["polled"] == 1
+        assert summary["updated"] == 1
+
+        child = store.get_job("child_cp")
+        assert child["status"] == "succeeded"
+
+    def test_standalone_job_is_polled(self):
+        """Standalone downloader_sync jobs (no children) should still be polled."""
+        store = _make_store("poll_standalone_polled")
+        with store.connect() as conn:
+            _insert_job(conn, job_id="standalone_poll", producer_job_id="dl_sp", status="accepted")
+
+        client = MagicMock(spec=ExternalSyncClient)
+        client.get_job_status.return_value = {"status": "succeeded", "collect_total": 1, "collect_done": 1, "row_count": 100}
+
+        summary = poll_downloader_jobs(store, {"dcp": client})
+        assert summary["polled"] == 1
+        assert summary["updated"] == 1
+
+        job = store.get_job("standalone_poll")
+        assert job["status"] == "succeeded"
+
+    def test_parent_aggregation_after_child_polling(self):
+        """Parent status should be aggregated by _aggregate_parent_jobs after child polling."""
+        store = _make_store("poll_agg_after_child")
+        with store.connect() as conn:
+            _insert_job(conn, job_id="parent_agg", producer_job_id="dl_pagg", status="running")
+            _insert_job(conn, job_id="child_agg_a", producer_job_id="dl_cagga", status="running", parent_job_id="parent_agg")
+            _insert_job(conn, job_id="child_agg_b", producer_job_id="dl_caggb", status="succeeded", parent_job_id="parent_agg")
+
+        client = MagicMock(spec=ExternalSyncClient)
+
+        def mock_status(dl_job_id):
+            if dl_job_id == "dl_cagga":
+                return {"status": "succeeded", "collect_total": 1, "collect_done": 1, "row_count": 5}
+            return None
+
+        client.get_job_status.side_effect = mock_status
+
+        summary = poll_downloader_jobs(store, {"dcp": client})
+        assert summary["polled"] == 1
+
+        # After polling, child_agg_a should be succeeded, and parent should be aggregated
+        parent = store.get_job("parent_agg")
+        assert parent["status"] == "succeeded"
+
 
 class TestAggregateParentJobs:
     def test_all_children_succeeded_parent_succeeded(self):
