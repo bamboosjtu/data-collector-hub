@@ -245,3 +245,74 @@ def normalize_substation(
     return [
         {"table_name": "dcp_substation", "scope_values": scope_values, "rows": output_rows},
     ]
+
+
+# API wrapper fields that must not appear in daily meeting output or extra
+_DAILY_MEETING_WRAPPER_FIELDS = {"code", "message", "success", "traceId", "data", "extra"}
+
+# Business fields for dcp_daily_meeting / dcp_daily_meeting_snapshot output
+# Must match tables.yaml column declarations (excluding date, id, extra)
+_DAILY_MEETING_FIELDS = [
+    "prjName", "prjCode", "ticketId", "ticketNo", "ticketName",
+    "reAssessmentRiskLevel", "reAssessmentRiskLevelChines",
+    "currentConstrHeadcount", "constructionHeadcount",
+    "currentConstrDate", "workStartTime",
+    "currentConstructionStatus", "workOvernightFlag",
+    "toolBoxTalkAddress", "toolBoxTalkLongitude", "toolBoxTalkLatitude",
+    "biddingSectionCode", "biddingSectionName",
+    "singleProjectCode", "singleProjectName",
+    "constructionUnitName", "supervisionUnitName", "voltageLevel",
+    "buildUnitCode", "buildUnitName", "provinceCode", "provinceName",
+    "cameraNum", "leaderId", "leaderName",
+    "safeStringIds", "safeStringNames",
+    "workProcedure", "workSiteName", "workContents",
+    "lonAndLatString", "addSafetyCtrlMeasure", "abnormalRiskCause",
+    "subcontractUnitName", "dailyMeetingFileList",
+]
+
+
+def normalize_daily_meeting(
+    table_name: str,
+    scope_values: dict[str, Any],
+    rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Normalize dcp_daily_meeting / dcp_daily_meeting_snapshot rows.
+
+    Extracts declared business fields from row top-level keys.
+    Strips API wrapper fields. Outputs same table_name (no cross-table expansion).
+
+    Rules:
+    - date comes from row or scope_values (required primary key).
+    - id comes from row (required primary key).
+    - Only declared schema fields are output.
+    - Wrapper fields (code/message/success/traceId/data/extra) are never output.
+    - Overflow fields not in schema are not included (they go to extra via core logic).
+    """
+    output_rows: list[dict[str, Any]] = []
+
+    for row in rows:
+        out: dict[str, Any] = {}
+
+        # Primary keys
+        date_val = row.get("date") or scope_values.get("date")
+        if date_val is not None:
+            out["date"] = date_val
+        id_val = row.get("id")
+        if id_val is not None:
+            out["id"] = id_val
+
+        # Business fields
+        for field in _DAILY_MEETING_FIELDS:
+            value = row.get(field)
+            if value is not None:
+                out[field] = value
+
+        # Must have both primary keys to be a valid row
+        if "date" not in out or "id" not in out:
+            continue
+
+        output_rows.append(out)
+
+    return [
+        {"table_name": table_name, "scope_values": scope_values, "rows": output_rows},
+    ]

@@ -143,6 +143,14 @@ normalizers:
     targets: [dcp_substation]
     handler: dcp.normalizers:normalize_substation
 
+  - source_table: dcp_daily_meeting
+    targets: [dcp_daily_meeting]
+    handler: dcp.normalizers:normalize_daily_meeting
+
+  - source_table: dcp_daily_meeting_snapshot
+    targets: [dcp_daily_meeting_snapshot]
+    handler: dcp.normalizers:normalize_daily_meeting
+
 scope_mappings: []
 
 query_routes:
@@ -228,11 +236,20 @@ query_routes:
     default_limit: 200
     max_limit: 1000
 
-  # 安全域 (DEFERRED)
+  # 安全域
   - path: /api/v1/safety/daily-meetings
     table: dcp_daily_meeting
     query_filters:
       date: date
+      prjName: prjName
+      biddingSectionCode: biddingSectionCode
+      singleProjectCode: singleProjectCode
+      currentConstructionStatus: currentConstructionStatus
+      leaderName: leaderName
+      workSiteName: workSiteName
+      voltageLevel: voltageLevel
+      provinceCode: provinceCode
+      buildUnitCode: buildUnitCode
     default_limit: 200
     max_limit: 1000
 
@@ -240,5 +257,14 @@ query_routes:
     table: dcp_daily_meeting_snapshot
     query_filters:
       date: date
+      prjName: prjName
+      biddingSectionCode: biddingSectionCode
+      singleProjectCode: singleProjectCode
+      currentConstructionStatus: currentConstructionStatus
+      leaderName: leaderName
+      workSiteName: workSiteName
+      voltageLevel: voltageLevel
+      provinceCode: provinceCode
+      buildUnitCode: buildUnitCode
     default_limit: 200
     max_limit: 1000

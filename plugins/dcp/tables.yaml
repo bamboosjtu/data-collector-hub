@@ -535,27 +535,107 @@ tables:
       endDistance: {type: string, nullable: true}
 
   # ============================================================
-  # 暂缓表 - 安全域（待历史回补策略确定后修正）
+  # 安全域 - 站班会
   # ============================================================
 
   dcp_daily_meeting:
     dataset_key: daily_meeting
-    description: DCP safety daily meeting records for a date range. DEFERRED - pending history backfill strategy.
+    description: DCP safety daily meeting records for a date range.
     write_mode: upsert
     scope_column_names: []
     primary_key: [date, id]
     columns:
       date: {type: string, nullable: false}
       id: {type: string, nullable: false}
+      prjName: {type: string, nullable: true}
+      prjCode: {type: string, nullable: true}
+      ticketId: {type: string, nullable: true}
+      ticketNo: {type: string, nullable: true}
+      ticketName: {type: string, nullable: true}
+      reAssessmentRiskLevel: {type: string, nullable: true}
+      reAssessmentRiskLevelChines: {type: string, nullable: true}
+      currentConstrHeadcount: {type: integer, nullable: true}
+      constructionHeadcount: {type: integer, nullable: true}
+      currentConstrDate: {type: string, nullable: true}
+      workStartTime: {type: string, nullable: true}
+      currentConstructionStatus: {type: string, nullable: true}
+      workOvernightFlag: {type: string, nullable: true}
+      toolBoxTalkAddress: {type: string, nullable: true}
+      toolBoxTalkLongitude: {type: string, nullable: true}
+      toolBoxTalkLatitude: {type: string, nullable: true}
+      biddingSectionCode: {type: string, nullable: true}
+      biddingSectionName: {type: string, nullable: true}
+      singleProjectCode: {type: string, nullable: true}
+      singleProjectName: {type: string, nullable: true}
+      constructionUnitName: {type: string, nullable: true}
+      supervisionUnitName: {type: string, nullable: true}
+      voltageLevel: {type: string, nullable: true}
+      buildUnitCode: {type: string, nullable: true}
+      buildUnitName: {type: string, nullable: true}
+      provinceCode: {type: string, nullable: true}
+      provinceName: {type: string, nullable: true}
+      cameraNum: {type: integer, nullable: true}
+      leaderId: {type: string, nullable: true}
+      leaderName: {type: string, nullable: true}
+      safeStringIds: {type: string, nullable: true}
+      safeStringNames: {type: string, nullable: true}
+      workProcedure: {type: string, nullable: true}
+      workSiteName: {type: string, nullable: true}
+      workContents: {type: string, nullable: true}
+      lonAndLatString: {type: string, nullable: true}
+      addSafetyCtrlMeasure: {type: string, nullable: true}
+      abnormalRiskCause: {type: string, nullable: true}
+      subcontractUnitName: {type: string, nullable: true}
+      dailyMeetingFileList: {type: json, nullable: true}
       extra: {type: json, nullable: true}
 
   dcp_daily_meeting_snapshot:
     dataset_key: daily_meeting_snapshot
-    description: DCP safety daily meeting snapshot for today. DEFERRED - pending history backfill strategy.
+    description: DCP safety daily meeting snapshot for today.
     write_mode: upsert
     scope_column_names: []
     primary_key: [date, id]
     columns:
       date: {type: string, nullable: false}
       id: {type: string, nullable: false}
+      prjName: {type: string, nullable: true}
+      prjCode: {type: string, nullable: true}
+      ticketId: {type: string, nullable: true}
+      ticketNo: {type: string, nullable: true}
+      ticketName: {type: string, nullable: true}
+      reAssessmentRiskLevel: {type: string, nullable: true}
+      reAssessmentRiskLevelChines: {type: string, nullable: true}
+      currentConstrHeadcount: {type: integer, nullable: true}
+      constructionHeadcount: {type: integer, nullable: true}
+      currentConstrDate: {type: string, nullable: true}
+      workStartTime: {type: string, nullable: true}
+      currentConstructionStatus: {type: string, nullable: true}
+      workOvernightFlag: {type: string, nullable: true}
+      toolBoxTalkAddress: {type: string, nullable: true}
+      toolBoxTalkLongitude: {type: string, nullable: true}
+      toolBoxTalkLatitude: {type: string, nullable: true}
+      biddingSectionCode: {type: string, nullable: true}
+      biddingSectionName: {type: string, nullable: true}
+      singleProjectCode: {type: string, nullable: true}
+      singleProjectName: {type: string, nullable: true}
+      constructionUnitName: {type: string, nullable: true}
+      supervisionUnitName: {type: string, nullable: true}
+      voltageLevel: {type: string, nullable: true}
+      buildUnitCode: {type: string, nullable: true}
+      buildUnitName: {type: string, nullable: true}
+      provinceCode: {type: string, nullable: true}
+      provinceName: {type: string, nullable: true}
+      cameraNum: {type: integer, nullable: true}
+      leaderId: {type: string, nullable: true}
+      leaderName: {type: string, nullable: true}
+      safeStringIds: {type: string, nullable: true}
+      safeStringNames: {type: string, nullable: true}
+      workProcedure: {type: string, nullable: true}
+      workSiteName: {type: string, nullable: true}
+      workContents: {type: string, nullable: true}
+      lonAndLatString: {type: string, nullable: true}
+      addSafetyCtrlMeasure: {type: string, nullable: true}
+      abnormalRiskCause: {type: string, nullable: true}
+      subcontractUnitName: {type: string, nullable: true}
+      dailyMeetingFileList: {type: json, nullable: true}
       extra: {type: json, nullable: true}
