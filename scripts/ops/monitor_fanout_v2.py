@@ -6,7 +6,7 @@ BASE = "http://localhost:8000"
 KEY = "dev-admin-key"
 TERMINAL = {"succeeded", "partial", "failed", "cancelled"}
 
-parent_id = sys.argv[1] if len(sys.argv) > 1 else sys.exit("Usage: monitor_fanout.py <parent_job_id>")
+parent_id = sys.argv[1] if len(sys.argv) > 1 else sys.exit("Usage: monitor_fanout_v2.py <parent_job_id>")
 
 def api(path):
     req = Request(f"{BASE}{path}")

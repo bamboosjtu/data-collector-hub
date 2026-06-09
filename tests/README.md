@@ -9,7 +9,6 @@ tests/
   unit/           # 纯逻辑，无外部依赖
   integration/    # 需要 SQLite/Store，不需要外部服务
   e2e/            # 需要完整 DataHub + downloader-dcp 运行
-  fixtures/       # 共享测试夹具（预留）
 ```
 
 ## 运行方式

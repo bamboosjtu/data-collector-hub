@@ -10,18 +10,3 @@ from .specs import (
     ScopeMapping,
     TableSpec,
 )
-
-__all__ = [
-    "ColumnSpec",
-    "CommandSpec",
-    "ConnectorSpec",
-    "DisplaySpec",
-    "PluginSpec",
-    "QueryRouteSpec",
-    "SchemaRegistry",
-    "ScopeMapping",
-    "TableSpec",
-    "load_all_plugins",
-    "load_plugin",
-    "load_registry_from_plugins",
-]

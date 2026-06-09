@@ -97,7 +97,7 @@ plugins/
   dcp/
     plugin.yaml           # external collector connector, commands, query routes
     tables.yaml           # 12 DCP business table schemas
-    normalizers.py        # substation, daily_meeting normalizers
+    normalizers.py        # 6 normalizers (plan_sgcc_year, plan_progress, plan_dept_key_personnel, line_section, substation, daily_meeting)
     fan_out.py            # project/date fan-out handlers with circuit breaker
 
 scripts/
@@ -107,9 +107,8 @@ scripts/
 
 tests/
   unit/                   # 纯逻辑测试
-  integration/            # SQLite/Store 集成测试
-  e2e/                    # 完整环境端到端测试
-  fixtures/               # 共享测试夹具
+  integration/            # 集成测试
+  e2e/                    # 端到端测试
 ```
 
 ## API

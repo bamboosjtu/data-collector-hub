@@ -13,7 +13,6 @@ Each handler receives a standard context dict and is responsible for:
 from __future__ import annotations
 
 import logging
-import threading
 import time
 from datetime import date, datetime, timedelta
 from typing import Any

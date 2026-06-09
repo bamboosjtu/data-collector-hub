@@ -43,14 +43,18 @@ Date: 2026-06-09
 
 | Table | Schema | Rows (approx) | Normalizer |
 |-------|--------|---------------|------------|
-| `dcp_plan_projects` | 7 columns | 1704 | - |
-| `dcp_plan_progress` | 5 columns | 5726 | - |
-| `dcp_dept_key_personnel` | 5 columns | 1055 | - |
-| `dcp_tower` | 7 columns | ~12000 | normalize_tower |
-| `dcp_substation` | 7 columns | 59 | normalize_substation |
-| `dcp_line_section` | 8 columns | ~8000 | normalize_line_section |
-| `dcp_daily_meeting` | 42 columns | 127092 | normalize_daily_meeting |
-| `dcp_daily_meeting_snapshot` | 42 columns | ~127000 | normalize_daily_meeting |
+| `dcp_plan_projects` | 87 columns | 1704 | normalize_plan_sgcc_year |
+| `dcp_plan_single_projects` | 74 columns | - | normalize_plan_sgcc_year |
+| `dcp_plan_project_progress` | 32 columns | - | normalize_plan_progress |
+| `dcp_plan_single_project_progress` | 35 columns | - | normalize_plan_progress |
+| `dcp_plan_bidding_section_progress` | 37 columns | 5726 | normalize_plan_progress |
+| `dcp_plan_dept_key_personnel` | 7 columns | 1055 | normalize_plan_dept_key_personnel |
+| `dcp_tower` | 131 columns | ~12000 | - |
+| `dcp_substation` | 8 columns | 59 | normalize_substation |
+| `dcp_line_branches` | 5 columns | - | normalize_line_section |
+| `dcp_line_sections` | 18 columns | ~8000 | normalize_line_section |
+| `dcp_daily_meeting` | 43 columns | 127092 | normalize_daily_meeting |
+| `dcp_daily_meeting_snapshot` | 43 columns | ~127000 | normalize_daily_meeting |
 
 All tables use response-aligned storage. No `raw` JSON fields for business data.
 
