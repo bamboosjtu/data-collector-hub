@@ -1,0 +1,133 @@
+# DCP MVP Final Acceptance
+
+Date: 2026-06-09
+
+## 1. Version Info
+
+| Component | Commit | Tag |
+|-----------|--------|-----|
+| data-collector-hub | `6a57df8` | `mvp-dcp-plugin-e2e-rc1` |
+| downloader-dcp | (external) | `v1.0.1` |
+
+## 2. Verified Commands
+
+### Basic Domain (downloader_sync)
+
+| Command | Description | Verified |
+|---------|-------------|----------|
+| `refresh_annual_plans_current` | Current year plan projects | OK, 1704 rows |
+| `refresh_plan_progress` | Plan progress overview | OK, 5726 rows |
+| `refresh_dept_key_personnel` | Department key personnel | OK, 1055 rows |
+
+### Project Domain (downloader_sync + plugin_handler fan-out)
+
+| Command | Description | Verified |
+|---------|-------------|----------|
+| `refresh_towers_for_project` | Single project towers | OK |
+| `refresh_substations_for_project` | Single project substations | OK, row_count=0 allowed |
+| `refresh_line_sections_for_project` | Single project line sections | OK |
+| `refresh_towers_for_current_plan_projects` | Fan-out: all projects towers | OK, 414/416 succeeded |
+| `refresh_substations_for_current_plan_projects` | Fan-out: all projects substations | OK, circuit breaker verified |
+| `refresh_line_sections_for_current_plan_projects` | Fan-out: all projects line sections | OK |
+
+### Safety Domain (downloader_sync + plugin_handler fan-out)
+
+| Command | Description | Verified |
+|---------|-------------|----------|
+| `refresh_daily_meetings_by_range` | Daily meetings by date range | OK, 158 rows (1 day) |
+| `backfill_daily_meetings_by_range` | Date-range fan-out with circuit breaker | OK, 365-day verified |
+| `refresh_daily_meetings_yesterday` | Yesterday incremental | OK |
+| `refresh_daily_meeting_snapshot` | Meeting snapshot | OK, 219 rows |
+
+## 3. Business Tables
+
+| Table | Schema | Rows (approx) | Normalizer |
+|-------|--------|---------------|------------|
+| `dcp_plan_projects` | 7 columns | 1704 | - |
+| `dcp_plan_progress` | 5 columns | 5726 | - |
+| `dcp_dept_key_personnel` | 5 columns | 1055 | - |
+| `dcp_tower` | 7 columns | ~12000 | normalize_tower |
+| `dcp_substation` | 7 columns | 59 | normalize_substation |
+| `dcp_line_section` | 8 columns | ~8000 | normalize_line_section |
+| `dcp_daily_meeting` | 42 columns | 127092 | normalize_daily_meeting |
+| `dcp_daily_meeting_snapshot` | 42 columns | ~127000 | normalize_daily_meeting |
+
+All tables use response-aligned storage. No `raw` JSON fields for business data.
+
+## 4. Real Run Results
+
+### Basic Domain
+
+| Command | Rows | Status |
+|---------|------|--------|
+| refresh_annual_plans_current | 1704 | succeeded |
+| refresh_plan_progress | 5726 | succeeded |
+| refresh_dept_key_personnel | 1055 | succeeded |
+
+### Project Domain
+
+| Fan-out | Total Projects | Succeeded | Failed | Notes |
+|---------|---------------|-----------|--------|-------|
+| towers | 416 | 414 | 2 | 2 request_failed, retry succeeded |
+| substations | 20 (sample) | 20 | 0 | Circuit breaker verified, no false triggers |
+| line_sections | 416 | verified | - | Two-layer expansion fixed |
+
+### Safety Domain 365-Day Backfill
+
+| Metric | Value |
+|--------|-------|
+| Date range | 2024-01-01 ~ 2026-06-08 |
+| Total chunks | 362 |
+| Succeeded | 362 |
+| Failed (retried) | 1 (2025-08-25, transient) |
+| Partial (no data) | 2 (2026-04-22/23, wrapper-only) |
+| Total rows | 127,092 |
+| extra NOT NULL | 0 |
+| schema_mismatch | 0 |
+
+## 5. Fixed Issues
+
+| # | Issue | Fix |
+|---|-------|-----|
+| 1 | Empty wrapper rows not filtered | 5-condition skip logic in validator.py |
+| 2 | extra field contains raw/payload/response/result | Forbidden key filter in registry.py |
+| 3 | plugin_handler loads arbitrary modules | Prefix validation in core/fan_out.py |
+| 4 | callback_api_key not configurable | Dev mode default + production enforcement |
+| 5 | downloader_sync job status not synced | Background polling thread + stale threshold |
+| 6 | dcp_substation schema_mismatch | normalizer + schema alignment |
+| 7 | dcp_line_section two-layer expansion | normalizer fix |
+| 8 | Fan-out parent polled by downloader | NOT EXISTS children condition |
+| 9 | Fan-out parent stale threshold false positive | NOT EXISTS children condition |
+| 10 | Date fan-out no circuit breaker | consecutive_failure_threshold + _is_child_failed |
+| 11 | Project fan-out no circuit breaker | Same pattern as date fan-out |
+| 12 | Fan-out parent premature aggregation | fan_out_in_progress flag in result_json |
+| 13 | dcp_daily_meeting 3-column schema | 42-column fielded schema + normalizer |
+| 14 | Child params contain fan-out controls | Cleanup: remove max_items/cooldown/threshold/concurrency |
+| 15 | Invalid fan-out params crash | Validation: cooldown>=0, threshold>=1, max_items>=1 |
+
+## 6. Known Technical Debt
+
+| # | Item | Impact | Priority |
+|---|------|--------|----------|
+| 1 | `downloader_job_id` naming biased toward downloader | Cosmetic | Low |
+| 2 | Fan-out serial wait per child (stable but slow) | 416 projects ~30min | Medium |
+| 3 | SQLite MVP: single-writer, no concurrent access | Local dev only | Medium |
+| 4 | DCP session/WAF expiry requires manual downloader restart | Operational burden | High |
+| 5 | No admin UI for job monitoring | CLI only | Medium |
+| 6 | command/service abstraction not done | Scalability | Medium |
+| 7 | Query routes not configured for all tables | Some tables 404 | Low |
+| 8 | No automated retry for transient failures | Manual retry via CLI | Medium |
+
+## 7. Seal Conclusion
+
+**DCP MVP ingestion chain accepted for local MVP validation.**
+
+All critical paths verified:
+- Basic domain: 3/3 commands, all succeeded
+- Project domain: 3 fan-out types, circuit breaker verified
+- Safety domain: 365-day backfill, 127,092 rows, 0 data quality issues
+- Error metrics: schema_mismatch=0, callback 401/403=0, database locked=0, disk I/O=0
+- Circuit breaker: both date and project fan-out verified
+- Data quality: empty wrapper rows=0, extra NOT NULL=0
+
+No new features will be added. Next phase: ops UI convergence + command/service abstraction.
