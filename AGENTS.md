@@ -76,13 +76,11 @@ python -m pytest tests/e2e/ -v
 | test_validator.py | unit | 空壳行判定、extra 字段过滤、schema 校验 |
 | test_normalizer_substation.py | unit | substation normalizer 输出规则 |
 | test_normalizer_daily_meeting.py | unit | daily meeting 字段化、date 补全、wrapper 过滤 |
-| test_time_utils.py | unit | 北京时间工具函数 |
 | test_writer_timestamps.py | unit | 业务表 _ingest_created_at/updated_at |
-| test_fan_out_circuit_breaker.py | integration | date/project fan-out 熔断器、child params cleanup、参数校验 |
+| test_fan_out_circuit_breaker.py | integration | date/project fan-out 熔断器核心场景 |
 | test_plugin_handler.py | integration | plugin handler 前缀校验 |
 | test_status_poll.py | integration | downloader 状态轮询、stale 判定、parent 聚合 |
-| test_cli.py | integration | CLI 参数解析 |
-| phase0-6 + test_phase_scripts | e2e | 阶段验收（需要 plan.md + 完整运行环境） |
+| phase1-6 + test_phase_scripts | e2e | 阶段验收（需要完整运行环境） |
 
 ### 脚本目录
 
