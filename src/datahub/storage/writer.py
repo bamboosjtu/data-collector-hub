@@ -27,6 +27,7 @@ def write_table(
 
     inserted = 0
     updated = 0
+    now_text = datahub_now_text()
     for index, row in enumerate(rows, start=1):
         before_changes = conn.total_changes
         row_with_meta = dict(row)
@@ -38,6 +39,8 @@ def write_table(
                 "_collect_run_id": payload["collect_run_id"],
                 "_ingest_row_index": index,
                 "_ingest_payload_hash": payload["payload_hash"],
+                "_ingest_created_at": now_text,
+                "_ingest_updated_at": now_text,
             }
         )
         columns = list(row_with_meta)
@@ -45,7 +48,8 @@ def write_table(
         column_sql = ", ".join(columns)
         values = [_db_value(row_with_meta[column]) for column in columns]
         if table.write_mode in {"upsert", "replace_scope"} and table.primary_key:
-            updates = ", ".join(f"{column}=excluded.{column}" for column in columns if column not in table.primary_key)
+            update_columns = [column for column in columns if column not in table.primary_key and column != "_ingest_created_at"]
+            updates = ", ".join(f"{column}=excluded.{column}" for column in update_columns)
             conn.execute(
                 f"INSERT INTO {table.table_name} ({column_sql}) VALUES ({placeholders}) "
                 f"ON CONFLICT({', '.join(table.primary_key)}) DO UPDATE SET {updates}, _ingest_updated_at = ?",
