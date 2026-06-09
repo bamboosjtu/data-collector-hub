@@ -7,10 +7,10 @@ from pathlib import Path
 
 from src.datahub.app import create_app
 from src.datahub.settings import Settings
-from tests.phase5_api_runtime import request
+from tests.e2e.phase5_api_runtime import request
 
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 CORE_DIRS = [
     ROOT / "src" / "datahub" / "core",
     ROOT / "src" / "datahub" / "ingestion",

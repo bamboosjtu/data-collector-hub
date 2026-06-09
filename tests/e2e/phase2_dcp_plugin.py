@@ -8,7 +8,7 @@ from src.datahub.core.plugin_loader import load_plugin
 from src.datahub.core.registry import load_registry_from_plugins
 
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 EXPECTED_COMMANDS = {
     "project_tech_full": {"projectCode"},
     "daily_meeting_today_snapshot": {"date"},

@@ -9,7 +9,7 @@ from src.datahub.ingestion.service import IngestionService
 from src.datahub.storage.sqlite import DataHubStore
 
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def main() -> None:

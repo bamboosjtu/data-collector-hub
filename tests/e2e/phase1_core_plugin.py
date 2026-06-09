@@ -9,7 +9,7 @@ from src.datahub.settings import Settings
 from src.datahub.app import create_app
 
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def main() -> None:

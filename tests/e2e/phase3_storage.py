@@ -12,7 +12,7 @@ from src.datahub.storage.sqlite import DataHubStore
 from src.datahub.storage.writer import write_table
 
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def main() -> None:

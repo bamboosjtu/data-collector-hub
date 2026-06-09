@@ -40,3 +40,55 @@
 - 不使用 `raw` JSON 字段存储业务数据；未注册的溢出字段可存入 `extra`（json 类型）。
 - 写入模式由插件 `tables.yaml` 声明：`upsert`、`replace_scope`、`append`。
 - scope 映射由插件 `plugin.yaml` 的 `scope_mappings` 声明，核心代码不硬编码。
+
+## 测试
+
+### 目录结构
+
+```
+tests/
+  unit/           # 纯逻辑测试，无外部依赖
+  integration/    # 需要 SQLite/Store 但不需要外部服务
+  e2e/            # 需要完整 DataHub + downloader-dcp
+  fixtures/       # 共享测试夹具
+```
+
+### 运行方式
+
+```bash
+# 单元测试（无外部依赖，随时可跑）
+python -m pytest tests/unit/ -v
+
+# 集成测试（需要 SQLite，不需要外部服务）
+python -m pytest tests/integration/ -v
+
+# 全量测试（单元 + 集成）
+python -m pytest tests/unit/ tests/integration/ -v
+
+# E2E 测试（需要本地 DataHub + downloader-dcp 运行）
+python -m pytest tests/e2e/ -v
+```
+
+### 测试能力清单
+
+| 测试文件 | 类型 | 覆盖能力 |
+|----------|------|----------|
+| test_validator.py | unit | 空壳行判定、extra 字段过滤、schema 校验 |
+| test_normalizer_substation.py | unit | substation normalizer 输出规则 |
+| test_normalizer_daily_meeting.py | unit | daily meeting 字段化、date 补全、wrapper 过滤 |
+| test_time_utils.py | unit | 北京时间工具函数 |
+| test_writer_timestamps.py | unit | 业务表 _ingest_created_at/updated_at |
+| test_fan_out_circuit_breaker.py | integration | date/project fan-out 熔断器、child params cleanup、参数校验 |
+| test_plugin_handler.py | integration | plugin handler 前缀校验 |
+| test_status_poll.py | integration | downloader 状态轮询、stale 判定、parent 聚合 |
+| test_cli.py | integration | CLI 参数解析 |
+| phase0-6 + test_phase_scripts | e2e | 阶段验收（需要 plan.md + 完整运行环境） |
+
+### 脚本目录
+
+```
+scripts/
+  dev/    # 开发调试辅助（数据探查、清理）
+  smoke/  # Smoke 测试脚本
+  ops/    # 运维监控脚本（通用，接受参数）
+```

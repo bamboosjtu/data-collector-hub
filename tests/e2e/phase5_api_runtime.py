@@ -13,7 +13,7 @@ from src.datahub.settings import Settings
 from src.datahub.storage.sqlite import DataHubStore
 
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 
 
 class FakeExternalClient:
