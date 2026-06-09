@@ -132,6 +132,7 @@ def _advance_fanout_run(
         store.mark_fanout_circuit_open(parent_job_id)
         store.skip_pending_fanout_items(parent_job_id)
         stats = store.get_fanout_stats(parent_job_id)
+        run = store.get_fanout_run(parent_job_id)
 
     # 5. Close if no pending/submitting/submitted work remains
     if stats["pending"] == 0 and stats["submitting"] == 0 and stats["submitted"] == 0:
@@ -153,15 +154,19 @@ def _advance_fanout_run(
         if item is None:
             break
 
-        _submit_claimed_item(
-            store,
-            trigger_clients,
-            plugins,
-            run,
-            item,
-            callback_base_url=callback_base_url,
-            callback_headers=callback_headers,
-        )
+        try:
+            _submit_claimed_item(
+                store,
+                trigger_clients,
+                plugins,
+                run,
+                item,
+                callback_base_url=callback_base_url,
+                callback_headers=callback_headers,
+            )
+        except Exception as exc:
+            logger.exception("fanout %s: submit item %s failed", parent_job_id, item.get("id"))
+            store.update_fanout_item_terminal(item["id"], status="failed", error=str(exc))
         store.update_fanout_run_submit(parent_job_id, datahub_now_text())
         run = store.get_fanout_run(parent_job_id)
         capacity -= 1

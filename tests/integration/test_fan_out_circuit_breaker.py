@@ -301,6 +301,44 @@ class TestSchedulerCircuitBreaker:
         store.mark_fanout_circuit_open.assert_not_called()
         store.skip_pending_fanout_items.assert_not_called()
 
+    def test_circuit_close_uses_refreshed_run_snapshot(self):
+        """If circuit opens and no submitted work remains, close result must include circuit_opened."""
+        store = MagicMock()
+        before = {
+            "parent_job_id": "ing_test_001",
+            "child_command": "refresh_daily_meetings_by_range",
+            "max_concurrency": 1,
+            "cooldown_seconds": 0,
+            "consecutive_failure_threshold": 3,
+            "circuit_opened": 0,
+            "last_submit_at": None,
+            "total": 3,
+        }
+        after = {**before, "circuit_opened": 1}
+
+        store.claim_fanout_run.return_value = True
+        store.reset_stale_submitting_items.return_value = 0
+        store.list_submitted_fanout_items.return_value = []
+        store.get_fanout_stats.side_effect = [
+            {"pending": 0, "submitting": 0, "submitted": 0, "succeeded": 0, "failed": 3, "skipped": 0},
+            {"pending": 0, "submitting": 0, "submitted": 0, "succeeded": 0, "failed": 3, "skipped": 0},
+        ]
+        store.get_consecutive_failures.return_value = 3
+        store.get_fanout_run.side_effect = [before, after]
+
+        _advance_fanout_run(
+            store, {}, [], before,
+            callback_base_url="http://localhost:8000",
+            callback_headers=None,
+            scheduler_id="test-scheduler",
+        )
+
+        mark_kwargs = store.mark_job.call_args[1]
+        assert mark_kwargs["status"] == "failed"
+        assert mark_kwargs["result"]["circuit_opened"] is True
+        assert "circuit breaker" in mark_kwargs["error"]
+
+
 
 # ---------------------------------------------------------------------------
 # Scheduler tick: close parent
@@ -374,3 +412,107 @@ class TestCooldown:
         from src.datahub.core.time_utils import datahub_now
         future = (datahub_now()).strftime("%Y-%m-%d %H:%M:%S")
         assert _cooldown_elapsed(future, 60.0) is False
+
+
+# ---------------------------------------------------------------------------
+# Real SQLite fanout store APIs
+# ---------------------------------------------------------------------------
+
+def _make_real_store(test_name: str):
+    from src.datahub.core.registry import SchemaRegistry, TableSpec, ColumnSpec
+    from src.datahub.storage.sqlite import DataHubStore
+
+    registry = SchemaRegistry(
+        version=1,
+        tables={
+            "test_table": TableSpec(
+                table_name="test_table",
+                dataset_key="test_dataset",
+                description="test",
+                write_mode="upsert",
+                primary_key=("id",),
+                scope_column_names=(),
+                columns={"id": ColumnSpec(name="id", type="string", nullable=False)},
+            )
+        },
+        datasets={"test_dataset"},
+        raw={"version": 1, "tables": {"test_table": {}}},
+    )
+    # Use project-local temp dir to avoid Windows permission issues with system temp
+    from pathlib import Path
+    db_dir = Path(__file__).resolve().parents[1] / ".tmp_test" / test_name
+    db_dir.mkdir(parents=True, exist_ok=True)
+    db_path = db_dir / "fanout.sqlite"
+    if db_path.exists():
+        db_path.unlink()
+    store = DataHubStore(db_path, registry)
+    store.init_schema(dev_mode=True)
+    return store
+
+
+class TestFanoutStoreApis:
+    def test_claim_is_atomic_and_stale_submitting_recovers(self):
+        store = _make_real_store("fanout_claim_recover")
+        store.create_fanout_run_with_items(
+            parent_job_id="parent_1",
+            plugin_id="dcp",
+            parent_command="parent_cmd",
+            child_command="child_cmd",
+            param_sets=[{"x": 1}, {"x": 2}],
+            max_concurrency=2,
+            cooldown_seconds=0,
+            consecutive_failure_threshold=5,
+        )
+
+        first = store.claim_next_pending_fanout_item("parent_1", "sched_a")
+        second = store.claim_next_pending_fanout_item("parent_1", "sched_b")
+        third = store.claim_next_pending_fanout_item("parent_1", "sched_c")
+
+        assert first is not None
+        assert second is not None
+        assert first["id"] != second["id"]
+        assert third is None
+        assert store.get_fanout_stats("parent_1")["submitting"] == 2
+
+        from datetime import timedelta
+        from src.datahub.core.time_utils import datahub_now
+        stale_time = (datahub_now() - timedelta(seconds=180)).strftime("%Y-%m-%d %H:%M:%S")
+        with store.connect() as conn:
+            conn.execute("UPDATE fanout_items SET claimed_at = ? WHERE id = ?", (stale_time, first["id"]))
+
+        assert store.reset_stale_submitting_items("parent_1", stale_seconds=120) == 1
+        reclaimed = store.claim_next_pending_fanout_item("parent_1", "sched_d")
+        assert reclaimed is not None
+        assert reclaimed["id"] == first["id"]
+
+    def test_parent_aggregator_skips_scheduler_managed_parent(self):
+        from src.datahub.core.trigger_runtime import _aggregate_parent_jobs
+
+        store = _make_real_store("fanout_parent_aggregate_skip")
+        store.create_ingestion_job(
+            ingestion_job_id="parent_2",
+            producer_job_id="producer_parent_2",
+            job_type="parent_cmd",
+            params={},
+            plugin_id="dcp",
+        )
+        store.create_ingestion_job(
+            ingestion_job_id="child_2",
+            producer_job_id="producer_child_2",
+            job_type="child_cmd",
+            params={},
+            plugin_id="dcp",
+            parent_job_id="parent_2",
+        )
+        store.mark_job("parent_2", status="running")
+        store.mark_job("child_2", status="succeeded")
+        store.create_fanout_run_with_items(
+            parent_job_id="parent_2",
+            plugin_id="dcp",
+            parent_command="parent_cmd",
+            child_command="child_cmd",
+            param_sets=[{"x": 1}],
+        )
+
+        _aggregate_parent_jobs(store)
+        assert store.get_job("parent_2")["status"] == "running"
