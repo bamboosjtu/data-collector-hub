@@ -29,6 +29,10 @@
 | 18 | 2026-06-08 | 180-day backfill (first attempt) | FAILED: DCP safe.dailyMeeting request_failed all dates |
 | 19 | 2026-06-08 | 180-day backfill (with circuit breaker) | 53320 rows, 182 dates, 0 failures |
 | 20 | 2026-06-08 | 365-day backfill | 127092 rows, 362/365 succeeded, 1 transient retry |
+| 21 | 2026-06-09 | Engineering cleanup: scripts, tests, docs | 28 scripts deleted, tests reorganized, Streamlit removed |
+| 22 | 2026-06-09 | Beijing timezone unification | All timestamps use Asia/Shanghai, tzdata dependency added |
+| 23 | 2026-06-09 | Persistent fan-out scheduler | Serial → concurrent, fanout_runs/fanout_items tables, scheduler tick |
+| 24 | 2026-06-10 | 890-day concurrent backfill | 303548 rows, 890/890 succeeded, 3.7x speedup vs serial |
 
 ---
 
@@ -97,20 +101,22 @@
 | dcp_substation | 59 |
 | dcp_line_sections | 5421 |
 | dcp_line_branches | 720 |
-| dcp_daily_meeting | 127092 |
+| dcp_daily_meeting | 303548 |
 | dcp_daily_meeting_snapshot | ~127000 |
 
-### 365 天回补关键指标
+### 890 天并发回补关键指标
 
 | Metric | Value |
 |--------|-------|
-| Total rows | 127,092 |
-| Dates with data | 351 / 365 |
+| Total rows | 303,548 |
+| Dates with data | 843 / 890 |
 | schema_mismatch | 0 |
 | extra NOT NULL | 0 |
 | callback 401/403 | 0 |
 | database locked | 0 |
 | Circuit breaker triggered | No |
+| max_concurrency | 5 |
+| Speedup vs serial | 3.7x |
 
 ---
 
@@ -126,6 +132,9 @@
 | 6 | Fan-out parent stale threshold | NOT EXISTS children 条件排除 fan-out parent |
 | 7 | Fan-out parent polled as downloader job | NOT EXISTS children 条件排除 fan-out parent |
 | 8 | Date fan-out no circuit breaker | consecutive_failure_threshold + _is_child_failed |
+| 9 | Fan-out serial execution too slow | Persistent scheduler with concurrent child submission (3.7x speedup) |
+| 10 | Callback endpoint blocks event loop | asyncio.to_thread for sync ingestion_service calls |
+| 11 | SQLite busy_timeout too short | Raised from 5s to 30s |
 
 ---
 
