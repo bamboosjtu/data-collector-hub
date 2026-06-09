@@ -1,10 +1,16 @@
 """Sequential daily meeting verification: snapshot, yesterday, 3-day range, 14-day backfill."""
-import requests
-import time
+import argparse
 import json
 import sqlite3
 import subprocess
 import sys
+import time
+from pathlib import Path
+
+import requests
+
+DEFAULT_DB = Path(__file__).resolve().parents[2] / "data" / "datahub_mvp.db"
+DEFAULT_CWD = str(Path(__file__).resolve().parents[2])
 
 HUB = "http://localhost:8000"
 INGESTION = f"{HUB}/ingestion/v1"
@@ -22,13 +28,12 @@ def wait_job(job_id, timeout=120):
     return None
 
 
-def trigger(command, params=None):
+def trigger(command, params=None, cwd=None):
     cmd = ["uv", "run", "python", "-m", "src.datahub.cli", "trigger", command]
     if params:
         for k, v in params.items():
             cmd.extend(["--params", f"{k}={v}"])
-    result = subprocess.run(cmd, capture_output=True, text=True,
-                          cwd=r"c:\Users\theTruth\Documents\projects\vibe-demo\data-collector-hub")
+    result = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd)
     for line in result.stdout.split("\n"):
         if "Job created:" in line:
             return line.split("Job created:")[1].strip()
@@ -36,15 +41,14 @@ def trigger(command, params=None):
     return None
 
 
-def check_table(table_name):
-    conn = sqlite3.connect("data/datahub_mvp.db")
+def check_table(table_name, db_path):
+    conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
 
     c.execute(f"select count(*) from {table_name}")
     count = c.fetchone()[0]
 
-    # Check key business fields are populated
     c.execute(f"select count(*) from {table_name} where prjName is not null")
     prj_name_count = c.fetchone()[0]
     c.execute(f"select count(*) from {table_name} where biddingSectionCode is not null")
@@ -54,7 +58,6 @@ def check_table(table_name):
     c.execute(f"select count(*) from {table_name} where leaderName is not null")
     leader_count = c.fetchone()[0]
 
-    # Check extra is not bloated
     c.execute(f"select extra from {table_name} limit 5")
     extra_sizes = []
     for r in c.fetchall():
@@ -62,7 +65,6 @@ def check_table(table_name):
             extra = json.loads(r["extra"])
             extra_sizes.append(len(extra))
 
-    # Check forbidden keys in extra
     c.execute(f"select extra from {table_name} limit 10")
     forbidden = {"raw", "payload", "response", "result"}
     has_forbidden = False
@@ -73,7 +75,6 @@ def check_table(table_name):
                 has_forbidden = True
                 break
 
-    # Sample row with key fields
     c.execute(
         f"select date, id, prjName, biddingSectionCode, singleProjectCode, leaderName, workSiteName "
         f"from {table_name} limit 3"
@@ -93,12 +94,24 @@ def check_table(table_name):
     }
 
 
-if __name__ == "__main__":
+def main():
+    from src.datahub.core.time_utils import datahub_today, datahub_days_ago
+
+    parser = argparse.ArgumentParser(description="Daily meeting full verification")
+    parser.add_argument("--db", default=str(DEFAULT_DB), help="SQLite DB path")
+    parser.add_argument("--cwd", default=DEFAULT_CWD, help="DataHub project root")
+    args = parser.parse_args()
+
+    today = datahub_today()
+    yesterday = datahub_days_ago(1)
+    range_start = datahub_days_ago(3)
+    backfill_start = datahub_days_ago(14)
+
     print(flush=True)
 
     # Step 1: refresh_daily_meeting_snapshot
     print("[1] refresh_daily_meeting_snapshot...", end=" ", flush=True)
-    job_id = trigger("refresh_daily_meeting_snapshot")
+    job_id = trigger("refresh_daily_meeting_snapshot", cwd=args.cwd)
     if not job_id:
         print("TRIGGER FAILED"); sys.exit(1)
     result = wait_job(job_id, timeout=120)
@@ -106,15 +119,15 @@ if __name__ == "__main__":
         print("TIMEOUT"); sys.exit(1)
     print(result["status"], flush=True)
 
-    info = check_table("dcp_daily_meeting_snapshot")
-    print(f"  rows={info['count']}  prjName={info['prjName_count']}  biddingSectionCode={info['biddingSectionCode_count']}  singleProjectCode={info['singleProjectCode_count']}  leaderName={info['leaderName_count']}", flush=True)
+    info = check_table("dcp_daily_meeting_snapshot", args.db)
+    print(f"  rows={info['count']}  prjName={info['prjName_count']}  biddingSectionCode={info['biddingSectionCode_count']}  singleProjectCode={info['singleProjectCode_count']}  leaderName={info['leaderCount']}", flush=True)
     print(f"  extra_avg_keys={info['extra_avg_keys']:.1f}  forbidden_extra={info['has_forbidden_extra']}", flush=True)
     for s in info["samples"]:
         print(f"  sample: {s}", flush=True)
 
     # Step 2: refresh_daily_meetings_yesterday
     print(f"\n[2] refresh_daily_meetings_yesterday...", end=" ", flush=True)
-    job_id = trigger("refresh_daily_meetings_yesterday")
+    job_id = trigger("refresh_daily_meetings_yesterday", cwd=args.cwd)
     if not job_id:
         print("TRIGGER FAILED"); sys.exit(1)
     result = wait_job(job_id, timeout=120)
@@ -122,13 +135,13 @@ if __name__ == "__main__":
         print("TIMEOUT"); sys.exit(1)
     print(result["status"], flush=True)
 
-    info = check_table("dcp_daily_meeting")
-    print(f"  rows={info['count']}  prjName={info['prjName_count']}  biddingSectionCode={info['biddingSectionCode_count']}  singleProjectCode={info['singleProjectCode_count']}  leaderName={info['leaderName_count']}", flush=True)
+    info = check_table("dcp_daily_meeting", args.db)
+    print(f"  rows={info['count']}  prjName={info['prjName_count']}  biddingSectionCode={info['biddingSectionCode_count']}  singleProjectCode={info['singleProjectCode_count']}  leaderName={info['leader_count']}", flush=True)
     print(f"  extra_avg_keys={info['extra_avg_keys']:.1f}  forbidden_extra={info['has_forbidden_extra']}", flush=True)
 
     # Step 3: refresh_daily_meetings_by_range (3 days)
     print(f"\n[3] refresh_daily_meetings_by_range (3 days)...", end=" ", flush=True)
-    job_id = trigger("refresh_daily_meetings_by_range", {"startDate": "2026-06-05", "endDate": "2026-06-07"})
+    job_id = trigger("refresh_daily_meetings_by_range", {"startDate": str(range_start), "endDate": str(today)}, cwd=args.cwd)
     if not job_id:
         print("TRIGGER FAILED"); sys.exit(1)
     result = wait_job(job_id, timeout=120)
@@ -136,20 +149,19 @@ if __name__ == "__main__":
         print("TIMEOUT"); sys.exit(1)
     print(result["status"], flush=True)
 
-    info = check_table("dcp_daily_meeting")
-    print(f"  rows={info['count']}  prjName={info['prjName_count']}  biddingSectionCode={info['biddingSectionCode_count']}  singleProjectCode={info['singleProjectCode_count']}  leaderName={info['leaderName_count']}", flush=True)
+    info = check_table("dcp_daily_meeting", args.db)
+    print(f"  rows={info['count']}  prjName={info['prjName_count']}  biddingSectionCode={info['biddingSectionCode_count']}  singleProjectCode={info['singleProjectCode_count']}  leaderName={info['leader_count']}", flush=True)
     print(f"  extra_avg_keys={info['extra_avg_keys']:.1f}  forbidden_extra={info['has_forbidden_extra']}", flush=True)
 
     # Step 4: backfill_daily_meetings_by_range (14 days)
     print(f"\n[4] backfill_daily_meetings_by_range (14 days)...", flush=True)
     job_id = trigger("backfill_daily_meetings_by_range", {
-        "startDate": "2026-05-25", "endDate": "2026-06-07",
+        "startDate": str(backfill_start), "endDate": str(today),
         "chunk_days": "1", "cooldown_seconds": "3",
-    })
+    }, cwd=args.cwd)
     if not job_id:
         print("TRIGGER FAILED"); sys.exit(1)
 
-    # Wait for fan-out parent
     start = time.time()
     while time.time() - start < 600:
         r = requests.get(f"{INGESTION}/jobs/{job_id}")
@@ -160,8 +172,8 @@ if __name__ == "__main__":
                 break
         time.sleep(5)
 
-    info = check_table("dcp_daily_meeting")
-    print(f"  rows={info['count']}  prjName={info['prjName_count']}  biddingSectionCode={info['biddingSectionCode_count']}  singleProjectCode={info['singleProjectCode_count']}  leaderName={info['leaderName_count']}", flush=True)
+    info = check_table("dcp_daily_meeting", args.db)
+    print(f"  rows={info['count']}  prjName={info['prjName_count']}  biddingSectionCode={info['biddingSectionCode_count']}  singleProjectCode={info['singleProjectCode_count']}  leaderName={info['leader_count']}", flush=True)
     print(f"  extra_avg_keys={info['extra_avg_keys']:.1f}  forbidden_extra={info['has_forbidden_extra']}", flush=True)
 
     # Final verification
@@ -169,24 +181,15 @@ if __name__ == "__main__":
     print("ACCEPTANCE CHECK", flush=True)
     print(f"{'='*60}", flush=True)
 
-    # Query route test
-    r = requests.get(f"{HUB}/api/v1/safety/daily-meetings", params={"date": "2026-06-07", "limit": 5})
+    r = requests.get(f"{HUB}/api/v1/safety/daily-meetings", params={"date": str(yesterday), "limit": 5})
     if r.status_code == 200:
         data = r.json()
         items = data.get("items", data) if isinstance(data, dict) else data
-        print(f"  PASS: query route /api/v1/safety/daily-meetings?date=2026-06-07 returned {len(items) if isinstance(items, list) else '?'} items", flush=True)
+        print(f"  PASS: query route /api/v1/safety/daily-meetings?date={yesterday} returned {len(items) if isinstance(items, list) else '?'} items", flush=True)
     else:
         print(f"  FAIL: query route returned {r.status_code}", flush=True)
 
-    # Query by singleProjectCode
-    r = requests.get(f"{HUB}/api/v1/safety/daily-meetings", params={"singleProjectCode": "1316A024000401", "limit": 5})
-    if r.status_code == 200:
-        print(f"  PASS: query by singleProjectCode returned {r.status_code}", flush=True)
-    else:
-        print(f"  INFO: query by singleProjectCode returned {r.status_code}", flush=True)
-
-    # Direct SQL check
-    conn = sqlite3.connect("data/datahub_mvp.db")
+    conn = sqlite3.connect(args.db)
     c = conn.cursor()
     c.execute("select date, id, prjName, biddingSectionCode, singleProjectCode, leaderName, workSiteName from dcp_daily_meeting limit 5")
     for r in c.fetchall():
@@ -199,3 +202,7 @@ if __name__ == "__main__":
     print(f"\n  extra populated: {extra_count}/{total}", flush=True)
 
     conn.close()
+
+
+if __name__ == "__main__":
+    main()

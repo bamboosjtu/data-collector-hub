@@ -86,7 +86,20 @@ python -m pytest tests/e2e/ -v
 
 ```
 scripts/
-  dev/    # 开发调试辅助（数据探查、清理）
-  smoke/  # Smoke 测试脚本
-  ops/    # 运维监控脚本（通用，接受参数）
+  dev/    # 数据维护工具（--db 参数化，可指定 DB 路径）
+  smoke/  # Smoke 测试脚本（--db / --cwd 参数化）
+  ops/    # 运维监控脚本（接受 argv 参数，通用）
 ```
+
+| 脚本 | 目录 | 用途 |
+|------|------|------|
+| clean_substation.py | dev | 清理 substation 脏数据行 |
+| verify_30day.py | dev | daily_meeting 验收检查 |
+| verify_daily_full.py | smoke | daily_meeting 全流程验证 |
+| verify_run.py | smoke | 通用 job 结果验证 |
+| check_state.py | ops | Hub 状态巡检 |
+| check_fanout_detail.py | ops | fan-out 父子任务详情 |
+| full_fanout.py | ops | 执行 fan-out 并验证 |
+| monitor_fanout_v2.py | ops | fan-out 进度监控 |
+| wait_fanout.py | ops | 等待 fan-out 终态并输出报告 |
+| wait_job.py | ops | 等待单个 job 终态 |

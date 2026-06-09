@@ -1,19 +1,26 @@
-"""Full fan-out (416 projects) verification script.
+"""Full fan-out verification script.
 Runs one fan-out command, waits for terminal state, records all metrics.
 """
-import requests
-import time
+import argparse
 import json
 import sqlite3
+import subprocess
 import sys
+import time
+from pathlib import Path
+
+import requests
+
+DEFAULT_DB = Path(__file__).resolve().parents[2] / "data" / "datahub_mvp.db"
+DEFAULT_CWD = str(Path(__file__).resolve().parents[2])
 
 HUB = "http://localhost:8000"
 INGESTION = f"{HUB}/ingestion/v1"
 
 
-def get_table_counts() -> dict:
+def get_table_counts(db_path) -> dict:
     counts = {}
-    conn = sqlite3.connect("data/datahub_mvp.db")
+    conn = sqlite3.connect(db_path)
     c = conn.cursor()
     for t in ["dcp_tower", "dcp_substation", "dcp_line_sections", "dcp_line_branches"]:
         c.execute(f"select count(*) from {t}")
@@ -29,14 +36,12 @@ def get_table_counts() -> dict:
     return counts
 
 
-def trigger_fanout(command: str) -> str | None:
-    import subprocess
+def trigger_fanout(command: str, cwd: str) -> str | None:
     cmd = [
         "uv", "run", "python", "-m", "src.datahub.cli", "trigger", command,
         "--params", "max_concurrency=1", "cooldown_seconds=5",
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True,
-                          cwd=r"c:\Users\theTruth\Documents\projects\vibe-demo\data-collector-hub")
+    result = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd)
     for line in result.stdout.split("\n"):
         if "Job created:" in line:
             return line.split("Job created:")[1].strip()
@@ -87,22 +92,22 @@ def get_failed_children(parent_id: str) -> list:
     } for j in failed]
 
 
-if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Usage: python full_fanout.py <command>")
-        sys.exit(1)
-
-    command = sys.argv[1]
+def main():
+    parser = argparse.ArgumentParser(description="Run full fan-out and verify")
+    parser.add_argument("command", help="Fan-out command to trigger")
+    parser.add_argument("--db", default=str(DEFAULT_DB), help="SQLite DB path")
+    parser.add_argument("--cwd", default=DEFAULT_CWD, help="DataHub project root")
+    args = parser.parse_args()
 
     print(f"\n{'='*60}")
-    print(f"FULL FAN-OUT: {command}")
+    print(f"FULL FAN-OUT: {args.command}")
     print(f"{'='*60}")
 
-    counts_before = get_table_counts()
+    counts_before = get_table_counts(args.db)
     print(f"\nBefore: {json.dumps(counts_before)}")
 
     start_time = time.time()
-    job_id = trigger_fanout(command)
+    job_id = trigger_fanout(args.command, args.cwd)
     if not job_id:
         print("TRIGGER FAILED - STOPPING")
         sys.exit(1)
@@ -133,7 +138,7 @@ if __name__ == "__main__":
         for fc in failed_children[:10]:
             print(f"  {fc['status']}: {fc['params']} - {fc['error']}")
 
-    counts_after = get_table_counts()
+    counts_after = get_table_counts(args.db)
     print(f"\nTable counts:")
     for t in ["dcp_tower", "dcp_substation", "dcp_line_sections", "dcp_line_branches"]:
         delta = counts_after.get(t, 0) - counts_before.get(t, 0)
@@ -164,3 +169,7 @@ if __name__ == "__main__":
         sys.exit(1)
     else:
         print("\nAll checks passed - safe to proceed to next fan-out")
+
+
+if __name__ == "__main__":
+    main()
