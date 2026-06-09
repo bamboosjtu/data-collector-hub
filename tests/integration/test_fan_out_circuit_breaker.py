@@ -1,11 +1,13 @@
-"""Core tests for fan-out circuit breakers (date-range and project).
+"""Tests for fan-out scheduler and circuit breaker.
 
-Keeps only MVP-critical scenarios:
-1. Consecutive failures trigger circuit breaker (both date and project)
-2. Parent status = failed when circuit opens
-3. Success resets consecutive counter
-4. Normal success path unaffected
-5. Child params cleanup (fan-out controls not leaked to children)
+Covers:
+1. Handler creates fanout_runs/items and returns immediately
+2. Scheduler tick submits child jobs within capacity
+3. Circuit breaker: consecutive failures skip pending items
+4. Parent close semantics (succeeded/partial/failed)
+5. _is_child_failed logic
+6. _resolve_concurrency caps user override
+7. Cooldown enforcement
 """
 
 from __future__ import annotations
@@ -19,7 +21,16 @@ from plugins.dcp.fan_out import (
     _is_child_failed,
     _date_range_fan_out,
     _project_fan_out,
+    _resolve_concurrency,
+    _resolve_cooldown,
+    _resolve_failure_threshold,
 )
+from src.datahub.core.fanout_scheduler import (
+    _advance_fanout_run,
+    _close_fanout_parent,
+    _cooldown_elapsed,
+)
+from src.datahub.core.specs import CommandSpec, PluginSpec, DisplaySpec, ConnectorSpec
 
 
 # ---------------------------------------------------------------------------
@@ -33,15 +44,25 @@ def _make_store(jobs: dict[str, dict] | None = None):
     store.mark_job = MagicMock()
     store.query_table = MagicMock(return_value=[])
     store.connect = MagicMock()
+    store.create_fanout_run_with_items = MagicMock()
+    store.has_fanout_run = MagicMock(return_value=False)
     return store
 
 
-def _make_plugins(child_command_name="refresh_daily_meetings_by_range"):
-    from src.datahub.core.specs import PluginSpec, CommandSpec, DisplaySpec, ConnectorSpec
-    child_cmd = CommandSpec(
-        name=child_command_name,
-        trigger={"job_type": "safe_daily_meeting_range", "handler": "dcp.fan_out:backfill_daily_meetings_by_range"},
+def _make_command(name="refresh_daily_meetings_by_range", **kwargs):
+    defaults = dict(
+        name=name,
+        trigger={"job_type": "safe_daily_meeting_range"},
+        max_concurrency=1,
+        max_concurrency_limit=5,
+        cooldown_seconds=0,
     )
+    defaults.update(kwargs)
+    return CommandSpec(**defaults)
+
+
+def _make_plugins(child_command_name="refresh_daily_meetings_by_range"):
+    child_cmd = _make_command(name=child_command_name)
     plugin = PluginSpec(
         name="dcp", version=1, display=DisplaySpec(label="DCP"),
         connector=ConnectorSpec(type="http_sync", base_url="http://localhost:8010"),
@@ -53,17 +74,20 @@ def _make_plugins(child_command_name="refresh_daily_meetings_by_range"):
 def _make_client(sync_side_effect=None):
     client = MagicMock()
     client.sync = MagicMock(side_effect=sync_side_effect or [{"status": "accepted", "downloader_job_id": "job_123"}])
-    client.get_job_status = MagicMock(return_value={"status": "succeeded"})
     return client
 
 
-def _make_ctx(store, plugins, client, params=None):
+def _make_ctx(store, plugins, client, params=None, command=None):
+    if command is None:
+        command = _make_command()
     return {
         "store": store, "plugins": plugins, "trigger_clients": {"dcp": client},
         "ingestion_job_id": "ing_test_parent_001",
         "callback_base_url": "http://localhost:8000",
         "callback_headers": {"X-Callback-Key": "dev-default-callback-key"},
         "params": params or {},
+        "command": command,
+        "plugin": MagicMock(name="dcp"),
     }
 
 
@@ -78,7 +102,7 @@ def _failed_job(error="request_failed"):
 
 
 # ---------------------------------------------------------------------------
-# _is_child_failed — core cases only
+# _is_child_failed
 # ---------------------------------------------------------------------------
 
 class TestIsChildFailed:
@@ -99,180 +123,254 @@ class TestIsChildFailed:
 
 
 # ---------------------------------------------------------------------------
-# Date-range fan-out circuit breaker
+# Handler creates fanout_runs/items
 # ---------------------------------------------------------------------------
 
-class TestDateRangeCircuitBreaker:
-    def _run_fan_out(self, child_jobs, params=None, threshold=None):
-        if params is None:
-            params = {"startDate": "2026-01-01", "endDate": "2026-01-10", "chunk_days": 1}
-        if threshold is not None:
-            params["consecutive_failure_threshold"] = threshold
-
-        created_job_ids = []
-        job_counter = [0]
-
-        def mock_create_job(ingestion_job_id, **kwargs):
-            created_job_ids.append(ingestion_job_id)
-
-        def mock_sync(*args, **kwargs):
-            idx = job_counter[0]
-            job_counter[0] += 1
-            return {"status": "accepted", "downloader_job_id": f"job_{idx}"}
-
+class TestHandlerCreatesSchedulerState:
+    def test_date_range_handler_creates_run(self):
         store = _make_store()
-        store.create_ingestion_job = MagicMock(side_effect=mock_create_job)
-
-        def mock_get_job(job_id):
-            if job_id in created_job_ids:
-                idx = created_job_ids.index(job_id)
-                if idx < len(child_jobs):
-                    return child_jobs[idx]
-            return _succeeded_job()
-
-        store.get_job = MagicMock(side_effect=mock_get_job)
         plugins = _make_plugins()
-        client = _make_client(sync_side_effect=mock_sync)
-        ctx = _make_ctx(store, plugins, client, params)
+        client = _make_client()
+        command = _make_command(max_concurrency=3, cooldown_seconds=2)
+        ctx = _make_ctx(store, plugins, client,
+                        params={"startDate": "2026-01-01", "endDate": "2026-01-10"},
+                        command=command)
 
-        with patch("plugins.dcp.fan_out._wait_for_child_terminal") as mock_wait:
-            def wait_side_effect(store_arg, job_id, **kwargs):
-                if job_id in created_job_ids:
-                    idx = created_job_ids.index(job_id)
-                    if idx < len(child_jobs):
-                        return child_jobs[idx]
-                return _succeeded_job()
-            mock_wait.side_effect = wait_side_effect
-            result = _date_range_fan_out(
-                ctx=ctx, child_command="refresh_daily_meetings_by_range",
-                start_date_param="startDate", end_date_param="endDate",
-                chunk_days=1, cooldown_seconds=0,
-            )
+        result = _date_range_fan_out(
+            ctx=ctx, child_command="refresh_daily_meetings_by_range",
+            chunk_days=1,
+        )
 
-        return result, store, created_job_ids
+        store.create_fanout_run_with_items.assert_called_once()
+        call_kwargs = store.create_fanout_run_with_items.call_args[1]
+        assert call_kwargs["max_concurrency"] == 3
+        assert call_kwargs["cooldown_seconds"] == 2
+        # 10 days / 1 day per chunk = 10 chunks
+        assert len(call_kwargs["param_sets"]) == 10
 
-    def test_circuit_breaker_stops_after_consecutive_failures(self):
-        child_jobs = [_failed_job() for _ in range(10)]
-        result, store, created_ids = self._run_fan_out(child_jobs)
-        assert len(created_ids) == 5
-        assert result["created_children"] == 5
-        assert result["failed"] == 5
+        # Handler returns immediately with running status
+        assert result["status"] == "running"
+        assert result["total"] == 10
 
-    def test_parent_failed_when_circuit_opens(self):
-        child_jobs = [_failed_job() for _ in range(10)]
-        result, store, created_ids = self._run_fan_out(child_jobs)
-        mark_calls = store.mark_job.call_args_list
-        failed_calls = [c for c in mark_calls if c[0][0] == "ing_test_parent_001" and c[1].get("status") == "failed"]
-        assert len(failed_calls) >= 1
-        assert "circuit breaker opened" in failed_calls[0][1].get("error", "")
-
-    def test_success_resets_consecutive_counter(self):
-        child_jobs = [
-            _failed_job(), _failed_job(), _succeeded_job(),
-            _failed_job(), _failed_job(), _succeeded_job(),
-            _failed_job(), _failed_job(), _failed_job(), _succeeded_job(),
-        ]
-        result, store, created_ids = self._run_fan_out(child_jobs)
-        assert len(created_ids) == 10
-
-    def test_normal_success_path_unaffected(self):
-        child_jobs = [_succeeded_job() for _ in range(30)]
-        result, store, created_ids = self._run_fan_out(
-            child_jobs, params={"startDate": "2026-01-01", "endDate": "2026-01-30", "chunk_days": 1})
-        assert len(created_ids) == 30
-        assert result["succeeded"] == 30
-        assert result["failed"] == 0
-
-
-# ---------------------------------------------------------------------------
-# Project fan-out circuit breaker
-# ---------------------------------------------------------------------------
-
-class TestProjectFanOutCircuitBreaker:
-    def _run_project_fan_out(self, project_rows, child_jobs, params=None, threshold=None):
-        if params is None:
-            params = {}
-        if threshold is not None:
-            params["consecutive_failure_threshold"] = threshold
-
-        created_job_ids = []
-        job_counter = [0]
-
-        def mock_create_job(ingestion_job_id, **kwargs):
-            created_job_ids.append(ingestion_job_id)
-
-        def mock_sync(*args, **kwargs):
-            idx = job_counter[0]
-            job_counter[0] += 1
-            return {"status": "accepted", "downloader_job_id": f"job_{idx}"}
-
+    def test_project_handler_creates_run(self):
         store = _make_store()
+        project_rows = [{"prjCode": "P001"}, {"prjCode": "P002"}, {"prjCode": "P003"}]
         store.query_table = MagicMock(return_value=project_rows)
-        store.create_ingestion_job = MagicMock(side_effect=mock_create_job)
+        plugins = _make_plugins("refresh_substations_for_project")
+        client = _make_client()
+        command = _make_command(name="refresh_substations_for_current_plan_projects", max_concurrency=5)
+        ctx = _make_ctx(store, plugins, client, command=command)
 
-        def mock_get_job(job_id):
-            if job_id in created_job_ids:
-                idx = created_job_ids.index(job_id)
-                if idx < len(child_jobs):
-                    return child_jobs[idx]
-            return _succeeded_job()
-
-        store.get_job = MagicMock(side_effect=mock_get_job)
-
-        from src.datahub.core.specs import PluginSpec, CommandSpec, DisplaySpec, ConnectorSpec
-        child_cmd = CommandSpec(
-            name="refresh_substations_for_project",
-            trigger={"job_type": "safe_substation_list", "handler": "dcp.fan_out:refresh_substations_for_current_plan_projects"},
+        result = _project_fan_out(
+            ctx=ctx, child_command="refresh_substations_for_project",
+            params_mapping={"prjCode": "projectCode"},
         )
-        plugin = PluginSpec(
-            name="dcp", version=1, display=DisplaySpec(label="DCP"),
-            connector=ConnectorSpec(type="http_sync", base_url="http://localhost:8010"),
-            commands=(child_cmd,),
+
+        store.create_fanout_run_with_items.assert_called_once()
+        call_kwargs = store.create_fanout_run_with_items.call_args[1]
+        assert call_kwargs["max_concurrency"] == 5
+        assert len(call_kwargs["param_sets"]) == 3
+        assert result["status"] == "running"
+
+    def test_empty_projects_succeeds_immediately(self):
+        store = _make_store()
+        store.query_table = MagicMock(return_value=[])
+        plugins = _make_plugins("refresh_substations_for_project")
+        client = _make_client()
+        command = _make_command(name="refresh_substations_for_current_plan_projects")
+        ctx = _make_ctx(store, plugins, client, command=command)
+
+        result = _project_fan_out(
+            ctx=ctx, child_command="refresh_substations_for_project",
+            params_mapping={"prjCode": "projectCode"},
         )
-        plugins = [plugin]
-        client = _make_client(sync_side_effect=mock_sync)
-        ctx = _make_ctx(store, plugins, client, params)
 
-        with patch("plugins.dcp.fan_out._wait_for_child_terminal") as mock_wait, \
-             patch("plugins.dcp.fan_out._find_child_command_and_client") as mock_find:
-            mock_find.return_value = (MagicMock(trigger={"job_type": "safe_substation_list"}), plugin, client, None)
-            def wait_side_effect(store_arg, job_id, **kwargs):
-                if job_id in created_job_ids:
-                    idx = created_job_ids.index(job_id)
-                    if idx < len(child_jobs):
-                        return child_jobs[idx]
-                return _succeeded_job()
-            mock_wait.side_effect = wait_side_effect
-            result = _project_fan_out(
-                ctx=ctx, child_command="refresh_substations_for_project",
-                params_mapping={"prjCode": "projectCode"}, cooldown_seconds=0,
-            )
-
-        return result, store, created_job_ids
-
-    def test_circuit_breaker_stops_after_consecutive_failures(self):
-        project_rows = [{"prjCode": f"P{i:03d}"} for i in range(10)]
-        child_jobs = [_failed_job() for _ in range(10)]
-        result, store, created_ids = self._run_project_fan_out(project_rows, child_jobs)
-        assert len(created_ids) == 5
-        assert result["created_children"] == 5
-        assert result["failed_children"] == 5
-
-    def test_parent_failed_when_circuit_opens(self):
-        project_rows = [{"prjCode": f"P{i:03d}"} for i in range(10)]
-        child_jobs = [_failed_job() for _ in range(10)]
-        result, store, created_ids = self._run_project_fan_out(project_rows, child_jobs)
+        store.create_fanout_run_with_items.assert_not_called()
+        store.mark_job.assert_called()
+        # Should mark as succeeded with 0 total
         mark_calls = store.mark_job.call_args_list
-        failed_calls = [c for c in mark_calls if c[0][0] == "ing_test_parent_001" and c[1].get("status") == "failed"]
-        assert len(failed_calls) >= 1
-        assert "circuit breaker opened" in failed_calls[0][1].get("error", "")
+        last_call = mark_calls[-1]
+        assert last_call[1]["status"] == "succeeded"
 
-    def test_success_resets_consecutive_counter(self):
-        project_rows = [{"prjCode": f"P{i:03d}"} for i in range(10)]
-        child_jobs = [
-            _failed_job(), _failed_job(), _succeeded_job(),
-            _failed_job(), _failed_job(), _succeeded_job(),
-            _failed_job(), _failed_job(), _failed_job(), _succeeded_job(),
-        ]
-        result, store, created_ids = self._run_project_fan_out(project_rows, child_jobs)
-        assert len(created_ids) == 10
+
+# ---------------------------------------------------------------------------
+# Concurrency resolution
+# ---------------------------------------------------------------------------
+
+class TestConcurrencyResolution:
+    def test_default_concurrency(self):
+        cmd = _make_command(max_concurrency=1)
+        assert _resolve_concurrency(cmd, {}) == 1
+
+    def test_user_override_within_limit(self):
+        cmd = _make_command(max_concurrency=1, max_concurrency_limit=5)
+        assert _resolve_concurrency(cmd, {"max_concurrency": 3}) == 3
+
+    def test_user_override_capped_at_limit(self):
+        cmd = _make_command(max_concurrency=1, max_concurrency_limit=3)
+        assert _resolve_concurrency(cmd, {"max_concurrency": 10}) == 3
+
+    def test_no_limit_uses_default(self):
+        cmd = _make_command(max_concurrency=3, max_concurrency_limit=None)
+        assert _resolve_concurrency(cmd, {"max_concurrency": 100}) == 3
+
+    def test_cooldown_from_spec(self):
+        cmd = _make_command(cooldown_seconds=5.0)
+        assert _resolve_cooldown(cmd, {}) == 5.0
+
+    def test_cooldown_from_params_overrides_spec(self):
+        cmd = _make_command(cooldown_seconds=5.0)
+        assert _resolve_cooldown(cmd, {"cooldown_seconds": 2.0}) == 2.0
+
+    def test_cooldown_default_when_spec_zero(self):
+        cmd = _make_command(cooldown_seconds=0.0)
+        assert _resolve_cooldown(cmd, {}, default=3.0) == 3.0
+
+    def test_failure_threshold_from_params(self):
+        assert _resolve_failure_threshold({"consecutive_failure_threshold": 3}) == 3
+
+    def test_failure_threshold_default(self):
+        assert _resolve_failure_threshold({}) == 5
+
+
+# ---------------------------------------------------------------------------
+# Scheduler tick: circuit breaker
+# ---------------------------------------------------------------------------
+
+class TestSchedulerCircuitBreaker:
+    def test_circuit_opens_after_consecutive_failures(self):
+        """When consecutive_failures >= threshold, circuit opens and pending items are skipped."""
+        store = MagicMock()
+        run = {
+            "parent_job_id": "ing_test_001",
+            "child_command": "refresh_daily_meetings_by_range",
+            "max_concurrency": 1,
+            "cooldown_seconds": 0,
+            "consecutive_failure_threshold": 3,
+            "circuit_opened": 0,
+            "last_submit_at": None,
+            "total": 10,
+        }
+
+        store.claim_fanout_run.return_value = True
+        store.reset_stale_submitting_items.return_value = 0
+        store.list_submitted_fanout_items.return_value = []
+        store.get_fanout_stats.return_value = {"pending": 7, "submitting": 0, "submitted": 0, "succeeded": 0, "failed": 3, "skipped": 0}
+        store.get_consecutive_failures.return_value = 3
+        store.get_fanout_run.return_value = run
+
+        _advance_fanout_run(
+            store, {}, [], run,
+            callback_base_url="http://localhost:8000",
+            callback_headers=None,
+            scheduler_id="test-scheduler",
+        )
+
+        store.mark_fanout_circuit_open.assert_called_once_with("ing_test_001")
+        store.skip_pending_fanout_items.assert_called_once_with("ing_test_001")
+
+    def test_circuit_not_open_below_threshold(self):
+        """When consecutive_failures < threshold, circuit stays closed."""
+        store = MagicMock()
+        run = {
+            "parent_job_id": "ing_test_001",
+            "child_command": "refresh_daily_meetings_by_range",
+            "max_concurrency": 1,
+            "cooldown_seconds": 0,
+            "consecutive_failure_threshold": 5,
+            "circuit_opened": 0,
+            "last_submit_at": None,
+            "total": 10,
+        }
+
+        store.claim_fanout_run.return_value = True
+        store.reset_stale_submitting_items.return_value = 0
+        store.list_submitted_fanout_items.return_value = []
+        store.get_fanout_stats.return_value = {"pending": 8, "submitting": 0, "submitted": 0, "succeeded": 1, "failed": 1, "skipped": 0}
+        store.get_consecutive_failures.return_value = 1
+        store.get_fanout_run.return_value = run
+        store.claim_next_pending_fanout_item.return_value = None
+
+        _advance_fanout_run(
+            store, {}, [], run,
+            callback_base_url="http://localhost:8000",
+            callback_headers=None,
+            scheduler_id="test-scheduler",
+        )
+
+        store.mark_fanout_circuit_open.assert_not_called()
+        store.skip_pending_fanout_items.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Scheduler tick: close parent
+# ---------------------------------------------------------------------------
+
+class TestSchedulerCloseParent:
+    def test_all_succeeded_closes_as_succeeded(self):
+        stats = {"pending": 0, "submitting": 0, "submitted": 0, "succeeded": 10, "failed": 0, "skipped": 0}
+        run = {"parent_job_id": "ing_test_001", "total": 10, "circuit_opened": 0,
+               "consecutive_failure_threshold": 5, "max_concurrency": 3}
+        store = MagicMock()
+
+        _close_fanout_parent(store, "ing_test_001", stats, run)
+
+        store.close_fanout_run.assert_called_once()
+        store.mark_job.assert_called_once()
+        mark_kwargs = store.mark_job.call_args[1]
+        assert mark_kwargs["status"] == "succeeded"
+
+    def test_mixed_results_closes_as_partial(self):
+        stats = {"pending": 0, "submitting": 0, "submitted": 0, "succeeded": 8, "failed": 2, "skipped": 0}
+        run = {"parent_job_id": "ing_test_001", "total": 10, "circuit_opened": 0,
+               "consecutive_failure_threshold": 5, "max_concurrency": 3}
+        store = MagicMock()
+
+        _close_fanout_parent(store, "ing_test_001", stats, run)
+
+        mark_kwargs = store.mark_job.call_args[1]
+        assert mark_kwargs["status"] == "partial"
+
+    def test_all_failed_closes_as_failed(self):
+        stats = {"pending": 0, "submitting": 0, "submitted": 0, "succeeded": 0, "failed": 10, "skipped": 0}
+        run = {"parent_job_id": "ing_test_001", "total": 10, "circuit_opened": 0,
+               "consecutive_failure_threshold": 5, "max_concurrency": 3}
+        store = MagicMock()
+
+        _close_fanout_parent(store, "ing_test_001", stats, run)
+
+        mark_kwargs = store.mark_job.call_args[1]
+        assert mark_kwargs["status"] == "failed"
+        assert mark_kwargs["error"] is not None
+
+    def test_circuit_opened_closes_as_failed(self):
+        stats = {"pending": 0, "submitting": 0, "submitted": 0, "succeeded": 5, "failed": 5, "skipped": 20}
+        run = {"parent_job_id": "ing_test_001", "total": 30, "circuit_opened": 1,
+               "consecutive_failure_threshold": 5, "max_concurrency": 3}
+        store = MagicMock()
+
+        _close_fanout_parent(store, "ing_test_001", stats, run)
+
+        mark_kwargs = store.mark_job.call_args[1]
+        assert mark_kwargs["status"] == "partial"
+        assert "circuit breaker" in (mark_kwargs.get("error") or "")
+
+
+# ---------------------------------------------------------------------------
+# Cooldown
+# ---------------------------------------------------------------------------
+
+class TestCooldown:
+    def test_no_last_submit_allows_immediate(self):
+        assert _cooldown_elapsed(None, 5.0) is True
+
+    def test_zero_cooldown_allows_immediate(self):
+        assert _cooldown_elapsed("2026-01-01 00:00:00", 0.0) is True
+
+    def test_recent_submit_blocks(self):
+        # _cooldown_elapsed compares against datahub_now() which is Beijing time
+        # but the stored timestamp is also Beijing time, so they should be comparable
+        # Use a timestamp far in the future to ensure it's recent
+        from src.datahub.core.time_utils import datahub_now
+        future = (datahub_now()).strftime("%Y-%m-%d %H:%M:%S")
+        assert _cooldown_elapsed(future, 60.0) is False

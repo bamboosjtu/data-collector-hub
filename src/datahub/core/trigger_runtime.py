@@ -198,8 +198,9 @@ def poll_downloader_jobs(
 def _aggregate_parent_jobs(store: Any) -> None:
     """Update parent job status based on child job statuses.
 
-    Skips parents that have fan_out_in_progress=True in their result_json,
-    as the fan-out handler is still creating children sequentially.
+    Skips parents that have a fanout_runs row — the fan-out scheduler
+    owns those parents' final status.
+    Also skips parents with fan_out_in_progress=True (legacy).
     """
     with store.connect() as conn:
         # Find parent jobs that are still non-terminal
@@ -218,7 +219,11 @@ def _aggregate_parent_jobs(store: Any) -> None:
     for parent_row in parents:
         parent_id = parent_row["ingestion_job_id"]
 
-        # Skip parents that are still in the process of creating children
+        # Skip parents managed by the fan-out scheduler
+        if store.has_fanout_run(parent_id):
+            continue
+
+        # Skip parents that are still in the process of creating children (legacy)
         result_json_str = parent_row["result_json"]
         if result_json_str:
             try:

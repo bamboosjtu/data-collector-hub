@@ -4,16 +4,14 @@ Contains project fan-out and date-range fan-out logic specific to DCP.
 These handlers are invoked by core's plugin_handler trigger mechanism.
 
 Each handler receives a standard context dict and is responsible for:
-- Querying source tables
-- Creating child ingestion jobs
-- Calling downloader via trigger_clients
-- Recording success/failure per child job
+- Querying source tables or parsing date ranges
+- Creating fanout_runs / fanout_items in SQLite
+- Returning immediately — the scheduler tick advances execution
 """
 
 from __future__ import annotations
 
 import logging
-import time
 from datetime import date, datetime, timedelta
 from typing import Any
 
@@ -107,6 +105,36 @@ def _run_child_job(
         return child_job_id, "failed", str(exc)
 
 
+def _resolve_concurrency(command_spec, params) -> int:
+    """Resolve max_concurrency from command spec and user params."""
+    default = command_spec.max_concurrency
+    limit = command_spec.max_concurrency_limit or default
+    requested = int(params.get("max_concurrency", default))
+    actual = max(1, min(requested, limit))
+    if requested > limit:
+        logger.warning("max_concurrency=%d exceeds limit=%d, capped", requested, limit)
+    return actual
+
+
+def _resolve_cooldown(command_spec, params, default: float = 3.0) -> float:
+    """Resolve cooldown_seconds from command spec, params, or default."""
+    spec_val = command_spec.cooldown_seconds
+    param_val = params.get("cooldown_seconds")
+    if param_val is not None:
+        return max(0.0, float(param_val))
+    if spec_val > 0:
+        return spec_val
+    return default
+
+
+def _resolve_failure_threshold(params, default: int = 5) -> int:
+    """Resolve consecutive_failure_threshold from params or default."""
+    val = params.get("consecutive_failure_threshold")
+    if val is not None:
+        return max(1, int(val))
+    return default
+
+
 # ---------------------------------------------------------------------------
 # Project fan-out handlers
 # ---------------------------------------------------------------------------
@@ -117,7 +145,6 @@ def refresh_towers_for_current_plan_projects(ctx: dict[str, Any]) -> dict[str, A
         ctx=ctx,
         child_command="refresh_towers_for_project",
         params_mapping={"prjCode": "projectCode"},
-        cooldown_seconds=3.0,
     )
 
 
@@ -127,7 +154,6 @@ def refresh_substations_for_current_plan_projects(ctx: dict[str, Any]) -> dict[s
         ctx=ctx,
         child_command="refresh_substations_for_project",
         params_mapping={"prjCode": "projectCode"},
-        cooldown_seconds=3.0,
     )
 
 
@@ -137,7 +163,6 @@ def refresh_line_sections_for_current_plan_projects(ctx: dict[str, Any]) -> dict
         ctx=ctx,
         child_command="refresh_line_sections_for_project",
         params_mapping={"prjCode": "projectCode"},
-        cooldown_seconds=3.0,
     )
 
 
@@ -146,40 +171,33 @@ def _project_fan_out(
     ctx: dict[str, Any],
     child_command: str,
     params_mapping: dict[str, str],
-    cooldown_seconds: float = 3.0,
 ) -> dict[str, Any]:
-    """Generic project fan-out: query dcp_plan_projects for current year, trigger child per row.
+    """Generic project fan-out: query dcp_plan_projects for current year, create fanout_run.
 
-    Includes consecutive failure circuit breaker: if N child jobs fail
-    consecutively, the fan-out stops creating further children.
+    Handler returns immediately — scheduler tick advances execution.
     """
     store = ctx["store"]
-    plugins = ctx["plugins"]
-    trigger_clients = ctx["trigger_clients"]
     parent_job_id = ctx["ingestion_job_id"]
-    callback_base_url = ctx["callback_base_url"]
+    parent_command = ctx["command"].name
+    plugin_id = ctx["plugin"].name
     params = ctx.get("params", {})
 
-    # Allow cooldown_seconds override from params
-    if "cooldown_seconds" in params:
-        cooldown_seconds = float(params["cooldown_seconds"])
-
-    # Circuit breaker threshold
-    consecutive_failure_threshold = _DEFAULT_CONSECUTIVE_FAILURE_THRESHOLD
-    if "consecutive_failure_threshold" in params:
-        consecutive_failure_threshold = int(params["consecutive_failure_threshold"])
+    max_concurrency = _resolve_concurrency(ctx["command"], params)
+    cooldown_seconds = _resolve_cooldown(ctx["command"], params, default=3.0)
+    consecutive_failure_threshold = _resolve_failure_threshold(params)
 
     # Parameter validation
     if cooldown_seconds < 0:
         error_msg = f"project_fan_out: cooldown_seconds must be >= 0, got {cooldown_seconds}"
         logger.error(error_msg)
         store.mark_job(parent_job_id, status="failed", error=error_msg)
-        return {"total": 0, "succeeded": 0, "failed": 0, "items": [], "error": error_msg}
+        return {"total": 0, "succeeded": 0, "failed": 0, "error": error_msg}
     if consecutive_failure_threshold < 1:
         error_msg = f"project_fan_out: consecutive_failure_threshold must be >= 1, got {consecutive_failure_threshold}"
         logger.error(error_msg)
         store.mark_job(parent_job_id, status="failed", error=error_msg)
-        return {"total": 0, "succeeded": 0, "failed": 0, "items": [], "error": error_msg}
+        return {"total": 0, "succeeded": 0, "failed": 0, "error": error_msg}
+
     max_items_param = params.get("max_items")
     if max_items_param is not None:
         max_items_param = int(max_items_param)
@@ -187,15 +205,15 @@ def _project_fan_out(
             error_msg = f"project_fan_out: max_items must be >= 1, got {max_items_param}"
             logger.error(error_msg)
             store.mark_job(parent_job_id, status="failed", error=error_msg)
-            return {"total": 0, "succeeded": 0, "failed": 0, "items": [], "error": error_msg}
+            return {"total": 0, "succeeded": 0, "failed": 0, "error": error_msg}
 
     # 1. Query dcp_plan_projects for current year
     current_year = datahub_current_year()
     rows = store.query_table("dcp_plan_projects", {"year": current_year}, limit=10000)
     if not rows:
         logger.warning("project fan-out %s: no rows in dcp_plan_projects for year=%s", child_command, current_year)
-        store.mark_job(parent_job_id, status="succeeded", result={"total": 0, "succeeded": 0, "failed": 0, "items": []})
-        return {"total": 0, "succeeded": 0, "failed": 0, "items": []}
+        store.mark_job(parent_job_id, status="succeeded", result={"total": 0, "succeeded": 0, "failed": 0})
+        return {"total": 0, "succeeded": 0, "failed": 0}
 
     # 2. Extract unique projectCodes
     source_columns = list(params_mapping.keys())
@@ -212,124 +230,42 @@ def _project_fan_out(
             key = "|".join(f"{k}={v}" for k, v in sorted(child_params.items()))
             if key not in seen:
                 seen.add(key)
-                param_sets.append(child_params)
+                # Clean fan-out control params
+                clean = {k: v for k, v in child_params.items()
+                         if k not in ("max_items", "max_concurrency", "cooldown_seconds", "consecutive_failure_threshold")}
+                param_sets.append(clean)
 
     # Apply max_items limit
-    max_items = max_items_param
     total_available = len(param_sets)
-    if max_items is not None:
-        param_sets = param_sets[:max_items]
+    if max_items_param is not None:
+        param_sets = param_sets[:max_items_param]
 
-    logger.info("project fan-out %s: %d projects (of %d available, circuit_breaker=%d)",
-                child_command, len(param_sets), total_available, consecutive_failure_threshold)
+    if not param_sets:
+        store.mark_job(parent_job_id, status="succeeded", result={"total": 0, "succeeded": 0, "failed": 0})
+        return {"total": 0, "succeeded": 0, "failed": 0}
 
-    # Mark parent as running with fan_out_in_progress flag to prevent
-    # _aggregate_parent_jobs from prematurely aggregating while we
-    # are still creating children sequentially.
-    store.mark_job(parent_job_id, status="running", result={"fan_out_in_progress": True, "total_available": total_available})
+    logger.info("project fan-out %s: %d projects (of %d available, max_concurrency=%d, circuit_breaker=%d)",
+                child_command, len(param_sets), total_available, max_concurrency, consecutive_failure_threshold)
 
-    # 3. Find child command
-    child_cmd, child_plugin, client, error = _find_child_command_and_client(plugins, child_command, trigger_clients)
-    if error:
-        store.mark_job(parent_job_id, status="failed", error=error)
-        return {"total": len(param_sets), "succeeded": 0, "failed": len(param_sets), "items": [], "error": error}
+    # 3. Create fanout_run + fanout_items (single transaction)
+    store.create_fanout_run_with_items(
+        parent_job_id=parent_job_id,
+        plugin_id=plugin_id,
+        parent_command=parent_command,
+        child_command=child_command,
+        param_sets=param_sets,
+        max_concurrency=max_concurrency,
+        cooldown_seconds=cooldown_seconds,
+        consecutive_failure_threshold=consecutive_failure_threshold,
+    )
 
-    downloader_job_type = child_cmd.trigger.get("job_type")
+    store.mark_job(
+        parent_job_id,
+        status="running",
+        result={"fanout_scheduler": True, "total": len(param_sets), "total_available": total_available, "max_concurrency": max_concurrency},
+    )
 
-    # 4. Execute child jobs with circuit breaker
-    callback_headers = ctx.get("callback_headers")
-    results: list[dict[str, Any]] = []
-    succeeded = 0
-    failed = 0
-    consecutive_failures = 0
-    circuit_opened = False
-    first_failed_projectCode: str | None = None
-    last_failed_projectCode: str | None = None
-    skipped_remaining = 0
-
-    for i, child_params in enumerate(param_sets):
-        # Clean child params — remove fan-out control params
-        clean_params = {k: v for k, v in child_params.items()
-                        if k not in ("max_items", "max_concurrency", "cooldown_seconds", "consecutive_failure_threshold")}
-
-        job_id, status, err = _run_child_job(
-            store, child_plugin, client, downloader_job_type,
-            child_command, clean_params, parent_job_id, callback_base_url,
-            callback_headers=callback_headers,
-        )
-
-        # If _run_child_job itself failed (exception), count as immediate failure
-        if err:
-            failed += 1
-            consecutive_failures += 1
-            project_code = clean_params.get("projectCode", f"project_{i}")
-            if first_failed_projectCode is None:
-                first_failed_projectCode = project_code
-            last_failed_projectCode = project_code
-            results.append({"params": clean_params, "ingestion_job_id": job_id, "status": status, "failed": True})
-            logger.warning("project fan-out [%d/%d] %s FAILED: %s (consecutive=%d/%d)",
-                           i + 1, len(param_sets), clean_params, err,
-                           consecutive_failures, consecutive_failure_threshold)
-        else:
-            # Wait for child to reach terminal state
-            child_job = _wait_for_child_terminal(store, job_id)
-            child_failed = _is_child_failed(child_job)
-
-            if child_failed:
-                failed += 1
-                consecutive_failures += 1
-                project_code = clean_params.get("projectCode", f"project_{i}")
-                if first_failed_projectCode is None:
-                    first_failed_projectCode = project_code
-                last_failed_projectCode = project_code
-                child_status = child_job.get("status", "unknown") if child_job else "unknown"
-                results.append({"params": clean_params, "ingestion_job_id": job_id, "status": child_status, "failed": True})
-                logger.warning("project fan-out [%d/%d] %s child FAILED (consecutive=%d/%d)",
-                               i + 1, len(param_sets), clean_params,
-                               consecutive_failures, consecutive_failure_threshold)
-            else:
-                succeeded += 1
-                consecutive_failures = 0  # Reset on success
-                child_status = child_job.get("status", "unknown") if child_job else "unknown"
-                results.append({"params": clean_params, "ingestion_job_id": job_id, "status": child_status, "failed": False})
-                logger.info("project fan-out [%d/%d] %s -> %s",
-                            i + 1, len(param_sets), clean_params, child_status)
-
-        # Circuit breaker check
-        if consecutive_failures >= consecutive_failure_threshold:
-            skipped_remaining = len(param_sets) - i - 1
-            circuit_opened = True
-            logger.error("project fan-out CIRCUIT BREAKER: %d consecutive failures reached threshold %d, "
-                         "skipping remaining %d projects",
-                         consecutive_failures, consecutive_failure_threshold, skipped_remaining)
-            break
-
-        if i < len(param_sets) - 1 and cooldown_seconds > 0:
-            time.sleep(cooldown_seconds)
-
-    # 5. Build summary
-    summary: dict[str, Any] = {
-        "total_available": total_available,
-        "created_children": len(results),
-        "succeeded_children": succeeded,
-        "failed_children": failed,
-        "items": results,
-    }
-
-    if circuit_opened:
-        summary["skipped_remaining_projects"] = skipped_remaining
-        summary["first_failed_projectCode"] = first_failed_projectCode
-        summary["last_failed_projectCode"] = last_failed_projectCode
-        summary["consecutive_failure_threshold"] = consecutive_failure_threshold
-        circuit_error = (f"circuit breaker opened: {consecutive_failures} consecutive project child jobs failed")
-        store.mark_job(parent_job_id, status="failed", error=circuit_error, result=summary)
-        logger.error("project fan-out parent %s FAILED: %s", parent_job_id, circuit_error)
-    else:
-        # Mark parent as running — _aggregate_parent_jobs will set final status
-        # once all children reach terminal state
-        store.mark_job(parent_job_id, status="running", result=summary)
-
-    return summary
+    return {"status": "running", "total": len(param_sets), "total_available": total_available, "max_concurrency": max_concurrency}
 
 
 # ---------------------------------------------------------------------------
@@ -341,12 +277,6 @@ _TERMINAL_STATUSES = frozenset({"succeeded", "partial", "failed", "cancelled"})
 
 # Default circuit breaker threshold for consecutive child failures
 _DEFAULT_CONSECUTIVE_FAILURE_THRESHOLD = 5
-
-# How long to wait between polls when waiting for a child to reach terminal state
-_CHILD_POLL_INTERVAL_SECONDS = 5
-
-# Maximum time to wait for a single child job to reach terminal state
-_CHILD_POLL_TIMEOUT_SECONDS = 1800  # 30 minutes
 
 
 def _is_child_failed(job: dict[str, Any] | None) -> bool:
@@ -406,33 +336,14 @@ def _is_child_failed(job: dict[str, Any] | None) -> bool:
     return False
 
 
-def _wait_for_child_terminal(
-    store: Any,
-    child_job_id: str,
-    *,
-    poll_interval: float = _CHILD_POLL_INTERVAL_SECONDS,
-    timeout: float = _CHILD_POLL_TIMEOUT_SECONDS,
-) -> dict[str, Any] | None:
-    """Wait for a child job to reach terminal state. Returns the job dict or None on timeout."""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        job = store.get_job(child_job_id)
-        if job and job.get("status") in _TERMINAL_STATUSES:
-            return job
-        time.sleep(poll_interval)
-    # Timeout — return whatever we have
-    return store.get_job(child_job_id)
-
-
 def backfill_daily_meetings_by_range(ctx: dict[str, Any]) -> dict[str, Any]:
-    """Date-range fan-out: split date range into chunks, trigger daily meeting refresh per chunk."""
+    """Date-range fan-out: split date range into chunks, create fanout_run."""
     return _date_range_fan_out(
         ctx=ctx,
         child_command="refresh_daily_meetings_by_range",
         start_date_param="startDate",
         end_date_param="endDate",
         chunk_days=7,
-        cooldown_seconds=2.0,
     )
 
 
@@ -443,50 +354,42 @@ def _date_range_fan_out(
     start_date_param: str = "startDate",
     end_date_param: str = "endDate",
     chunk_days: int = 7,
-    cooldown_seconds: float = 2.0,
     date_format: str = "%Y-%m-%d",
 ) -> dict[str, Any]:
-    """Generic date-range fan-out: split date range, trigger child per chunk.
+    """Generic date-range fan-out: split date range, create fanout_run.
 
-    Includes consecutive failure circuit breaker: if N child jobs fail
-    consecutively, the fan-out stops creating further children.
+    Handler returns immediately — scheduler tick advances execution.
     """
     store = ctx["store"]
-    plugins = ctx["plugins"]
-    trigger_clients = ctx["trigger_clients"]
     parent_job_id = ctx["ingestion_job_id"]
-    callback_base_url = ctx["callback_base_url"]
+    parent_command = ctx["command"].name
+    plugin_id = ctx["plugin"].name
     params = ctx.get("params", {})
 
     # Allow chunk_days override from params
     if "chunk_days" in params:
         chunk_days = int(params["chunk_days"])
 
-    # Allow cooldown_seconds override from params
-    if "cooldown_seconds" in params:
-        cooldown_seconds = float(params["cooldown_seconds"])
-
-    # Circuit breaker threshold
-    consecutive_failure_threshold = _DEFAULT_CONSECUTIVE_FAILURE_THRESHOLD
-    if "consecutive_failure_threshold" in params:
-        consecutive_failure_threshold = int(params["consecutive_failure_threshold"])
+    max_concurrency = _resolve_concurrency(ctx["command"], params)
+    cooldown_seconds = _resolve_cooldown(ctx["command"], params, default=2.0)
+    consecutive_failure_threshold = _resolve_failure_threshold(params)
 
     # Parameter validation
     if chunk_days < 1:
         error_msg = f"date_range_fan_out: chunk_days must be >= 1, got {chunk_days}"
         logger.error(error_msg)
         store.mark_job(parent_job_id, status="failed", error=error_msg)
-        return {"total": 0, "succeeded": 0, "failed": 0, "items": [], "error": error_msg}
+        return {"total": 0, "succeeded": 0, "failed": 0, "error": error_msg}
     if cooldown_seconds < 0:
         error_msg = f"date_range_fan_out: cooldown_seconds must be >= 0, got {cooldown_seconds}"
         logger.error(error_msg)
         store.mark_job(parent_job_id, status="failed", error=error_msg)
-        return {"total": 0, "succeeded": 0, "failed": 0, "items": [], "error": error_msg}
+        return {"total": 0, "succeeded": 0, "failed": 0, "error": error_msg}
     if consecutive_failure_threshold < 1:
         error_msg = f"date_range_fan_out: consecutive_failure_threshold must be >= 1, got {consecutive_failure_threshold}"
         logger.error(error_msg)
         store.mark_job(parent_job_id, status="failed", error=error_msg)
-        return {"total": 0, "succeeded": 0, "failed": 0, "items": [], "error": error_msg}
+        return {"total": 0, "succeeded": 0, "failed": 0, "error": error_msg}
 
     # 1. Parse dates
     start_str = params.get(start_date_param)
@@ -494,7 +397,7 @@ def _date_range_fan_out(
     if not start_str or not end_str:
         error_msg = f"date_range_fan_out requires {start_date_param} and {end_date_param}"
         logger.error(error_msg)
-        return {"total": 0, "succeeded": 0, "failed": 0, "items": [], "error": error_msg}
+        return {"total": 0, "succeeded": 0, "failed": 0, "error": error_msg}
 
     start_date = datetime.strptime(str(start_str), date_format).date()
     end_date = datetime.strptime(str(end_str), date_format).date()
@@ -507,34 +410,16 @@ def _date_range_fan_out(
         chunks.append((current, chunk_end))
         current = chunk_end + timedelta(days=1)
 
-    logger.info("date_range_fan_out %s: %d chunks from %s to %s (chunk_days=%d, circuit_breaker=%d)",
-                child_command, len(chunks), start_date, end_date, chunk_days, consecutive_failure_threshold)
+    if not chunks:
+        store.mark_job(parent_job_id, status="succeeded", result={"total": 0, "succeeded": 0, "failed": 0})
+        return {"total": 0, "succeeded": 0, "failed": 0}
 
-    # Mark parent as running with fan_out_in_progress flag to prevent
-    # _aggregate_parent_jobs from prematurely aggregating while we
-    # are still creating children sequentially.
-    store.mark_job(parent_job_id, status="running", result={"fan_out_in_progress": True, "total_chunks": len(chunks)})
+    logger.info("date_range_fan_out %s: %d chunks from %s to %s (chunk_days=%d, max_concurrency=%d, circuit_breaker=%d)",
+                child_command, len(chunks), start_date, end_date, chunk_days, max_concurrency, consecutive_failure_threshold)
 
-    # 3. Find child command
-    child_cmd, child_plugin, client, error = _find_child_command_and_client(plugins, child_command, trigger_clients)
-    if error:
-        store.mark_job(parent_job_id, status="failed", error=error)
-        return {"total": len(chunks), "succeeded": 0, "failed": len(chunks), "items": [], "error": error}
-
-    downloader_job_type = child_cmd.trigger.get("job_type")
-
-    # 4. Execute child jobs with circuit breaker
-    callback_headers = ctx.get("callback_headers")
-    results: list[dict[str, Any]] = []
-    succeeded = 0
-    failed = 0
-    consecutive_failures = 0
-    circuit_opened = False
-    first_failed_date: str | None = None
-    last_failed_date: str | None = None
-    skipped_remaining = 0
-
-    for i, (chunk_start, chunk_end) in enumerate(chunks):
+    # 3. Build param_sets for each chunk
+    param_sets: list[dict[str, str]] = []
+    for chunk_start, chunk_end in chunks:
         child_params = dict(params)
         child_params[start_date_param] = chunk_start.strftime(date_format)
         child_params[end_date_param] = chunk_end.strftime(date_format)
@@ -543,88 +428,30 @@ def _date_range_fan_out(
         child_params.pop("cooldown_seconds", None)
         child_params.pop("consecutive_failure_threshold", None)
         child_params.pop("max_concurrency", None)
+        child_params.pop("max_items", None)
+        param_sets.append(child_params)
 
-        job_id, status, err = _run_child_job(
-            store, child_plugin, client, downloader_job_type,
-            child_command, child_params, parent_job_id, callback_base_url,
-            callback_headers=callback_headers,
-        )
+    # 4. Create fanout_run + fanout_items (single transaction)
+    store.create_fanout_run_with_items(
+        parent_job_id=parent_job_id,
+        plugin_id=plugin_id,
+        parent_command=parent_command,
+        child_command=child_command,
+        param_sets=param_sets,
+        max_concurrency=max_concurrency,
+        cooldown_seconds=cooldown_seconds,
+        consecutive_failure_threshold=consecutive_failure_threshold,
+    )
 
-        # If _run_child_job itself failed (exception), count as immediate failure
-        if err:
-            failed += 1
-            consecutive_failures += 1
-            chunk_date_str = chunk_start.strftime(date_format)
-            if first_failed_date is None:
-                first_failed_date = chunk_date_str
-            last_failed_date = chunk_date_str
-            results.append({"params": child_params, "ingestion_job_id": job_id, "status": status, "failed": True})
-            logger.warning("date_range_fan_out [%d/%d] %s~%s FAILED: %s (consecutive=%d/%d)",
-                           i + 1, len(chunks), chunk_start, chunk_end, err,
-                           consecutive_failures, consecutive_failure_threshold)
-        else:
-            # Wait for child to reach terminal state
-            child_job = _wait_for_child_terminal(store, job_id)
-            child_failed = _is_child_failed(child_job)
+    store.mark_job(
+        parent_job_id,
+        status="running",
+        result={"fanout_scheduler": True, "total": len(param_sets), "date_range": f"{start_date}~{end_date}",
+                "chunk_days": chunk_days, "max_concurrency": max_concurrency},
+    )
 
-            if child_failed:
-                failed += 1
-                consecutive_failures += 1
-                chunk_date_str = chunk_start.strftime(date_format)
-                if first_failed_date is None:
-                    first_failed_date = chunk_date_str
-                last_failed_date = chunk_date_str
-                child_status = child_job.get("status", "unknown") if child_job else "unknown"
-                results.append({"params": child_params, "ingestion_job_id": job_id, "status": child_status, "failed": True})
-                logger.warning("date_range_fan_out [%d/%d] %s~%s child FAILED (consecutive=%d/%d)",
-                               i + 1, len(chunks), chunk_start, chunk_end,
-                               consecutive_failures, consecutive_failure_threshold)
-            else:
-                succeeded += 1
-                consecutive_failures = 0  # Reset on success
-                child_status = child_job.get("status", "unknown") if child_job else "unknown"
-                results.append({"params": child_params, "ingestion_job_id": job_id, "status": child_status, "failed": False})
-                logger.info("date_range_fan_out [%d/%d] %s~%s -> %s",
-                            i + 1, len(chunks), chunk_start, chunk_end, child_status)
-
-        # Circuit breaker check
-        if consecutive_failures >= consecutive_failure_threshold:
-            skipped_remaining = len(chunks) - i - 1
-            circuit_opened = True
-            logger.error("date_range_fan_out CIRCUIT BREAKER: %d consecutive failures reached threshold %d, "
-                         "skipping remaining %d chunks",
-                         consecutive_failures, consecutive_failure_threshold, skipped_remaining)
-            break
-
-        if i < len(chunks) - 1 and cooldown_seconds > 0:
-            time.sleep(cooldown_seconds)
-
-    # 5. Build summary
-    summary: dict[str, Any] = {
-        "total": len(chunks),
-        "created_children": len(results),
-        "succeeded": succeeded,
-        "failed": failed,
-        "date_range": f"{start_date}~{end_date}",
-        "chunk_days": chunk_days,
-        "items": results,
-    }
-
-    if circuit_opened:
-        summary["skipped_remaining_dates"] = skipped_remaining
-        summary["first_failed_date"] = first_failed_date
-        summary["last_failed_date"] = last_failed_date
-        summary["consecutive_failure_threshold"] = consecutive_failure_threshold
-        circuit_error = (f"circuit breaker opened: {consecutive_failures} consecutive child jobs failed "
-                         f"for {downloader_job_type}")
-        store.mark_job(parent_job_id, status="failed", error=circuit_error, result=summary)
-        logger.error("date_range_fan_out parent %s FAILED: %s", parent_job_id, circuit_error)
-    else:
-        # Mark parent as running — _aggregate_parent_jobs will set final status
-        # once all children reach terminal state
-        store.mark_job(parent_job_id, status="running", result=summary)
-
-    return summary
+    return {"status": "running", "total": len(param_sets), "date_range": f"{start_date}~{end_date}",
+            "chunk_days": chunk_days, "max_concurrency": max_concurrency}
 
 
 # ---------------------------------------------------------------------------
@@ -648,7 +475,7 @@ def refresh_daily_meetings_yesterday(ctx: dict[str, Any]) -> dict[str, Any]:
     )
     if error:
         store.mark_job(parent_job_id, status="failed", error=error)
-        return {"total": 1, "succeeded": 0, "failed": 1, "items": [], "error": error}
+        return {"total": 1, "succeeded": 0, "failed": 1, "error": error}
 
     downloader_job_type = child_cmd.trigger.get("job_type")
 

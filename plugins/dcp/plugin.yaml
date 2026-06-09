@@ -73,6 +73,9 @@ commands:
     trigger:
       type: plugin_handler
       handler: dcp.fan_out:refresh_towers_for_current_plan_projects
+    max_concurrency: 3
+    max_concurrency_limit: 5
+    cooldown_seconds: 3
 
   # 项目域 - 批量 fan-out：变电站
   - name: refresh_substations_for_current_plan_projects
@@ -81,6 +84,9 @@ commands:
     trigger:
       type: plugin_handler
       handler: dcp.fan_out:refresh_substations_for_current_plan_projects
+    max_concurrency: 3
+    max_concurrency_limit: 5
+    cooldown_seconds: 3
 
   # 项目域 - 批量 fan-out：架线区段
   - name: refresh_line_sections_for_current_plan_projects
@@ -89,6 +95,9 @@ commands:
     trigger:
       type: plugin_handler
       handler: dcp.fan_out:refresh_line_sections_for_current_plan_projects
+    max_concurrency: 3
+    max_concurrency_limit: 5
+    cooldown_seconds: 3
 
   # 安全域 - 单日期范围查询
   - name: refresh_daily_meetings_by_range
@@ -105,6 +114,9 @@ commands:
     trigger:
       type: plugin_handler
       handler: dcp.fan_out:backfill_daily_meetings_by_range
+    max_concurrency: 5
+    max_concurrency_limit: 10
+    cooldown_seconds: 3
 
   # 安全域 - 昨日增量
   - name: refresh_daily_meetings_yesterday

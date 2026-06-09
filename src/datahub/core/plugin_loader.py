@@ -107,12 +107,19 @@ def load_normalizer_handler(plugin: PluginSpec, normalizer: NormalizerSpec) -> A
 
 
 def _parse_command(item: dict[str, Any]) -> CommandSpec:
+    mc = max(1, int(item.get("max_concurrency", 1)))
+    raw_limit = item.get("max_concurrency_limit")
+    limit = max(mc, int(raw_limit)) if raw_limit is not None else None
+    cooldown = max(0.0, float(item.get("cooldown_seconds", 0.0)))
     return CommandSpec(
         name=str(item.get("name") or item.get("job_type", "")),
         description=str(item.get("description", "")),
         required_params=tuple(item.get("required_params") or ()),
         trigger=dict(item.get("trigger") or {}),
         enabled=bool(item.get("enabled", True)),
+        max_concurrency=mc,
+        max_concurrency_limit=limit,
+        cooldown_seconds=cooldown,
     )
 
 

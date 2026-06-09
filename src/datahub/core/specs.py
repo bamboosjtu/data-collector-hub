@@ -12,6 +12,9 @@ class CommandSpec:
     required_params: tuple[str, ...] = ()
     trigger: dict[str, Any] = field(default_factory=dict)
     enabled: bool = True
+    max_concurrency: int = 1
+    max_concurrency_limit: int | None = None
+    cooldown_seconds: float = 0.0
 
 
 @dataclass(frozen=True)

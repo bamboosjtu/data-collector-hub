@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any
@@ -53,7 +54,7 @@ def build_ingestion_router(
         except Exception as e:
             logger.error("Pydantic validation failed: %s\nBody preview: %s", e, body_text[:2000])
             raise HTTPException(status_code=422, detail={"error": "validation_failed", "message": str(e), "body_preview": body_text[:500]}) from e
-        result = ingestion_service.ingest_table_batch(payload.model_dump())
+        result = await asyncio.to_thread(ingestion_service.ingest_table_batch, payload.model_dump())
         if result["status"] in {"failed", "conflict"}:
             logger.error("ingest_table_batch returned %s: %s", result["status"], result)
             code = status.HTTP_409_CONFLICT if result["status"] == "conflict" else status.HTTP_422_UNPROCESSABLE_ENTITY

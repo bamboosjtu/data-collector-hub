@@ -97,6 +97,46 @@ def create_metadata_tables(conn: sqlite3.Connection) -> None:
           active INTEGER DEFAULT 1,
           created_at TEXT
         );
+        CREATE TABLE IF NOT EXISTS fanout_runs (
+          parent_job_id TEXT PRIMARY KEY,
+          plugin_id TEXT NOT NULL,
+          parent_command TEXT NOT NULL,
+          child_command TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'running',
+          total INTEGER NOT NULL,
+          max_concurrency INTEGER NOT NULL DEFAULT 1,
+          cooldown_seconds REAL NOT NULL DEFAULT 0,
+          consecutive_failure_threshold INTEGER NOT NULL DEFAULT 5,
+          consecutive_failures INTEGER NOT NULL DEFAULT 0,
+          circuit_opened INTEGER NOT NULL DEFAULT 0,
+          last_submit_at TEXT,
+          result_json TEXT,
+          lease_owner TEXT,
+          lease_until TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS fanout_items (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          parent_job_id TEXT NOT NULL,
+          item_index INTEGER NOT NULL,
+          params_json TEXT NOT NULL,
+          child_job_id TEXT,
+          status TEXT NOT NULL DEFAULT 'pending',
+          error TEXT,
+          claimed_by TEXT,
+          claimed_at TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          UNIQUE(parent_job_id, item_index),
+          FOREIGN KEY(parent_job_id) REFERENCES fanout_runs(parent_job_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_fanout_runs_status_lease
+          ON fanout_runs(status, lease_until);
+        CREATE INDEX IF NOT EXISTS idx_fanout_items_parent_status_index
+          ON fanout_items(parent_job_id, status, item_index);
+        CREATE INDEX IF NOT EXISTS idx_fanout_items_child_job
+          ON fanout_items(child_job_id);
         """
     )
 

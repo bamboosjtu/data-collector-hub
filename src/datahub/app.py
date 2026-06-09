@@ -18,6 +18,7 @@ from src.datahub.api import (
 from src.datahub.core.plugin_loader import build_normalizer_map, build_scope_map, load_all_plugins
 from src.datahub.core.registry import load_registry_from_plugins
 from src.datahub.core.trigger_runtime import ExternalSyncClient, poll_downloader_jobs
+from src.datahub.core.fanout_scheduler import start_fanout_scheduler
 from src.datahub.ingestion.service import IngestionService
 from src.datahub.settings import Settings
 from src.datahub.storage.sqlite import DataHubStore
@@ -90,6 +91,18 @@ def create_app(
     if clients:
         app.state.status_poller_stop = _start_status_poller(active_store, clients, interval=5.0, stale_threshold=1800)
         logger.info("status poller started (interval=5s, stale_threshold=1800s)")
+
+        # Start fan-out scheduler
+        callback_headers = {"X-API-Key": active_settings.callback_api_key} if active_settings.callback_api_key else None
+        app.state.fanout_scheduler_stop = start_fanout_scheduler(
+            active_store,
+            clients,
+            plugins,
+            callback_base_url=active_settings.callback_base_url,
+            callback_headers=callback_headers,
+            tick_interval=3.0,
+        )
+        logger.info("fan-out scheduler started (tick=3s)")
 
     return app
 

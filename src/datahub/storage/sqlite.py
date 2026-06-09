@@ -25,7 +25,7 @@ class DataHubStore:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA busy_timeout = 5000")
+        conn.execute("PRAGMA busy_timeout = 30000")
         return conn
 
     def init_schema(self, *, dev_mode: bool = True) -> None:
@@ -159,6 +159,198 @@ class DataHubStore:
             if source_key in result and target_key not in result:
                 result[target_key] = result[source_key]
         return result
+
+    # ── Fan-out scheduler store APIs ──────────────────────────────
+
+    def create_fanout_run_with_items(
+        self,
+        *,
+        parent_job_id: str,
+        plugin_id: str,
+        parent_command: str,
+        child_command: str,
+        param_sets: list[dict[str, Any]],
+        max_concurrency: int = 1,
+        cooldown_seconds: float = 0.0,
+        consecutive_failure_threshold: int = 5,
+    ) -> None:
+        now = datahub_now_text()
+        with closing(self.connect()) as conn, conn:
+            conn.execute(
+                """INSERT INTO fanout_runs(parent_job_id, plugin_id, parent_command, child_command,
+                   status, total, max_concurrency, cooldown_seconds, consecutive_failure_threshold,
+                   created_at, updated_at)
+                   VALUES (?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?)""",
+                (parent_job_id, plugin_id, parent_command, child_command,
+                 len(param_sets), max_concurrency, cooldown_seconds, consecutive_failure_threshold,
+                 now, now),
+            )
+            for idx, params in enumerate(param_sets):
+                conn.execute(
+                    """INSERT INTO fanout_items(parent_job_id, item_index, params_json, status, created_at, updated_at)
+                       VALUES (?, ?, ?, 'pending', ?, ?)""",
+                    (parent_job_id, idx, self._json(params), now, now),
+                )
+
+    def get_running_fanout_runs(self, limit: int = 50) -> list[dict[str, Any]]:
+        return self._get_rows(
+            "SELECT * FROM fanout_runs WHERE status = 'running' ORDER BY created_at LIMIT ?",
+            (limit,),
+        )
+
+    def claim_fanout_run(self, parent_job_id: str, scheduler_id: str, lease_seconds: int = 30) -> bool:
+        from src.datahub.core.time_utils import datahub_now
+        lease_until = (datahub_now().__class__.fromtimestamp(
+            datahub_now().timestamp() + lease_seconds,
+            tz=datahub_now().tzinfo,
+        )).strftime("%Y-%m-%d %H:%M:%S")
+        with closing(self.connect()) as conn, conn:
+            cursor = conn.execute(
+                """UPDATE fanout_runs
+                   SET lease_owner = ?, lease_until = ?, updated_at = ?
+                   WHERE parent_job_id = ? AND status = 'running'
+                     AND (lease_until IS NULL OR lease_until < ? OR lease_owner = ?)""",
+                (scheduler_id, lease_until, datahub_now_text(),
+                 parent_job_id, datahub_now_text(), scheduler_id),
+            )
+            return cursor.rowcount > 0
+
+    def get_fanout_run(self, parent_job_id: str) -> dict[str, Any] | None:
+        return self._get_row("SELECT * FROM fanout_runs WHERE parent_job_id = ?", (parent_job_id,))
+
+    def list_submitted_fanout_items(self, parent_job_id: str) -> list[dict[str, Any]]:
+        return self._get_rows(
+            "SELECT * FROM fanout_items WHERE parent_job_id = ? AND status = 'submitted' ORDER BY item_index",
+            (parent_job_id,),
+        )
+
+    def reset_stale_submitting_items(self, parent_job_id: str, stale_seconds: int = 120) -> int:
+        from src.datahub.core.time_utils import datahub_now
+        cutoff = (datahub_now().__class__.fromtimestamp(
+            datahub_now().timestamp() - stale_seconds,
+            tz=datahub_now().tzinfo,
+        )).strftime("%Y-%m-%d %H:%M:%S")
+        with closing(self.connect()) as conn, conn:
+            cursor = conn.execute(
+                """UPDATE fanout_items
+                   SET status = 'pending', claimed_by = NULL, claimed_at = NULL, updated_at = ?
+                   WHERE parent_job_id = ? AND status = 'submitting'
+                     AND claimed_at < ?""",
+                (datahub_now_text(), parent_job_id, cutoff),
+            )
+            return cursor.rowcount
+
+    def claim_next_pending_fanout_item(self, parent_job_id: str, scheduler_id: str) -> dict[str, Any] | None:
+        now = datahub_now_text()
+        with closing(self.connect()) as conn, conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT id FROM fanout_items WHERE parent_job_id = ? AND status = 'pending' ORDER BY item_index LIMIT 1",
+                (parent_job_id,),
+            ).fetchone()
+            if row is None:
+                conn.rollback()
+                return None
+            item_id = row["id"]
+            cursor = conn.execute(
+                """UPDATE fanout_items
+                   SET status = 'submitting', claimed_by = ?, claimed_at = ?, updated_at = ?
+                   WHERE id = ? AND status = 'pending'""",
+                (scheduler_id, now, now, item_id),
+            )
+            if cursor.rowcount == 0:
+                conn.rollback()
+                return None
+            conn.commit()
+            item_row = conn.execute("SELECT * FROM fanout_items WHERE id = ?", (item_id,)).fetchone()
+            return dict(item_row) if item_row else None
+
+    def update_fanout_item_submitted(self, item_id: int, *, child_job_id: str) -> None:
+        with closing(self.connect()) as conn, conn:
+            conn.execute(
+                "UPDATE fanout_items SET status = 'submitted', child_job_id = ?, updated_at = ? WHERE id = ?",
+                (child_job_id, datahub_now_text(), item_id),
+            )
+
+    def update_fanout_item_terminal(self, item_id: int, *, status: str, child_job_id: str | None = None, error: str | None = None) -> None:
+        with closing(self.connect()) as conn, conn:
+            conn.execute(
+                """UPDATE fanout_items
+                   SET status = ?, child_job_id = COALESCE(?, child_job_id), error = COALESCE(?, error), updated_at = ?
+                   WHERE id = ?""",
+                (status, child_job_id, error, datahub_now_text(), item_id),
+            )
+
+    def skip_pending_fanout_items(self, parent_job_id: str) -> int:
+        with closing(self.connect()) as conn, conn:
+            cursor = conn.execute(
+                """UPDATE fanout_items
+                   SET status = 'skipped', updated_at = ?
+                   WHERE parent_job_id = ? AND status = 'pending'""",
+                (datahub_now_text(), parent_job_id),
+            )
+            return cursor.rowcount
+
+    def get_fanout_stats(self, parent_job_id: str) -> dict[str, int]:
+        with closing(self.connect()) as conn:
+            rows = conn.execute(
+                "SELECT status, COUNT(*) as cnt FROM fanout_items WHERE parent_job_id = ? GROUP BY status",
+                (parent_job_id,),
+            ).fetchall()
+        counts = {s: 0 for s in ("pending", "submitting", "submitted", "succeeded", "failed", "skipped")}
+        for row in rows:
+            counts[row["status"]] = row["cnt"]
+        return counts
+
+    def get_consecutive_failures(self, parent_job_id: str) -> int:
+        with closing(self.connect()) as conn:
+            rows = conn.execute(
+                """SELECT status FROM fanout_items
+                   WHERE parent_job_id = ? AND status IN ('succeeded', 'failed')
+                   ORDER BY item_index DESC""",
+                (parent_job_id,),
+            ).fetchall()
+        count = 0
+        for row in rows:
+            if row["status"] == "failed":
+                count += 1
+            else:
+                break
+        return count
+
+    def update_fanout_run_consecutive(self, parent_job_id: str, count: int) -> None:
+        with closing(self.connect()) as conn, conn:
+            conn.execute(
+                "UPDATE fanout_runs SET consecutive_failures = ?, updated_at = ? WHERE parent_job_id = ?",
+                (count, datahub_now_text(), parent_job_id),
+            )
+
+    def mark_fanout_circuit_open(self, parent_job_id: str) -> None:
+        with closing(self.connect()) as conn, conn:
+            conn.execute(
+                "UPDATE fanout_runs SET circuit_opened = 1, updated_at = ? WHERE parent_job_id = ?",
+                (datahub_now_text(), parent_job_id),
+            )
+
+    def update_fanout_run_submit(self, parent_job_id: str, last_submit_at: str) -> None:
+        with closing(self.connect()) as conn, conn:
+            conn.execute(
+                "UPDATE fanout_runs SET last_submit_at = ?, updated_at = ? WHERE parent_job_id = ?",
+                (last_submit_at, datahub_now_text(), parent_job_id),
+            )
+
+    def close_fanout_run(self, parent_job_id: str, status: str, result: dict[str, Any] | None = None) -> None:
+        with closing(self.connect()) as conn, conn:
+            conn.execute(
+                """UPDATE fanout_runs
+                   SET status = ?, result_json = COALESCE(?, result_json), lease_owner = NULL, lease_until = NULL, updated_at = ?
+                   WHERE parent_job_id = ?""",
+                (status, self._json(result) if result else None, datahub_now_text(), parent_job_id),
+            )
+
+    def has_fanout_run(self, parent_job_id: str) -> bool:
+        row = self._get_row("SELECT 1 FROM fanout_runs WHERE parent_job_id = ?", (parent_job_id,))
+        return row is not None
 
     def job_id_for_producer(self, conn: sqlite3.Connection, producer_job_id: str) -> str | None:
         row = conn.execute("SELECT ingestion_job_id FROM ingestion_jobs WHERE downloader_job_id = ?", (producer_job_id,)).fetchone()
