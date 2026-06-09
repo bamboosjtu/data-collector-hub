@@ -6,6 +6,7 @@ from urllib import request
 from uuid import uuid4
 
 from .specs import CommandSpec, ConnectorSpec
+from .time_utils import datahub_now_text
 
 
 class ExternalSyncClient:
@@ -166,6 +167,10 @@ def poll_downloader_jobs(
     # Mark stale jobs (non-terminal for too long based on started_at).
     # Exclude fan-out parent jobs (those with children) — their terminal
     # state is determined solely by _aggregate_parent_jobs.
+    # Use Python-side threshold calculation since timestamps are Beijing time.
+    from datetime import timedelta as _td
+    from .time_utils import datahub_now
+    stale_cutoff = (datahub_now() - _td(seconds=stale_threshold_seconds)).strftime("%Y-%m-%d %H:%M:%S")
     with store.connect() as conn:
         stale_rows = conn.execute(
             """
@@ -176,9 +181,9 @@ def poll_downloader_jobs(
               AND NOT EXISTS (
                 SELECT 1 FROM ingestion_jobs j2 WHERE j2.parent_job_id = ingestion_jobs.ingestion_job_id
               )
-              AND started_at < datetime('now', ?)
+              AND started_at < ?
             """,
-            (f"-{stale_threshold_seconds} seconds",),
+            (stale_cutoff,),
         ).fetchall()
     for row in stale_rows:
         store.mark_job(row["ingestion_job_id"], status="failed", error="job stale: no status update within threshold")

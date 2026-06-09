@@ -65,10 +65,12 @@ def _make_store(test_name: str) -> DataHubStore:
 
 
 def _insert_job(conn: sqlite3.Connection, *, job_id: str, producer_job_id: str, status: str = "accepted", plugin_id: str = "dcp", parent_job_id: str | None = None) -> None:
+    from src.datahub.core.time_utils import datahub_now_text
+    now = datahub_now_text()
     conn.execute(
-        """INSERT INTO ingestion_jobs(ingestion_job_id, parent_job_id, plugin_id, trigger_key, downloader_job_id, dataset_key, params_json, status, started_at)
-        VALUES (?, ?, ?, 'test_cmd', ?, 'test_dataset', '{}', ?, CURRENT_TIMESTAMP)""",
-        (job_id, parent_job_id, plugin_id, producer_job_id, status),
+        """INSERT INTO ingestion_jobs(ingestion_job_id, parent_job_id, plugin_id, trigger_key, downloader_job_id, dataset_key, params_json, status, started_at, created_at, updated_at)
+        VALUES (?, ?, ?, 'test_cmd', ?, 'test_dataset', '{}', ?, ?, ?, ?)""",
+        (job_id, parent_job_id, plugin_id, producer_job_id, status, now, now, now),
     )
 
 
@@ -177,8 +179,11 @@ class TestPollDownloaderJobs:
         store = _make_store("poll_stale")
         with store.connect() as conn:
             _insert_job(conn, job_id="job_5", producer_job_id="dl_5", status="accepted")
-            # Manually set started_at to 31 minutes ago
-            conn.execute("UPDATE ingestion_jobs SET started_at = datetime('now', '-1860 seconds') WHERE ingestion_job_id = 'job_5'")
+            # Manually set started_at to 31 minutes ago (Beijing time)
+            from src.datahub.core.time_utils import datahub_now
+            from datetime import timedelta
+            stale_time = (datahub_now() - timedelta(seconds=1860)).strftime("%Y-%m-%d %H:%M:%S")
+            conn.execute("UPDATE ingestion_jobs SET started_at = ? WHERE ingestion_job_id = 'job_5'", (stale_time,))
 
         client = MagicMock(spec=ExternalSyncClient)
         client.get_job_status.return_value = {"status": "running"}
@@ -211,8 +216,11 @@ class TestPollDownloaderJobs:
         with store.connect() as conn:
             _insert_job(conn, job_id="parent_stale", producer_job_id="dl_ps", status="running")
             _insert_job(conn, job_id="child_stale", producer_job_id="dl_cs", status="running", parent_job_id="parent_stale")
-            # Set parent started_at to 31 minutes ago
-            conn.execute("UPDATE ingestion_jobs SET started_at = datetime('now', '-1860 seconds') WHERE ingestion_job_id = 'parent_stale'")
+            # Set parent started_at to 31 minutes ago (Beijing time)
+            from src.datahub.core.time_utils import datahub_now
+            from datetime import timedelta
+            stale_time = (datahub_now() - timedelta(seconds=1860)).strftime("%Y-%m-%d %H:%M:%S")
+            conn.execute("UPDATE ingestion_jobs SET started_at = ? WHERE ingestion_job_id = 'parent_stale'", (stale_time,))
 
         client = MagicMock(spec=ExternalSyncClient)
         client.get_job_status.return_value = {"status": "running"}
@@ -228,7 +236,10 @@ class TestPollDownloaderJobs:
         store = _make_store("poll_standalone_stale")
         with store.connect() as conn:
             _insert_job(conn, job_id="standalone_stale", producer_job_id="dl_ss", status="running")
-            conn.execute("UPDATE ingestion_jobs SET started_at = datetime('now', '-1860 seconds') WHERE ingestion_job_id = 'standalone_stale'")
+            from src.datahub.core.time_utils import datahub_now
+            from datetime import timedelta
+            stale_time = (datahub_now() - timedelta(seconds=1860)).strftime("%Y-%m-%d %H:%M:%S")
+            conn.execute("UPDATE ingestion_jobs SET started_at = ? WHERE ingestion_job_id = 'standalone_stale'", (stale_time,))
 
         client = MagicMock(spec=ExternalSyncClient)
         client.get_job_status.return_value = {"status": "running"}

@@ -5,6 +5,7 @@ import sqlite3
 from typing import Any
 
 from src.datahub.core.specs import TableSpec
+from src.datahub.core.time_utils import datahub_now_text
 
 
 def write_table(
@@ -47,8 +48,8 @@ def write_table(
             updates = ", ".join(f"{column}=excluded.{column}" for column in columns if column not in table.primary_key)
             conn.execute(
                 f"INSERT INTO {table.table_name} ({column_sql}) VALUES ({placeholders}) "
-                f"ON CONFLICT({', '.join(table.primary_key)}) DO UPDATE SET {updates}, _ingest_updated_at = CURRENT_TIMESTAMP",
-                values,
+                f"ON CONFLICT({', '.join(table.primary_key)}) DO UPDATE SET {updates}, _ingest_updated_at = ?",
+                values + [datahub_now_text()],
             )
             inserted += 1
         elif table.write_mode == "append":

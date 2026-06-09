@@ -6,6 +6,7 @@ from contextlib import closing
 from typing import Any
 
 from src.datahub.core.plugin_loader import NormalizerSpec, PluginSpec, load_normalizer_handler
+from src.datahub.core.time_utils import datahub_now_text
 from src.datahub.storage.sqlite import DataHubStore
 from src.datahub.storage.writer import write_table
 
@@ -52,8 +53,8 @@ class IngestionService:
                         """
                         INSERT INTO table_writes(
                           message_id, table_name, dataset_key, scope_values_json, write_mode, status,
-                          row_count, inserted_count, updated_count, deleted_count, started_at, finished_at
-                        ) VALUES (?, ?, ?, ?, ?, 'succeeded', ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                          row_count, inserted_count, updated_count, deleted_count, started_at, finished_at, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, 'succeeded', ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             payload["message_id"],
@@ -65,6 +66,10 @@ class IngestionService:
                             stats["inserted_count"],
                             stats["updated_count"],
                             stats["deleted_count"],
+                            datahub_now_text(),
+                            datahub_now_text(),
+                            datahub_now_text(),
+                            datahub_now_text(),
                         ),
                     )
                 skipped_summary = [s.to_dict() for s in skipped_rows]
@@ -74,18 +79,18 @@ class IngestionService:
                 conn.execute(
                     """
                     UPDATE ingestion_messages
-                    SET status = 'succeeded', row_count = ?, written_at = CURRENT_TIMESTAMP, error = NULL, updated_at = CURRENT_TIMESTAMP
+                    SET status = 'succeeded', row_count = ?, written_at = ?, error = NULL, updated_at = ?
                     WHERE message_id = ?
                     """,
-                    (total_rows, payload["message_id"]),
+                    (total_rows, datahub_now_text(), datahub_now_text(), payload["message_id"]),
                 )
                 conn.execute(
                     """
                     UPDATE ingestion_jobs
-                    SET status = 'running', message_received = message_received + 1, row_count = row_count + ?, updated_at = CURRENT_TIMESTAMP
+                    SET status = 'running', message_received = message_received + 1, row_count = row_count + ?, updated_at = ?
                     WHERE downloader_job_id = ?
                     """,
-                    (total_rows, payload["downloader_job_id"]),
+                    (total_rows, datahub_now_text(), payload["downloader_job_id"]),
                 )
                 conn.commit()
                 return {
@@ -152,22 +157,24 @@ class IngestionService:
 
     def _upsert_writing_message(self, conn, payload: dict[str, Any], *, retry: bool) -> None:
         raw_payload = self._json(payload)
+        now_text = datahub_now_text()
         if retry:
             conn.execute(
                 """
                 UPDATE ingestion_messages
-                SET status = 'writing', table_count = ?, row_count = 0, received_payload_json = ?, error = NULL, updated_at = CURRENT_TIMESTAMP
+                SET status = 'writing', table_count = ?, row_count = 0, received_payload_json = ?, error = NULL, updated_at = ?
                 WHERE message_id = ?
                 """,
-                (len(payload.get("tables") or []), raw_payload, payload["message_id"]),
+                (len(payload.get("tables") or []), raw_payload, now_text, payload["message_id"]),
             )
             return
         conn.execute(
             """
             INSERT INTO ingestion_messages(
               message_id, idempotency_key, ingestion_job_id, downloader_job_id, collect_run_id,
-              dataset_key, scope_key, payload_hash, status, table_count, row_count, received_payload_json
-            ) VALUES (?, ?, (SELECT ingestion_job_id FROM ingestion_jobs WHERE downloader_job_id = ?), ?, ?, ?, ?, ?, 'writing', ?, 0, ?)
+              dataset_key, scope_key, payload_hash, status, table_count, row_count, received_payload_json,
+              received_at, created_at, updated_at
+            ) VALUES (?, ?, (SELECT ingestion_job_id FROM ingestion_jobs WHERE downloader_job_id = ?), ?, ?, ?, ?, ?, 'writing', ?, 0, ?, ?, ?, ?)
             """,
             (
                 payload["message_id"],
@@ -180,19 +187,24 @@ class IngestionService:
                 payload["payload_hash"],
                 len(payload.get("tables") or []),
                 raw_payload,
+                now_text,
+                now_text,
+                now_text,
             ),
         )
 
     def _record_failed_message(self, conn, payload: dict[str, Any], message: str, *, error_code: str | None = None) -> None:
         code = error_code or _error_code(message)
+        now_text = datahub_now_text()
         conn.execute(
             """
             INSERT INTO ingestion_messages(
               message_id, idempotency_key, ingestion_job_id, downloader_job_id, collect_run_id,
-              dataset_key, scope_key, payload_hash, status, table_count, row_count, received_payload_json, error
-            ) VALUES (?, ?, (SELECT ingestion_job_id FROM ingestion_jobs WHERE downloader_job_id = ?), ?, ?, ?, ?, ?, 'failed', ?, 0, ?, ?)
+              dataset_key, scope_key, payload_hash, status, table_count, row_count, received_payload_json, error,
+              received_at, created_at, updated_at
+            ) VALUES (?, ?, (SELECT ingestion_job_id FROM ingestion_jobs WHERE downloader_job_id = ?), ?, ?, ?, ?, ?, 'failed', ?, 0, ?, ?, ?, ?, ?)
             ON CONFLICT(message_id) DO UPDATE SET
-              status = 'failed', received_payload_json = excluded.received_payload_json, error = excluded.error, updated_at = CURRENT_TIMESTAMP
+              status = 'failed', received_payload_json = excluded.received_payload_json, error = excluded.error, updated_at = ?
             """,
             (
                 payload.get("message_id"),
@@ -206,6 +218,10 @@ class IngestionService:
                 len(payload.get("tables") or []),
                 self._json(payload),
                 f"{code}: {message}",
+                now_text,
+                now_text,
+                now_text,
+                now_text,
             ),
         )
 

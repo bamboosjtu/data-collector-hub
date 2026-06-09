@@ -18,6 +18,8 @@ import time
 from datetime import date, datetime, timedelta
 from typing import Any
 
+from src.datahub.core.time_utils import datahub_current_year, datahub_days_ago, datahub_today, datahub_yesterday
+
 logger = logging.getLogger(__name__)
 
 
@@ -27,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 def resolve_auto_params(auto_params: dict[str, str], overrides: dict[str, Any] | None = None) -> dict[str, str]:
     """Resolve auto_params placeholders: yesterday, today, N_days_ago."""
-    today = date.today()
+    today = datahub_today()
     resolved: dict[str, str] = {}
     for key, value in auto_params.items():
         if overrides and key in overrides and overrides[key] is not None:
@@ -35,11 +37,11 @@ def resolve_auto_params(auto_params: dict[str, str], overrides: dict[str, Any] |
         elif value == "today":
             resolved[key] = today.isoformat()
         elif value == "yesterday":
-            resolved[key] = (today - timedelta(days=1)).isoformat()
+            resolved[key] = datahub_yesterday().isoformat()
         elif value.endswith("_days_ago"):
             try:
                 n = int(value.split("_")[0])
-                resolved[key] = (today - timedelta(days=n)).isoformat()
+                resolved[key] = datahub_days_ago(n).isoformat()
             except (ValueError, IndexError):
                 resolved[key] = value
         else:
@@ -189,7 +191,7 @@ def _project_fan_out(
             return {"total": 0, "succeeded": 0, "failed": 0, "items": [], "error": error_msg}
 
     # 1. Query dcp_plan_projects for current year
-    current_year = str(datetime.now().year)
+    current_year = datahub_current_year()
     rows = store.query_table("dcp_plan_projects", {"year": current_year}, limit=10000)
     if not rows:
         logger.warning("project fan-out %s: no rows in dcp_plan_projects for year=%s", child_command, current_year)
@@ -638,7 +640,7 @@ def refresh_daily_meetings_yesterday(ctx: dict[str, Any]) -> dict[str, Any]:
     parent_job_id = ctx["ingestion_job_id"]
     callback_base_url = ctx["callback_base_url"]
 
-    yesterday = (date.today() - timedelta(days=1)).isoformat()
+    yesterday = datahub_yesterday().isoformat()
     child_params = {"startDate": yesterday, "endDate": yesterday}
 
     # Find child command

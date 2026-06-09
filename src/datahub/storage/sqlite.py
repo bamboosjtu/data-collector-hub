@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from src.datahub.core.registry import SchemaRegistry
+from src.datahub.core.time_utils import datahub_now_text
 
 from .ddl import create_business_table, create_metadata_tables
 from .writer import public_row
@@ -36,8 +37,8 @@ class DataHubStore:
             raw = json.dumps(self.registry.as_dict(), ensure_ascii=False, sort_keys=True)
             checksum = hashlib.sha256(raw.encode("utf-8")).hexdigest()
             conn.execute(
-                "INSERT OR IGNORE INTO schema_versions(schema_version, registry_json, checksum, active) VALUES (?, ?, ?, 1)",
-                (f"v{self.registry.version}", raw, checksum),
+                "INSERT OR IGNORE INTO schema_versions(schema_version, registry_json, checksum, active, created_at) VALUES (?, ?, ?, 1, ?)",
+                (f"v{self.registry.version}", raw, checksum, datahub_now_text()),
             )
             if dev_mode and not conn.execute("SELECT 1 FROM api_keys LIMIT 1").fetchone():
                 self.create_api_key("local-admin", ["admin", "ingestion", "query"], token="dev-admin-key", conn=conn)
@@ -57,10 +58,10 @@ class DataHubStore:
         with closing(self.connect()) as conn, conn:
             conn.execute(
                 """
-                INSERT INTO ingestion_jobs(ingestion_job_id, parent_job_id, plugin_id, trigger_key, downloader_job_id, dataset_key, params_json, status, started_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 'triggering', CURRENT_TIMESTAMP)
+                INSERT INTO ingestion_jobs(ingestion_job_id, parent_job_id, plugin_id, trigger_key, downloader_job_id, dataset_key, params_json, status, started_at, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'triggering', ?, ?, ?)
                 """,
-                (ingestion_job_id, parent_job_id, plugin_id, job_type, producer_job_id, dataset_key, self._json(params)),
+                (ingestion_job_id, parent_job_id, plugin_id, job_type, producer_job_id, dataset_key, self._json(params), datahub_now_text(), datahub_now_text(), datahub_now_text()),
             )
 
     def mark_job(
@@ -78,11 +79,11 @@ class DataHubStore:
                 UPDATE ingestion_jobs
                 SET status = ?, producer_status_json = COALESCE(?, producer_status_json),
                     result_json = COALESCE(?, result_json), error = COALESCE(?, error),
-                    finished_at = CASE WHEN ? IN ('succeeded','partial','failed','cancelled') THEN CURRENT_TIMESTAMP ELSE finished_at END,
-                    updated_at = CURRENT_TIMESTAMP
+                    finished_at = CASE WHEN ? IN ('succeeded','partial','failed','cancelled') THEN ? ELSE finished_at END,
+                    updated_at = ?
                 WHERE ingestion_job_id = ?
                 """,
-                (status, self._json(producer_status) if producer_status else None, self._json(result) if result else None, error, status, ingestion_job_id),
+                (status, self._json(producer_status) if producer_status else None, self._json(result) if result else None, error, status, datahub_now_text(), datahub_now_text(), ingestion_job_id),
             )
 
     def get_job(self, ingestion_job_id: str) -> dict[str, Any] | None:
@@ -130,8 +131,8 @@ class DataHubStore:
         owns_conn = conn is None
         try:
             active_conn.execute(
-                "INSERT INTO api_keys(key_id, key_hash, name, scopes_json) VALUES (?, ?, ?, ?)",
-                (key_id, self.hash_token(token), name, self._json(scopes)),
+                "INSERT INTO api_keys(key_id, key_hash, name, scopes_json, created_at) VALUES (?, ?, ?, ?, ?)",
+                (key_id, self.hash_token(token), name, self._json(scopes), datahub_now_text()),
             )
             if owns_conn:
                 active_conn.commit()

@@ -12,8 +12,8 @@ INGEST_META_COLUMNS = {
     "_collect_run_id": "TEXT",
     "_ingest_row_index": "INTEGER",
     "_ingest_payload_hash": "TEXT",
-    "_ingest_created_at": "TEXT DEFAULT CURRENT_TIMESTAMP",
-    "_ingest_updated_at": "TEXT DEFAULT CURRENT_TIMESTAMP",
+    "_ingest_created_at": "TEXT",
+    "_ingest_updated_at": "TEXT",
 }
 
 
@@ -39,8 +39,8 @@ def create_metadata_tables(conn: sqlite3.Connection) -> None:
           error TEXT,
           started_at TEXT,
           finished_at TEXT,
-          created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-          updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+          created_at TEXT,
+          updated_at TEXT
         );
         CREATE TABLE IF NOT EXISTS ingestion_messages (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -57,10 +57,10 @@ def create_metadata_tables(conn: sqlite3.Connection) -> None:
           row_count INTEGER DEFAULT 0,
           received_payload_json TEXT,
           error TEXT,
-          received_at TEXT DEFAULT CURRENT_TIMESTAMP,
+          received_at TEXT,
           written_at TEXT,
-          created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-          updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+          created_at TEXT,
+          updated_at TEXT
         );
         CREATE TABLE IF NOT EXISTS table_writes (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -77,8 +77,8 @@ def create_metadata_tables(conn: sqlite3.Connection) -> None:
           error TEXT,
           started_at TEXT,
           finished_at TEXT,
-          created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-          updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+          created_at TEXT,
+          updated_at TEXT
         );
         CREATE TABLE IF NOT EXISTS schema_versions (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -86,7 +86,7 @@ def create_metadata_tables(conn: sqlite3.Connection) -> None:
           registry_json TEXT NOT NULL,
           checksum TEXT NOT NULL,
           active INTEGER DEFAULT 0,
-          created_at TEXT DEFAULT CURRENT_TIMESTAMP
+          created_at TEXT
         );
         CREATE TABLE IF NOT EXISTS api_keys (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -95,7 +95,7 @@ def create_metadata_tables(conn: sqlite3.Connection) -> None:
           name TEXT NOT NULL,
           scopes_json TEXT NOT NULL,
           active INTEGER DEFAULT 1,
-          created_at TEXT DEFAULT CURRENT_TIMESTAMP
+          created_at TEXT
         );
         """
     )
