@@ -31,7 +31,6 @@ curl http://localhost:8000/metadata
 # 期望: 包含 plugins: [dcp], tables: [dcp_plan_projects, ...]
 ```
 
-管理界面: `http://localhost:8501`（debug/legacy 候选，不建议作为生产入口）
 运维面板: `http://localhost:8000/ops`（长期运维方向，当前功能有限，首次访问需输入 API Key）
 
 ## 2. 运行核心 Command

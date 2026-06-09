@@ -140,7 +140,6 @@ Dev 模式引导 API Key: `dev-admin-key` (scopes: admin, ingestion, query)
 ## Current Limitations
 
 - **8000 ops UI** (`/ops`) 是后续长期运维方向，当前功能有限
-- **8501 Streamlit UI** 是 debug/legacy 候选，不建议作为生产入口
 - **command → service 抽象尚未开始**，当前 command 直接映射到 trigger
 - SQLite 单写者，fan-out 必须串行执行
 - DCP session/WAF 过期需手动重启 downloader-dcp

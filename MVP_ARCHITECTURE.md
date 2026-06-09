@@ -1296,7 +1296,7 @@ DataCollectorHub plugin:
 - SQLite MVP: single-writer, no concurrent access (local dev only)
 - DCP session/WAF expiry requires manual downloader restart (high operational burden)
 - 8000 ops UI is the long-term direction for operations monitoring
-- 8501 Streamlit UI is debug/legacy candidate, not production target
+- 8501 Streamlit UI removed; 8000 ops UI is the long-term operations direction
 - command → service abstraction not yet started
 - Query routes not configured for all tables (some return 404)
 - No automated retry for transient failures
