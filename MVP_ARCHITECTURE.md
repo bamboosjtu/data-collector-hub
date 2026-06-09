@@ -842,8 +842,8 @@ CREATE TABLE ingestion_jobs (
   error TEXT,
   started_at TEXT,
   finished_at TEXT,
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+  created_at TEXT,
+  updated_at TEXT
 );
 ```
 
@@ -865,10 +865,10 @@ CREATE TABLE ingestion_messages (
   row_count INTEGER DEFAULT 0,
   error_code TEXT,
   error TEXT,
-  received_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  received_at TEXT,
   written_at TEXT,
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+  created_at TEXT,
+  updated_at TEXT
 );
 ```
 
@@ -891,8 +891,8 @@ CREATE TABLE table_writes (
   error TEXT,
   started_at TEXT,
   finished_at TEXT,
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+  created_at TEXT,
+  updated_at TEXT
 );
 ```
 
@@ -905,7 +905,7 @@ CREATE TABLE schema_versions (
   registry_json TEXT NOT NULL,
   checksum TEXT NOT NULL,
   active INTEGER DEFAULT 0,
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  created_at TEXT
 );
 ```
 
@@ -920,8 +920,8 @@ _downloader_job_id    TEXT
 _collect_run_id       TEXT
 _ingest_row_index     INTEGER
 _ingest_payload_hash  TEXT
-_ingest_created_at    TEXT DEFAULT CURRENT_TIMESTAMP
-_ingest_updated_at    TEXT DEFAULT CURRENT_TIMESTAMP
+_ingest_created_at    TEXT
+_ingest_updated_at    TEXT
 _extra                TEXT NULL
 ```
 
@@ -932,6 +932,8 @@ append 表对 (_ingest_message_id, _ingest_row_index) 建唯一约束。
 upsert / replace_scope 表根据业务 primary_key 建唯一约束。
 unknown_field_policy = capture_extra 时，未声明字段写入 _extra JSON。
 ```
+
+> 所有时间戳均由 Python 侧通过 `core/time_utils.py` 使用北京时间（Asia/Shanghai）写入，不使用 SQLite 侧的时间默认值。
 
 ---
 
@@ -1221,14 +1223,10 @@ DataCollectorHub/
 │       └── __init__.py
 │
 ├── tests/
-│   ├── fixtures/
-│   │   └── table_batch_v1/
-│   ├── test_plugin_loader.py
-│   ├── test_registry.py
-│   ├── test_table_batch_validation.py
-│   ├── test_idempotency.py
-│   ├── test_write_modes.py
-│   └── test_query_routes.py
+│   ├── unit/                  # Pure logic, no external dependencies
+│   ├── integration/           # SQLite/Store but no external services
+│   ├── e2e/                   # Full DataHub + downloader-dcp
+│   └── fixtures/              # Shared test fixtures
 │
 ├── docs/
 │   └── MVP_ARCHITECTURE.md
@@ -1240,8 +1238,7 @@ DataCollectorHub/
 
 ## 17. 实施与验收记录
 
-> 实施顺序、验收标准和分级验收定义已迁移至 [docs/devlog/mvp-implementation-record.md](docs/devlog/mvp-implementation-record.md)。
-> 本文档仅保留长期稳定的架构设计决策。
+> 实施顺序和验收标准已归档。当前 MVP 封板状态见 [docs/devlog/dcp-mvp-final-acceptance.md](docs/devlog/dcp-mvp-final-acceptance.md)。
 
 ---
 
@@ -1281,5 +1278,27 @@ DataCollectorHub core:
 DataCollectorHub plugin:
   负责数据源和数据集相关声明，包括 trigger、schema、write_mode、query_routes。
 ```
+
+---
+
+## 19. Operational Constraints
+
+- SQLite single-writer: fan-out commands must run sequentially, not concurrently
+- DCP session/WAF expiry: downloader-dcp may need manual restart after long idle periods
+- Fan-out circuit breaker: both date and project fan-out have consecutive failure circuit breaker (default threshold=5)
+- Beijing time: all timestamps use Asia/Shanghai timezone via `core/time_utils.py`
+- No automated retry for transient failures: retry via CLI `uv run python -m src.datahub.cli retry <job_id>`
+
+## 20. Known Limitations
+
+- `downloader_job_id` naming biased toward downloader (cosmetic, low priority)
+- Fan-out serial wait per child: 416 projects ~30min (stable but slow)
+- SQLite MVP: single-writer, no concurrent access (local dev only)
+- DCP session/WAF expiry requires manual downloader restart (high operational burden)
+- 8000 ops UI is the long-term direction for operations monitoring
+- 8501 Streamlit UI is debug/legacy candidate, not production target
+- command → service abstraction not yet started
+- Query routes not configured for all tables (some return 404)
+- No automated retry for transient failures
 
 

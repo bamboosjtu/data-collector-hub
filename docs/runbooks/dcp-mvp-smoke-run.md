@@ -3,7 +3,7 @@
 > **WARNING: 本文档仅限开发/联调环境使用，不得用于生产部署。**
 > 生产环境必须显式配置 `DATAHUB_CALLBACK_API_KEY` 和 `DATAHUB_DEV_MODE=0`。
 
-版本: mvp-dcp-plugin-ingestion-beta2
+版本: mvp-dcp-final
 
 ## 前置条件
 
@@ -31,8 +31,8 @@ curl http://localhost:8000/metadata
 # 期望: 包含 plugins: [dcp], tables: [dcp_plan_projects, ...]
 ```
 
-管理界面: `http://localhost:8501`
-运维面板: `http://localhost:8000/ops`（首次访问需输入 API Key）
+管理界面: `http://localhost:8501`（debug/legacy 候选，不建议作为生产入口）
+运维面板: `http://localhost:8000/ops`（长期运维方向，当前功能有限，首次访问需输入 API Key）
 
 ## 2. 运行核心 Command
 
@@ -211,7 +211,7 @@ curl "http://localhost:8000/api/v1/safety/daily-meetings?date=2025-06-01" ^
   -H "X-API-Key: $API_KEY"
 ```
 
-注意: daily_meeting 表当前标记为 DEFERRED，数据完整性取决于 DCP 站点返回。
+注意: daily_meeting 已字段化为 42 列，关键业务字段（singleProjectCode、biddingSectionCode、leaderName 等）可直接 SQL 查询。
 
 ## 8. 验证 Snapshot 业务时段测试
 
