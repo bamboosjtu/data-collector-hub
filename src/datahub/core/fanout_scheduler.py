@@ -26,6 +26,31 @@ logger = logging.getLogger(__name__)
 
 _TERMINAL_STATUSES = frozenset({"succeeded", "partial", "failed", "cancelled"})
 
+_TRANSIENT_KEYWORDS = (
+    "session_expired",
+    "recoverable",
+    "sgcc client is expired",
+    "dcp_client_expired",
+    "timeout",
+    "etimedout",
+    "econnreset",
+    "slot_unavailable",
+    "runner_timeout",
+)
+
+_MAX_TRANSIENT_RETRIES = 2
+
+
+def _is_transient_child_failure(child_job: dict[str, Any]) -> bool:
+    """Check if a failed child job is a transient/recoverable failure."""
+    texts: list[str] = []
+    for key in ("error", "producer_status_json", "result_json"):
+        val = child_job.get(key)
+        if val:
+            texts.append(str(val))
+    combined = " ".join(texts).lower()
+    return any(kw in combined for kw in _TRANSIENT_KEYWORDS)
+
 
 def start_fanout_scheduler(
     store,
@@ -113,11 +138,33 @@ def _advance_fanout_run(
         if child_job and child_job["status"] in _TERMINAL_STATUSES:
             from plugins.dcp.fan_out import _is_child_failed
             failed = _is_child_failed(child_job)
-            store.update_fanout_item_terminal(
-                item["id"],
-                status="failed" if failed else "succeeded",
-                error=child_job.get("error") if failed else None,
-            )
+            if failed:
+                if _is_transient_child_failure(child_job) and item.get("retry_count", 0) < _MAX_TRANSIENT_RETRIES:
+                    retry_count = item.get("retry_count", 0)
+                    delay_seconds = 3 * (2 ** retry_count)
+                    error_summary = (child_job.get("error") or "transient failure")[:200]
+                    logger.info(
+                        "fanout %s: transient child failure, retrying item %s after %ds "
+                        "(retry_count=%d, child_job_id=%s, error=%s)",
+                        parent_job_id, item["id"], delay_seconds,
+                        retry_count, item["child_job_id"], error_summary,
+                    )
+                    store.retry_fanout_item(
+                        item["id"],
+                        error=child_job.get("error") or "transient failure",
+                        delay_seconds=delay_seconds,
+                    )
+                else:
+                    store.update_fanout_item_terminal(
+                        item["id"],
+                        status="failed",
+                        error=child_job.get("error"),
+                    )
+            else:
+                store.update_fanout_item_terminal(
+                    item["id"],
+                    status="succeeded",
+                )
 
     # 3. Compute stats and consecutive failures
     stats = store.get_fanout_stats(parent_job_id)

@@ -245,8 +245,11 @@ class DataHubStore:
         with closing(self.connect()) as conn, conn:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
-                "SELECT id FROM fanout_items WHERE parent_job_id = ? AND status = 'pending' ORDER BY item_index LIMIT 1",
-                (parent_job_id,),
+                """SELECT id FROM fanout_items
+                   WHERE parent_job_id = ? AND status = 'pending'
+                     AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+                   ORDER BY item_index LIMIT 1""",
+                (parent_job_id, now),
             ).fetchone()
             if row is None:
                 conn.rollback()
@@ -279,6 +282,32 @@ class DataHubStore:
                    SET status = ?, child_job_id = COALESCE(?, child_job_id), error = COALESCE(?, error), updated_at = ?
                    WHERE id = ?""",
                 (status, child_job_id, error, datahub_now_text(), item_id),
+            )
+
+    def retry_fanout_item(self, item_id: int, *, error: str, delay_seconds: int) -> None:
+        """Reset a fanout_item back to pending for transient retry.
+
+        Increments retry_count, sets next_attempt_at to now + delay_seconds,
+        clears child_job_id/claimed_by/claimed_at, and records the error.
+        """
+        from src.datahub.core.time_utils import datahub_now
+        now = datahub_now()
+        now_text = now.strftime("%Y-%m-%d %H:%M:%S")
+        from datetime import timedelta
+        next_attempt = (now + timedelta(seconds=delay_seconds)).strftime("%Y-%m-%d %H:%M:%S")
+        with closing(self.connect()) as conn, conn:
+            conn.execute(
+                """UPDATE fanout_items
+                   SET status = 'pending',
+                       child_job_id = NULL,
+                       claimed_by = NULL,
+                       claimed_at = NULL,
+                       retry_count = retry_count + 1,
+                       next_attempt_at = ?,
+                       error = ?,
+                       updated_at = ?
+                   WHERE id = ?""",
+                (next_attempt, error, now_text, item_id),
             )
 
     def skip_pending_fanout_items(self, parent_job_id: str) -> int:

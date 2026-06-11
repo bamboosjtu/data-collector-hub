@@ -29,6 +29,8 @@ from src.datahub.core.fanout_scheduler import (
     _advance_fanout_run,
     _close_fanout_parent,
     _cooldown_elapsed,
+    _is_transient_child_failure,
+    _MAX_TRANSIENT_RETRIES,
 )
 from src.datahub.core.specs import CommandSpec, PluginSpec, DisplaySpec, ConnectorSpec
 
@@ -516,3 +518,496 @@ class TestFanoutStoreApis:
 
         _aggregate_parent_jobs(store)
         assert store.get_job("parent_2")["status"] == "running"
+
+
+# ---------------------------------------------------------------------------
+# Transient failure detection
+# ---------------------------------------------------------------------------
+
+class TestIsTransientChildFailure:
+    def test_session_expired_is_transient(self):
+        job = _failed_job(error="SGCC client is expired. Create a new client and login again.")
+        assert _is_transient_child_failure(job) is True
+
+    def test_dcp_client_expired_is_transient(self):
+        job = _failed_job(error="DCP_CLIENT_EXPIRED")
+        assert _is_transient_child_failure(job) is True
+
+    def test_timeout_is_transient(self):
+        job = _failed_job(error="ETIMEDOUT connection lost")
+        assert _is_transient_child_failure(job) is True
+
+    def test_econnreset_is_transient(self):
+        job = _failed_job(error="ECONNRESET")
+        assert _is_transient_child_failure(job) is True
+
+    def test_recoverable_is_transient(self):
+        job = _failed_job(error="recoverable error")
+        assert _is_transient_child_failure(job) is True
+
+    def test_slot_unavailable_is_transient(self):
+        job = _failed_job(error="slot_unavailable")
+        assert _is_transient_child_failure(job) is True
+
+    def test_runner_timeout_is_transient(self):
+        job = _failed_job(error="runner_timeout exceeded")
+        assert _is_transient_child_failure(job) is True
+
+    def test_permanent_failure_not_transient(self):
+        job = _failed_job(error="request_failed: invalid parameter")
+        assert _is_transient_child_failure(job) is False
+
+    def test_transient_in_producer_status_json(self):
+        job = {"status": "failed", "error": None, "row_count": 0,
+               "message_received": 0, "producer_status_json": json.dumps({"error": "session_expired"})}
+        assert _is_transient_child_failure(job) is True
+
+    def test_transient_in_result_json(self):
+        job = {"status": "failed", "error": None, "row_count": 0,
+               "message_received": 0, "producer_status_json": None,
+               "result_json": json.dumps({"detail": "timeout waiting for response"})}
+        assert _is_transient_child_failure(job) is True
+
+
+# ---------------------------------------------------------------------------
+# Transient retry in scheduler
+# ---------------------------------------------------------------------------
+
+class TestTransientRetry:
+    def test_session_expired_retried_as_pending(self):
+        """session_expired child failure should be retried, not marked failed."""
+        store = MagicMock()
+        run = {
+            "parent_job_id": "ing_test_retry_001",
+            "child_command": "refresh_daily_meetings_by_range",
+            "max_concurrency": 5,
+            "cooldown_seconds": 0,
+            "consecutive_failure_threshold": 5,
+            "circuit_opened": 0,
+            "last_submit_at": None,
+            "total": 10,
+        }
+        item = {
+            "id": 1,
+            "child_job_id": "child_001",
+            "retry_count": 0,
+        }
+        child_job = _failed_job(error="SGCC client is expired. Create a new client and login again.")
+
+        store.claim_fanout_run.return_value = True
+        store.reset_stale_submitting_items.return_value = 0
+        store.list_submitted_fanout_items.return_value = [item]
+        store.get_job.return_value = child_job
+        store.get_fanout_stats.return_value = {"pending": 9, "submitting": 0, "submitted": 0, "succeeded": 0, "failed": 0, "skipped": 0}
+        store.get_consecutive_failures.return_value = 0
+        store.get_fanout_run.return_value = run
+        store.claim_next_pending_fanout_item.return_value = None
+
+        _advance_fanout_run(
+            store, {}, [], run,
+            callback_base_url="http://localhost:8000",
+            callback_headers=None,
+            scheduler_id="test-scheduler",
+        )
+
+        # Should retry, not mark as failed
+        store.retry_fanout_item.assert_called_once()
+        call_args = store.retry_fanout_item.call_args
+        assert call_args[0][0] == 1  # item_id positional
+        assert call_args[1]["delay_seconds"] == 3  # 3 * (2 ** 0)
+        store.update_fanout_item_terminal.assert_not_called()
+
+    def test_sgcc_client_expired_retried_as_pending(self):
+        """SGCC client expired should be retried."""
+        store = MagicMock()
+        run = {
+            "parent_job_id": "ing_test_retry_002",
+            "child_command": "refresh_daily_meetings_by_range",
+            "max_concurrency": 5,
+            "cooldown_seconds": 0,
+            "consecutive_failure_threshold": 5,
+            "circuit_opened": 0,
+            "last_submit_at": None,
+            "total": 10,
+        }
+        item = {
+            "id": 2,
+            "child_job_id": "child_002",
+            "retry_count": 1,
+        }
+        child_job = _failed_job(error="SGCC client is expired")
+
+        store.claim_fanout_run.return_value = True
+        store.reset_stale_submitting_items.return_value = 0
+        store.list_submitted_fanout_items.return_value = [item]
+        store.get_job.return_value = child_job
+        store.get_fanout_stats.return_value = {"pending": 8, "submitting": 0, "submitted": 0, "succeeded": 1, "failed": 0, "skipped": 0}
+        store.get_consecutive_failures.return_value = 0
+        store.get_fanout_run.return_value = run
+        store.claim_next_pending_fanout_item.return_value = None
+
+        _advance_fanout_run(
+            store, {}, [], run,
+            callback_base_url="http://localhost:8000",
+            callback_headers=None,
+            scheduler_id="test-scheduler",
+        )
+
+        store.retry_fanout_item.assert_called_once()
+        call_kwargs = store.retry_fanout_item.call_args[1]
+        assert call_kwargs["delay_seconds"] == 6  # 3 * (2 ** 1)
+
+    def test_retry_count_at_limit_marks_failed(self):
+        """When retry_count >= MAX_TRANSIENT_RETRIES, transient failure should mark as failed."""
+        store = MagicMock()
+        run = {
+            "parent_job_id": "ing_test_retry_003",
+            "child_command": "refresh_daily_meetings_by_range",
+            "max_concurrency": 5,
+            "cooldown_seconds": 0,
+            "consecutive_failure_threshold": 5,
+            "circuit_opened": 0,
+            "last_submit_at": None,
+            "total": 10,
+        }
+        item = {
+            "id": 3,
+            "child_job_id": "child_003",
+            "retry_count": _MAX_TRANSIENT_RETRIES,  # Already at limit
+        }
+        child_job = _failed_job(error="SGCC client is expired")
+
+        store.claim_fanout_run.return_value = True
+        store.reset_stale_submitting_items.return_value = 0
+        store.list_submitted_fanout_items.return_value = [item]
+        store.get_job.return_value = child_job
+        store.get_fanout_stats.return_value = {"pending": 7, "submitting": 0, "submitted": 0, "succeeded": 2, "failed": 0, "skipped": 0}
+        store.get_consecutive_failures.return_value = 0
+        store.get_fanout_run.return_value = run
+        store.claim_next_pending_fanout_item.return_value = None
+
+        _advance_fanout_run(
+            store, {}, [], run,
+            callback_base_url="http://localhost:8000",
+            callback_headers=None,
+            scheduler_id="test-scheduler",
+        )
+
+        # Should NOT retry, should mark as failed
+        store.retry_fanout_item.assert_not_called()
+        store.update_fanout_item_terminal.assert_called_once()
+        call_kwargs = store.update_fanout_item_terminal.call_args[1]
+        assert call_kwargs["status"] == "failed"
+
+    def test_permanent_failure_not_retried(self):
+        """Permanent failure should be marked failed immediately, not retried."""
+        store = MagicMock()
+        run = {
+            "parent_job_id": "ing_test_retry_004",
+            "child_command": "refresh_daily_meetings_by_range",
+            "max_concurrency": 5,
+            "cooldown_seconds": 0,
+            "consecutive_failure_threshold": 5,
+            "circuit_opened": 0,
+            "last_submit_at": None,
+            "total": 10,
+        }
+        item = {
+            "id": 4,
+            "child_job_id": "child_004",
+            "retry_count": 0,
+        }
+        child_job = _failed_job(error="request_failed: invalid parameter")
+
+        store.claim_fanout_run.return_value = True
+        store.reset_stale_submitting_items.return_value = 0
+        store.list_submitted_fanout_items.return_value = [item]
+        store.get_job.return_value = child_job
+        store.get_fanout_stats.return_value = {"pending": 9, "submitting": 0, "submitted": 0, "succeeded": 0, "failed": 0, "skipped": 0}
+        store.get_consecutive_failures.return_value = 0
+        store.get_fanout_run.return_value = run
+        store.claim_next_pending_fanout_item.return_value = None
+
+        _advance_fanout_run(
+            store, {}, [], run,
+            callback_base_url="http://localhost:8000",
+            callback_headers=None,
+            scheduler_id="test-scheduler",
+        )
+
+        store.retry_fanout_item.assert_not_called()
+        store.update_fanout_item_terminal.assert_called_once()
+        call_kwargs = store.update_fanout_item_terminal.call_args[1]
+        assert call_kwargs["status"] == "failed"
+
+    def test_transient_retry_not_counted_as_consecutive_failure(self):
+        """Transient retry should not increment consecutive failures."""
+        store = MagicMock()
+        run = {
+            "parent_job_id": "ing_test_retry_005",
+            "child_command": "refresh_daily_meetings_by_range",
+            "max_concurrency": 5,
+            "cooldown_seconds": 0,
+            "consecutive_failure_threshold": 5,
+            "circuit_opened": 0,
+            "last_submit_at": None,
+            "total": 10,
+        }
+        item = {
+            "id": 5,
+            "child_job_id": "child_005",
+            "retry_count": 0,
+        }
+        child_job = _failed_job(error="session_expired")
+
+        store.claim_fanout_run.return_value = True
+        store.reset_stale_submitting_items.return_value = 0
+        store.list_submitted_fanout_items.return_value = [item]
+        store.get_job.return_value = child_job
+        # After retry, item goes back to pending, so no failed items
+        store.get_fanout_stats.return_value = {"pending": 10, "submitting": 0, "submitted": 0, "succeeded": 0, "failed": 0, "skipped": 0}
+        store.get_consecutive_failures.return_value = 0
+        store.get_fanout_run.return_value = run
+        store.claim_next_pending_fanout_item.return_value = None
+
+        _advance_fanout_run(
+            store, {}, [], run,
+            callback_base_url="http://localhost:8000",
+            callback_headers=None,
+            scheduler_id="test-scheduler",
+        )
+
+        # Circuit breaker should NOT be triggered
+        store.mark_fanout_circuit_open.assert_not_called()
+        store.skip_pending_fanout_items.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Real SQLite: migration, next_attempt_at, retry_fanout_item
+# ---------------------------------------------------------------------------
+
+class TestFanoutRetryMigration:
+    def test_migration_adds_columns_to_existing_db(self):
+        """Migration should add retry_count and next_attempt_at to existing fanout_items."""
+        import sqlite3
+        from src.datahub.storage.ddl import _migrate_fanout_items_columns
+
+        conn = sqlite3.connect(":memory:")
+        # Create fanout_items WITHOUT the new columns
+        conn.execute("""CREATE TABLE fanout_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            parent_job_id TEXT NOT NULL,
+            item_index INTEGER NOT NULL,
+            params_json TEXT NOT NULL,
+            child_job_id TEXT,
+            status TEXT NOT NULL DEFAULT 'pending',
+            error TEXT,
+            claimed_by TEXT,
+            claimed_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(parent_job_id, item_index)
+        )""")
+
+        _migrate_fanout_items_columns(conn)
+
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(fanout_items)").fetchall()}
+        assert "retry_count" in columns
+        assert "next_attempt_at" in columns
+
+        # Migration should be idempotent
+        _migrate_fanout_items_columns(conn)
+        columns2 = {row[1] for row in conn.execute("PRAGMA table_info(fanout_items)").fetchall()}
+        assert "retry_count" in columns2
+        assert "next_attempt_at" in columns2
+
+    def test_next_attempt_at_not_yet_not_claimed(self):
+        """Pending item with next_attempt_at in the future should not be claimed."""
+        store = _make_real_store("fanout_next_attempt_future")
+        store.create_fanout_run_with_items(
+            parent_job_id="parent_delay",
+            plugin_id="dcp",
+            parent_command="parent_cmd",
+            child_command="child_cmd",
+            param_sets=[{"x": 1}],
+            max_concurrency=5,
+            cooldown_seconds=0,
+            consecutive_failure_threshold=5,
+        )
+
+        # Set next_attempt_at to the future
+        from datetime import timedelta
+        from src.datahub.core.time_utils import datahub_now
+        future = (datahub_now() + timedelta(seconds=300)).strftime("%Y-%m-%d %H:%M:%S")
+        with store.connect() as conn:
+            conn.execute("UPDATE fanout_items SET next_attempt_at = ? WHERE parent_job_id = ?",
+                         (future, "parent_delay"))
+
+        result = store.claim_next_pending_fanout_item("parent_delay", "sched_a")
+        assert result is None
+
+    def test_next_attempt_at_expired_can_be_claimed(self):
+        """Pending item with next_attempt_at in the past should be claimable."""
+        store = _make_real_store("fanout_next_attempt_past")
+        store.create_fanout_run_with_items(
+            parent_job_id="parent_expired",
+            plugin_id="dcp",
+            parent_command="parent_cmd",
+            child_command="child_cmd",
+            param_sets=[{"x": 1}],
+            max_concurrency=5,
+            cooldown_seconds=0,
+            consecutive_failure_threshold=5,
+        )
+
+        # Set next_attempt_at to the past
+        from datetime import timedelta
+        from src.datahub.core.time_utils import datahub_now
+        past = (datahub_now() - timedelta(seconds=10)).strftime("%Y-%m-%d %H:%M:%S")
+        with store.connect() as conn:
+            conn.execute("UPDATE fanout_items SET next_attempt_at = ? WHERE parent_job_id = ?",
+                         (past, "parent_expired"))
+
+        result = store.claim_next_pending_fanout_item("parent_expired", "sched_a")
+        assert result is not None
+
+    def test_null_next_attempt_at_can_be_claimed(self):
+        """Pending item with NULL next_attempt_at should be claimable (default behavior)."""
+        store = _make_real_store("fanout_null_attempt")
+        store.create_fanout_run_with_items(
+            parent_job_id="parent_null",
+            plugin_id="dcp",
+            parent_command="parent_cmd",
+            child_command="child_cmd",
+            param_sets=[{"x": 1}],
+            max_concurrency=5,
+            cooldown_seconds=0,
+            consecutive_failure_threshold=5,
+        )
+
+        result = store.claim_next_pending_fanout_item("parent_null", "sched_a")
+        assert result is not None
+
+    def test_retry_fanout_item_resets_to_pending(self):
+        """retry_fanout_item should reset item to pending with incremented retry_count."""
+        store = _make_real_store("fanout_retry_item")
+        store.create_fanout_run_with_items(
+            parent_job_id="parent_retry",
+            plugin_id="dcp",
+            parent_command="parent_cmd",
+            child_command="child_cmd",
+            param_sets=[{"x": 1}],
+            max_concurrency=5,
+            cooldown_seconds=0,
+            consecutive_failure_threshold=5,
+        )
+
+        # Claim and mark as submitted
+        item = store.claim_next_pending_fanout_item("parent_retry", "sched_a")
+        assert item is not None
+        store.update_fanout_item_submitted(item["id"], child_job_id="child_001")
+
+        # Retry the item
+        store.retry_fanout_item(item["id"], error="session_expired", delay_seconds=3)
+
+        # Verify the item is back to pending with retry_count=1
+        with store.connect() as conn:
+            row = conn.execute("SELECT status, retry_count, child_job_id, next_attempt_at FROM fanout_items WHERE id = ?",
+                               (item["id"],)).fetchone()
+
+        assert row["status"] == "pending"
+        assert row["retry_count"] == 1
+        assert row["child_job_id"] is None
+        assert row["next_attempt_at"] is not None
+
+    def test_max_concurrency_capacity_not_weakened(self):
+        """max_concurrency=5 should allow 5 concurrent child jobs."""
+        store = MagicMock()
+        run = {
+            "parent_job_id": "ing_capacity_test",
+            "child_command": "refresh_daily_meetings_by_range",
+            "max_concurrency": 5,
+            "cooldown_seconds": 0,
+            "consecutive_failure_threshold": 5,
+            "circuit_opened": 0,
+            "last_submit_at": None,
+            "total": 10,
+        }
+
+        store.claim_fanout_run.return_value = True
+        store.reset_stale_submitting_items.return_value = 0
+        store.list_submitted_fanout_items.return_value = []
+        # 0 submitted, 0 submitting → capacity = 5 - 0 - 0 = 5
+        store.get_fanout_stats.return_value = {"pending": 10, "submitting": 0, "submitted": 0, "succeeded": 0, "failed": 0, "skipped": 0}
+        store.get_consecutive_failures.return_value = 0
+        # Return the same run dict each time so capacity calculation works
+        store.get_fanout_run.return_value = run
+        # Simulate 5 claims then None
+        claim_items = [{"id": i, "params_json": "{}", "parent_job_id": "ing_capacity_test"} for i in range(5)]
+        store.claim_next_pending_fanout_item.side_effect = claim_items + [None]
+
+        _advance_fanout_run(
+            store, {}, [], run,
+            callback_base_url="http://localhost:8000",
+            callback_headers=None,
+            scheduler_id="test-scheduler",
+        )
+
+        # Should have claimed at least 5 items (capacity=5)
+        assert store.claim_next_pending_fanout_item.call_count >= 5
+
+
+# ---------------------------------------------------------------------------
+# dcp_project_line_section naming
+# ---------------------------------------------------------------------------
+
+class TestLineSectionNaming:
+    def test_source_table_is_dcp_project_line_section(self):
+        """plugin.yaml normalizer source_table should be dcp_project_line_section."""
+        import yaml
+        from pathlib import Path
+        plugin_path = Path(__file__).resolve().parents[2] / "plugins" / "dcp" / "plugin.yaml"
+        with open(plugin_path) as f:
+            plugin = yaml.safe_load(f)
+        normalizers = plugin.get("normalizers", [])
+        line_section_norm = [n for n in normalizers if "line_section" in n.get("handler", "")]
+        assert len(line_section_norm) == 1
+        assert line_section_norm[0]["source_table"] == "dcp_project_line_section"
+
+    def test_business_table_is_dcp_project_line_sections(self):
+        """tables.yaml should have dcp_project_line_sections (plural) as business table."""
+        import yaml
+        from pathlib import Path
+        tables_path = Path(__file__).resolve().parents[2] / "plugins" / "dcp" / "tables.yaml"
+        with open(tables_path) as f:
+            tables = yaml.safe_load(f)
+        table_names = list(tables.get("tables", {}).keys())
+        assert "dcp_project_line_sections" in table_names
+        # dcp_line_section should NOT be a business table
+        assert "dcp_line_section" not in table_names
+
+    def test_normalizer_outputs_correct_table_names(self):
+        """normalize_line_section should output dcp_project_line_branches and dcp_project_line_sections."""
+        from plugins.dcp.normalizers import normalize_line_section
+        rows = [{
+            "biddingSectionCode": "B001",
+            "sectionId": "S001",
+            "sectionName": "Test Section",
+            "sectionVo": {
+                "towerNoList": ["T1"],
+                "spanList": ["SP1"],
+                "sectionDTOList": [{
+                    "id": "DTO001",
+                    "biddingSectionCode": "B001",
+                    "sectionNo": "1",
+                    "sectionName": "Sub Section",
+                }],
+            },
+        }]
+        result = normalize_line_section("dcp_project_line_section", {"biddingSectionCode": "B001"}, rows)
+        table_names = [r["table_name"] for r in result]
+        assert "dcp_project_line_branches" in table_names
+        assert "dcp_project_line_sections" in table_names
+        # Should NOT produce dcp_line_section or dcp_project_line_section as output
+        assert "dcp_line_section" not in table_names
+        assert "dcp_project_line_section" not in table_names

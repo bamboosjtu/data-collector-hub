@@ -73,7 +73,7 @@ commands:
     trigger:
       type: plugin_handler
       handler: dcp.fan_out:refresh_towers_for_current_plan_projects
-    max_concurrency: 3
+    max_concurrency: 5
     max_concurrency_limit: 5
     cooldown_seconds: 3
 
@@ -84,7 +84,7 @@ commands:
     trigger:
       type: plugin_handler
       handler: dcp.fan_out:refresh_substations_for_current_plan_projects
-    max_concurrency: 3
+    max_concurrency: 5
     max_concurrency_limit: 5
     cooldown_seconds: 3
 
@@ -95,7 +95,7 @@ commands:
     trigger:
       type: plugin_handler
       handler: dcp.fan_out:refresh_line_sections_for_current_plan_projects
-    max_concurrency: 3
+    max_concurrency: 5
     max_concurrency_limit: 5
     cooldown_seconds: 3
 
@@ -147,7 +147,7 @@ normalizers:
     targets: [dcp_plan_dept_key_personnel]
     handler: dcp.normalizers:normalize_plan_dept_key_personnel
 
-  - source_table: dcp_line_section
+  - source_table: dcp_project_line_section
     targets: [dcp_project_line_branches, dcp_project_line_sections]
     handler: dcp.normalizers:normalize_line_section
 

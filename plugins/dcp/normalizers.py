@@ -157,7 +157,7 @@ def normalize_line_section(
     scope_values: dict[str, Any],
     rows: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Expand dcp_line_section two-layer structure into dcp_project_line_branches and dcp_project_line_sections.
+    """Expand dcp_project_line_section two-layer structure into dcp_project_line_branches and dcp_project_line_sections.
 
     Outer layer (branch): sectionId, sectionName, sectionVo
     Inner layer (sections): sectionVo.sectionDTOList

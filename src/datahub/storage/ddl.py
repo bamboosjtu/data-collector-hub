@@ -17,6 +17,15 @@ INGEST_META_COLUMNS = {
 }
 
 
+def _migrate_fanout_items_columns(conn: sqlite3.Connection) -> None:
+    """Add retry_count and next_attempt_at columns to fanout_items if missing."""
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(fanout_items)").fetchall()}
+    if "retry_count" not in existing:
+        conn.execute("ALTER TABLE fanout_items ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0")
+    if "next_attempt_at" not in existing:
+        conn.execute("ALTER TABLE fanout_items ADD COLUMN next_attempt_at TEXT")
+
+
 def create_metadata_tables(conn: sqlite3.Connection) -> None:
     conn.executescript(
         """
@@ -126,6 +135,8 @@ def create_metadata_tables(conn: sqlite3.Connection) -> None:
           error TEXT,
           claimed_by TEXT,
           claimed_at TEXT,
+          retry_count INTEGER NOT NULL DEFAULT 0,
+          next_attempt_at TEXT,
           created_at TEXT NOT NULL,
           updated_at TEXT NOT NULL,
           UNIQUE(parent_job_id, item_index),
@@ -139,6 +150,10 @@ def create_metadata_tables(conn: sqlite3.Connection) -> None:
           ON fanout_items(child_job_id);
         """
     )
+
+    # Safe migration: add retry_count and next_attempt_at to fanout_items
+    # if they don't exist (for existing databases).
+    _migrate_fanout_items_columns(conn)
 
 
 def create_business_table(conn: sqlite3.Connection, table: TableSpec) -> None:
