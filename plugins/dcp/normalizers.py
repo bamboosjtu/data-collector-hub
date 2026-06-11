@@ -14,7 +14,7 @@ _SKIP_FIELDS = {"extra", "traceId", "children", "singleList", "raw", "recordKey"
 # API wrapper fields that must not appear in substation output or extra
 _SUBSTATION_WRAPPER_FIELDS = {"code", "message", "success", "traceId", "data", "extra"}
 
-# Business fields for dcp_substation output
+# Business fields for dcp_project_substation output
 _SUBSTATION_BUSINESS_FIELDS = {"id", "prjCode", "longitude", "latitude", "longitudeLook", "latitudeLook"}
 
 # Fields specific to each progress type level
@@ -43,7 +43,7 @@ def normalize_plan_sgcc_year(
     scope_values: dict[str, Any],
     rows: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Expand dcp_plan_sgcc_year raw rows into dcp_plan_projects and dcp_plan_single_projects."""
+    """Expand dcp_plan_sgcc_year raw rows into dcp_plan_year_project and dcp_plan_year_single_project."""
     project_rows: list[dict[str, Any]] = []
     single_project_rows: list[dict[str, Any]] = []
 
@@ -67,8 +67,8 @@ def normalize_plan_sgcc_year(
             single_project_rows.append(sp)
 
     return [
-        {"table_name": "dcp_plan_projects", "scope_values": scope_values, "rows": project_rows},
-        {"table_name": "dcp_plan_single_projects", "scope_values": scope_values, "rows": single_project_rows},
+        {"table_name": "dcp_plan_year_project", "scope_values": scope_values, "rows": project_rows},
+        {"table_name": "dcp_plan_year_single_project", "scope_values": scope_values, "rows": single_project_rows},
     ]
 
 
@@ -117,7 +117,7 @@ def normalize_plan_progress(
     return [
         {"table_name": "dcp_plan_project_progress", "scope_values": scope_values, "rows": project_progress},
         {"table_name": "dcp_plan_single_project_progress", "scope_values": scope_values, "rows": single_project_progress},
-        {"table_name": "dcp_plan_bidding_section_progress", "scope_values": scope_values, "rows": bidding_section_progress},
+        {"table_name": "dcp_plan_bidsection_progress", "scope_values": scope_values, "rows": bidding_section_progress},
     ]
 
 
@@ -142,7 +142,7 @@ def normalize_plan_dept_key_personnel(
     ]
 
 
-# Fields allowed in dcp_line_sections (from sectionDTOList)
+# Fields allowed in dcp_project_line_sections (from sectionDTOList)
 _SECTION_DTO_FIELDS = {
     "id", "biddingSectionCode", "sectionNo", "sectionName",
     "startNo", "terminalNo", "sectionLength", "towerTotalNumber",
@@ -157,7 +157,7 @@ def normalize_line_section(
     scope_values: dict[str, Any],
     rows: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Expand dcp_line_section two-layer structure into dcp_line_branches and dcp_line_sections.
+    """Expand dcp_line_section two-layer structure into dcp_project_line_branches and dcp_project_line_sections.
 
     Outer layer (branch): sectionId, sectionName, sectionVo
     Inner layer (sections): sectionVo.sectionDTOList
@@ -193,8 +193,8 @@ def normalize_line_section(
             section_rows.append(section_row)
 
     return [
-        {"table_name": "dcp_line_branches", "scope_values": scope_values, "rows": branch_rows},
-        {"table_name": "dcp_line_sections", "scope_values": scope_values, "rows": section_rows},
+        {"table_name": "dcp_project_line_branches", "scope_values": scope_values, "rows": branch_rows},
+        {"table_name": "dcp_project_line_sections", "scope_values": scope_values, "rows": section_rows},
     ]
 
 
@@ -203,7 +203,7 @@ def normalize_substation(
     scope_values: dict[str, Any],
     rows: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Filter and clean dcp_substation rows.
+    """Filter and clean dcp_project_substation rows.
 
     Removes API wrapper-only rows (data=null) and strips wrapper fields.
     Only outputs rows with at least one non-null business field.
@@ -243,14 +243,14 @@ def normalize_substation(
         output_rows.append(out)
 
     return [
-        {"table_name": "dcp_substation", "scope_values": scope_values, "rows": output_rows},
+        {"table_name": "dcp_project_substation", "scope_values": scope_values, "rows": output_rows},
     ]
 
 
 # API wrapper fields that must not appear in daily meeting output or extra
 _DAILY_MEETING_WRAPPER_FIELDS = {"code", "message", "success", "traceId", "data", "extra"}
 
-# Business fields for dcp_daily_meeting / dcp_daily_meeting_snapshot output
+# Business fields for dcp_safe_daily_meeting / dcp_safe_daily_meeting_snapshot output
 # Must match tables.yaml column declarations (excluding date, id, extra)
 _DAILY_MEETING_FIELDS = [
     "prjName", "prjCode", "ticketId", "ticketNo", "ticketName",
@@ -276,7 +276,7 @@ def normalize_daily_meeting(
     scope_values: dict[str, Any],
     rows: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Normalize dcp_daily_meeting / dcp_daily_meeting_snapshot rows.
+    """Normalize dcp_safe_daily_meeting / dcp_safe_daily_meeting_snapshot rows.
 
     Extracts declared business fields from row top-level keys.
     Strips API wrapper fields. Outputs same table_name (no cross-table expansion).

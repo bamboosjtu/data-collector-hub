@@ -19,7 +19,7 @@ def api_get(base_url: str, api_key: str, path: str) -> dict:
 
 
 def get_table_counts(db_path: Path) -> dict:
-    tables = ["dcp_tower", "dcp_substation", "dcp_line_sections", "dcp_line_branches"]
+    tables = ["dcp_project_tower", "dcp_project_substation", "dcp_project_line_sections", "dcp_project_line_branches"]
     counts = {}
     with sqlite3.connect(db_path) as conn:
         c = conn.cursor()
@@ -27,12 +27,12 @@ def get_table_counts(db_path: Path) -> dict:
             c.execute(f'SELECT COUNT(*) FROM "{table}"')
             counts[table] = c.fetchone()[0]
         c.execute(
-            "SELECT COUNT(*) FROM dcp_substation "
+            "SELECT COUNT(*) FROM dcp_project_substation "
             "WHERE id IS NULL AND prjCode IS NULL "
             "AND longitude IS NULL AND latitude IS NULL "
             "AND longitudeLook IS NULL AND latitudeLook IS NULL"
         )
-        counts["dcp_substation_empty_shells"] = c.fetchone()[0]
+        counts["dcp_project_substation_empty_shells"] = c.fetchone()[0]
     return counts
 
 
@@ -108,9 +108,9 @@ def main() -> int:
 
     counts = get_table_counts(db_path)
     print("\nTable counts:", flush=True)
-    for table in ["dcp_tower", "dcp_substation", "dcp_line_sections", "dcp_line_branches"]:
+    for table in ["dcp_project_tower", "dcp_project_substation", "dcp_project_line_sections", "dcp_project_line_branches"]:
         print(f"  {table}: {counts.get(table, '?')}", flush=True)
-    print(f"  dcp_substation empty_shells: {counts.get('dcp_substation_empty_shells', '?')}", flush=True)
+    print(f"  dcp_project_substation empty_shells: {counts.get('dcp_project_substation_empty_shells', '?')}", flush=True)
     return 0
 
 

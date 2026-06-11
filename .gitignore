@@ -5,6 +5,7 @@ __pycache__/
 
 *.zip
 data/
+analysis/
 
 # C extensions
 *.so

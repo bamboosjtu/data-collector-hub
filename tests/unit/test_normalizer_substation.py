@@ -1,4 +1,4 @@
-"""Tests for dcp_substation normalizer."""
+"""Tests for dcp_project_substation normalizer."""
 import pytest
 
 from plugins.dcp.normalizers import normalize_substation
@@ -8,7 +8,7 @@ class TestNormalizeSubstation:
     """Test normalize_substation filters wrapper-only rows and strips wrapper fields."""
 
     def _call(self, rows):
-        return normalize_substation("dcp_substation", {"singleProjectCode": "P1"}, rows)
+        return normalize_substation("dcp_project_substation", {"singleProjectCode": "P1"}, rows)
 
     def test_normal_row_passes(self):
         """Normal substation row with all business fields passes through."""
@@ -17,7 +17,7 @@ class TestNormalizeSubstation:
                  "longitudeLook": "116.4001", "latitudeLook": "39.9001"}]
         result = self._call(rows)
         assert len(result) == 1
-        assert result[0]["table_name"] == "dcp_substation"
+        assert result[0]["table_name"] == "dcp_project_substation"
         assert len(result[0]["rows"]) == 1
         out = result[0]["rows"][0]
         assert out["singleProjectCode"] == "P1"
@@ -101,8 +101,8 @@ class TestNormalizeSubstation:
         assert "P2" not in codes
 
     def test_no_recursion_same_source_target(self):
-        """Normalizer outputs dcp_substation as target — same name as source.
+        """Normalizer outputs dcp_project_substation as target — same name as source.
         The core _apply_normalizers does single-pass, so no recursion."""
         rows = [{"singleProjectCode": "P1", "id": "S1"}]
         result = self._call(rows)
-        assert result[0]["table_name"] == "dcp_substation"
+        assert result[0]["table_name"] == "dcp_project_substation"

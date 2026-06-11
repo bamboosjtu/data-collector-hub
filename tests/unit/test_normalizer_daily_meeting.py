@@ -16,9 +16,9 @@ class TestNormalizeDailyMeeting:
             leaderName="Zhang San", workSiteName="Site A",
             voltageLevel="500kV", provinceCode="43",
         )
-        result = normalize_daily_meeting("dcp_daily_meeting", {}, [row])
+        result = normalize_daily_meeting("dcp_safe_daily_meeting", {}, [row])
         assert len(result) == 1
-        assert result[0]["table_name"] == "dcp_daily_meeting"
+        assert result[0]["table_name"] == "dcp_safe_daily_meeting"
         assert len(result[0]["rows"]) == 1
         out = result[0]["rows"][0]
         assert out["date"] == "2026-06-07"
@@ -34,7 +34,7 @@ class TestNormalizeDailyMeeting:
             traceId="trace-123", data=None,
             prjName="Test",
         )
-        result = normalize_daily_meeting("dcp_daily_meeting", {}, [row])
+        result = normalize_daily_meeting("dcp_safe_daily_meeting", {}, [row])
         out = result[0]["rows"][0]
         assert "code" not in out
         assert "message" not in out
@@ -45,29 +45,29 @@ class TestNormalizeDailyMeeting:
 
     def test_date_from_scope_values(self):
         row = _make_row(id="abc123", prjName="Test")
-        result = normalize_daily_meeting("dcp_daily_meeting", {"date": "2026-06-07"}, [row])
+        result = normalize_daily_meeting("dcp_safe_daily_meeting", {"date": "2026-06-07"}, [row])
         out = result[0]["rows"][0]
         assert out["date"] == "2026-06-07"
 
     def test_missing_date_and_id_skipped(self):
         row = _make_row(prjName="Test", biddingSectionCode="B001")
-        result = normalize_daily_meeting("dcp_daily_meeting", {}, [row])
+        result = normalize_daily_meeting("dcp_safe_daily_meeting", {}, [row])
         assert len(result[0]["rows"]) == 0
 
     def test_missing_id_skipped(self):
         row = _make_row(date="2026-06-07", prjName="Test")
-        result = normalize_daily_meeting("dcp_daily_meeting", {}, [row])
+        result = normalize_daily_meeting("dcp_safe_daily_meeting", {}, [row])
         assert len(result[0]["rows"]) == 0
 
     def test_missing_date_skipped(self):
         row = _make_row(id="abc123", prjName="Test")
-        result = normalize_daily_meeting("dcp_daily_meeting", {}, [row])
+        result = normalize_daily_meeting("dcp_safe_daily_meeting", {}, [row])
         assert len(result[0]["rows"]) == 0
 
     def test_snapshot_table_name_preserved(self):
         row = _make_row(date="2026-06-07", id="abc123", prjName="Test")
-        result = normalize_daily_meeting("dcp_daily_meeting_snapshot", {}, [row])
-        assert result[0]["table_name"] == "dcp_daily_meeting_snapshot"
+        result = normalize_daily_meeting("dcp_safe_daily_meeting_snapshot", {}, [row])
+        assert result[0]["table_name"] == "dcp_safe_daily_meeting_snapshot"
 
     def test_integer_fields_preserved(self):
         row = _make_row(
@@ -76,7 +76,7 @@ class TestNormalizeDailyMeeting:
             constructionHeadcount=20,
             cameraNum=3,
         )
-        result = normalize_daily_meeting("dcp_daily_meeting", {}, [row])
+        result = normalize_daily_meeting("dcp_safe_daily_meeting", {}, [row])
         out = result[0]["rows"][0]
         assert out["currentConstrHeadcount"] == 10
         assert out["constructionHeadcount"] == 20
@@ -87,7 +87,7 @@ class TestNormalizeDailyMeeting:
             date="2026-06-07", id="abc123",
             dailyMeetingFileList=[{"name": "file1.pdf"}],
         )
-        result = normalize_daily_meeting("dcp_daily_meeting", {}, [row])
+        result = normalize_daily_meeting("dcp_safe_daily_meeting", {}, [row])
         out = result[0]["rows"][0]
         assert out["dailyMeetingFileList"] == [{"name": "file1.pdf"}]
 
@@ -97,7 +97,7 @@ class TestNormalizeDailyMeeting:
             _make_row(date="2026-06-07", prjName="B"),  # missing id
             _make_row(date="2026-06-07", id="3", prjName="C", code=200, message="ok"),
         ]
-        result = normalize_daily_meeting("dcp_daily_meeting", {}, rows)
+        result = normalize_daily_meeting("dcp_safe_daily_meeting", {}, rows)
         output_rows = result[0]["rows"]
         assert len(output_rows) == 2
         assert output_rows[0]["prjName"] == "A"
@@ -107,8 +107,8 @@ class TestNormalizeDailyMeeting:
     def test_no_recursion_same_source_target(self):
         """Same source_table -> target should not cause recursion."""
         row = _make_row(date="2026-06-07", id="abc123", prjName="Test")
-        result = normalize_daily_meeting("dcp_daily_meeting", {}, [row])
-        assert result[0]["table_name"] == "dcp_daily_meeting"
+        result = normalize_daily_meeting("dcp_safe_daily_meeting", {}, [row])
+        assert result[0]["table_name"] == "dcp_safe_daily_meeting"
         assert len(result[0]["rows"]) == 1
 
     def test_undeclared_fields_not_in_output(self):
@@ -119,7 +119,7 @@ class TestNormalizeDailyMeeting:
             someRandomField="should not appear",
             anotherUnknownField=42,
         )
-        result = normalize_daily_meeting("dcp_daily_meeting", {}, [row])
+        result = normalize_daily_meeting("dcp_safe_daily_meeting", {}, [row])
         out = result[0]["rows"][0]
         assert "someRandomField" not in out
         assert "anotherUnknownField" not in out

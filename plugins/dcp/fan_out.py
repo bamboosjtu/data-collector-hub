@@ -140,7 +140,7 @@ def _resolve_failure_threshold(params, default: int = 5) -> int:
 # ---------------------------------------------------------------------------
 
 def refresh_towers_for_current_plan_projects(ctx: dict[str, Any]) -> dict[str, Any]:
-    """Fan-out: query dcp_plan_projects for current year, trigger tower refresh per projectCode."""
+    """Fan-out: query dcp_plan_year_project for current year, trigger tower refresh per projectCode."""
     return _project_fan_out(
         ctx=ctx,
         child_command="refresh_towers_for_project",
@@ -149,7 +149,7 @@ def refresh_towers_for_current_plan_projects(ctx: dict[str, Any]) -> dict[str, A
 
 
 def refresh_substations_for_current_plan_projects(ctx: dict[str, Any]) -> dict[str, Any]:
-    """Fan-out: query dcp_plan_projects for current year, trigger substation refresh per projectCode."""
+    """Fan-out: query dcp_plan_year_project for current year, trigger substation refresh per projectCode."""
     return _project_fan_out(
         ctx=ctx,
         child_command="refresh_substations_for_project",
@@ -158,7 +158,7 @@ def refresh_substations_for_current_plan_projects(ctx: dict[str, Any]) -> dict[s
 
 
 def refresh_line_sections_for_current_plan_projects(ctx: dict[str, Any]) -> dict[str, Any]:
-    """Fan-out: query dcp_plan_projects for current year, trigger line section refresh per projectCode."""
+    """Fan-out: query dcp_plan_year_project for current year, trigger line section refresh per projectCode."""
     return _project_fan_out(
         ctx=ctx,
         child_command="refresh_line_sections_for_project",
@@ -172,7 +172,7 @@ def _project_fan_out(
     child_command: str,
     params_mapping: dict[str, str],
 ) -> dict[str, Any]:
-    """Generic project fan-out: query dcp_plan_projects for current year, create fanout_run.
+    """Generic project fan-out: query dcp_plan_year_project for current year, create fanout_run.
 
     Handler returns immediately — scheduler tick advances execution.
     """
@@ -207,11 +207,11 @@ def _project_fan_out(
             store.mark_job(parent_job_id, status="failed", error=error_msg)
             return {"total": 0, "succeeded": 0, "failed": 0, "error": error_msg}
 
-    # 1. Query dcp_plan_projects for current year
+    # 1. Query dcp_plan_year_project for current year
     current_year = datahub_current_year()
-    rows = store.query_table("dcp_plan_projects", {"year": current_year}, limit=10000)
+    rows = store.query_table("dcp_plan_year_project", {"year": current_year}, limit=10000)
     if not rows:
-        logger.warning("project fan-out %s: no rows in dcp_plan_projects for year=%s", child_command, current_year)
+        logger.warning("project fan-out %s: no rows in dcp_plan_year_project for year=%s", child_command, current_year)
         store.mark_job(parent_job_id, status="succeeded", result={"total": 0, "succeeded": 0, "failed": 0})
         return {"total": 0, "succeeded": 0, "failed": 0}
 

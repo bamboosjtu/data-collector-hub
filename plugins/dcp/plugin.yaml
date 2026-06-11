@@ -136,11 +136,11 @@ commands:
 
 normalizers:
   - source_table: dcp_plan_sgcc_year
-    targets: [dcp_plan_projects, dcp_plan_single_projects]
+    targets: [dcp_plan_year_project, dcp_plan_year_single_project]
     handler: dcp.normalizers:normalize_plan_sgcc_year
 
   - source_table: dcp_plan_progress
-    targets: [dcp_plan_project_progress, dcp_plan_single_project_progress, dcp_plan_bidding_section_progress]
+    targets: [dcp_plan_project_progress, dcp_plan_single_project_progress, dcp_plan_bidsection_progress]
     handler: dcp.normalizers:normalize_plan_progress
 
   - source_table: dcp_plan_dept_key_personnel
@@ -148,19 +148,19 @@ normalizers:
     handler: dcp.normalizers:normalize_plan_dept_key_personnel
 
   - source_table: dcp_line_section
-    targets: [dcp_line_branches, dcp_line_sections]
+    targets: [dcp_project_line_branches, dcp_project_line_sections]
     handler: dcp.normalizers:normalize_line_section
 
-  - source_table: dcp_substation
-    targets: [dcp_substation]
+  - source_table: dcp_project_substation
+    targets: [dcp_project_substation]
     handler: dcp.normalizers:normalize_substation
 
-  - source_table: dcp_daily_meeting
-    targets: [dcp_daily_meeting]
+  - source_table: dcp_safe_daily_meeting
+    targets: [dcp_safe_daily_meeting]
     handler: dcp.normalizers:normalize_daily_meeting
 
-  - source_table: dcp_daily_meeting_snapshot
-    targets: [dcp_daily_meeting_snapshot]
+  - source_table: dcp_safe_daily_meeting_snapshot
+    targets: [dcp_safe_daily_meeting_snapshot]
     handler: dcp.normalizers:normalize_daily_meeting
 
 scope_mappings: []
@@ -168,7 +168,7 @@ scope_mappings: []
 query_routes:
   # 计划域 - 年度计划
   - path: /api/v1/plan/projects
-    table: dcp_plan_projects
+    table: dcp_plan_year_project
     query_filters:
       year: year
       prjCode: prjCode
@@ -176,7 +176,7 @@ query_routes:
     max_limit: 1000
 
   - path: /api/v1/plan/single-projects
-    table: dcp_plan_single_projects
+    table: dcp_plan_year_single_project
     query_filters:
       year: year
       prjCode: prjCode
@@ -202,7 +202,7 @@ query_routes:
     max_limit: 1000
 
   - path: /api/v1/plan/bidding-section-progress
-    table: dcp_plan_bidding_section_progress
+    table: dcp_plan_bidsection_progress
     query_filters:
       prjCode: prjCode
       biddingSectionCode: biddingSectionCode
@@ -220,28 +220,28 @@ query_routes:
 
   # 项目域
   - path: /api/v1/project/towers
-    table: dcp_tower
+    table: dcp_project_tower
     query_filters:
       singleProjectCode: singleProjectCode
     default_limit: 200
     max_limit: 1000
 
   - path: /api/v1/project/substations
-    table: dcp_substation
+    table: dcp_project_substation
     query_filters:
       singleProjectCode: singleProjectCode
     default_limit: 200
     max_limit: 1000
 
   - path: /api/v1/project/line-branches
-    table: dcp_line_branches
+    table: dcp_project_line_branches
     query_filters:
       biddingSectionCode: biddingSectionCode
     default_limit: 200
     max_limit: 1000
 
   - path: /api/v1/project/line-sections
-    table: dcp_line_sections
+    table: dcp_project_line_sections
     query_filters:
       biddingSectionCode: biddingSectionCode
       branchId: branchId
@@ -250,7 +250,7 @@ query_routes:
 
   # 安全域
   - path: /api/v1/safety/daily-meetings
-    table: dcp_daily_meeting
+    table: dcp_safe_daily_meeting
     query_filters:
       date: date
       prjName: prjName
@@ -266,7 +266,7 @@ query_routes:
     max_limit: 1000
 
   - path: /api/v1/safety/daily-meeting-snapshot
-    table: dcp_daily_meeting_snapshot
+    table: dcp_safe_daily_meeting_snapshot
     query_filters:
       date: date
       prjName: prjName

@@ -37,6 +37,6 @@
 ## 存储
 
 - 所有业务表采用 response-aligned storage：每个 API 响应对应一张独立表，字段展开为独立列。
-- 不使用 `raw` JSON 字段存储业务数据；未注册的溢出字段可存入 `extra`（json 类型）。
+- 不使用 `raw` JSON 字段存储业务数据；未注册的溢出字段可存入 `unknown_fields`（json 类型）。
 - 写入模式由插件 `tables.yaml` 声明：`upsert`、`replace_scope`、`append`。
 - scope 映射由插件 `plugin.yaml` 的 `scope_mappings` 声明，核心代码不硬编码。

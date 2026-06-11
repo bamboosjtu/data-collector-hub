@@ -8,7 +8,7 @@ tables:
   # normalizer 在 validate 前消费 source，产出 target tables 进入 validate + write。
   # ============================================================
 
-  dcp_plan_projects:
+  dcp_plan_year_project:
     dataset_key: plan_sgcc_year
     description: DCP plan yearPlanView project-level records, extracted by normalizer.
     write_mode: upsert
@@ -101,8 +101,9 @@ tables:
       updaterId: {type: string, nullable: true}
       voltageLevel: {type: string, nullable: true}
       voltageLevelName: {type: string, nullable: true}
+      unknown_fields: {type: json, nullable: true}
 
-  dcp_plan_single_projects:
+  dcp_plan_year_single_project:
     dataset_key: plan_sgcc_year
     description: DCP single projects extracted from yearPlanView singleList by normalizer.
     write_mode: upsert
@@ -181,6 +182,7 @@ tables:
       updaterId: {type: string, nullable: true}
       voltageLevel: {type: string, nullable: true}
       voltageLevelName: {type: string, nullable: true}
+      unknown_fields: {type: json, nullable: true}
 
   # ============================================================
   # Normalizer 产出表 - 项目进度域（三层展开）
@@ -226,6 +228,7 @@ tables:
       warningFlag: {type: integer, nullable: true}
       weeklyIncrease: {type: number, nullable: true}
       weight: {type: integer, nullable: true}
+      unknown_fields: {type: json, nullable: true}
 
   dcp_plan_single_project_progress:
     dataset_key: plan_progress
@@ -269,8 +272,9 @@ tables:
       warningFlag: {type: integer, nullable: true}
       weeklyIncrease: {type: number, nullable: true}
       weight: {type: integer, nullable: true}
+      unknown_fields: {type: json, nullable: true}
 
-  dcp_plan_bidding_section_progress:
+  dcp_plan_bidsection_progress:
     dataset_key: plan_progress
     description: DCP plan bidding-section-level progress (type=3), extracted by normalizer.
     write_mode: replace_scope
@@ -314,6 +318,7 @@ tables:
       warningFlag: {type: integer, nullable: true}
       weeklyIncrease: {type: number, nullable: true}
       weight: {type: integer, nullable: true}
+      unknown_fields: {type: json, nullable: true}
 
   # ============================================================
   # Normalizer 产出表 - 关键人员域（字段化）
@@ -335,12 +340,13 @@ tables:
       unitName: {type: string, nullable: true}
       positionName: {type: string, nullable: true}
       personnelCertificates: {type: json, nullable: true}
+      unknown_fields: {type: json, nullable: true}
 
   # ============================================================
   # 直入库表 - 项目域字段展开表
   # ============================================================
 
-  dcp_tower:
+  dcp_project_tower:
     dataset_key: tower
     description: DCP tower details by single project from project.towerDetails API.
     write_mode: upsert
@@ -477,9 +483,9 @@ tables:
       zlZcztWzcc: {type: string, nullable: true}
       zwgsNum: {type: string, nullable: true}
       rzlswdNum: {type: string, nullable: true}
-      extra: {type: json, nullable: true}
+      unknown_fields: {type: json, nullable: true}
 
-  dcp_substation:
+  dcp_project_substation:
     dataset_key: substation
     description: DCP substation coordinates detail by single project.
     write_mode: upsert
@@ -493,9 +499,9 @@ tables:
       latitude: {type: string, nullable: true}
       longitudeLook: {type: string, nullable: true}
       latitudeLook: {type: string, nullable: true}
-      extra: {type: json, nullable: true}
+      unknown_fields: {type: json, nullable: true}
 
-  dcp_line_branches:
+  dcp_project_line_branches:
     dataset_key: line_section
     description: DCP line branches (outer layer of sectionDetails). Each row is one branch containing tower list, span list, and child sections.
     write_mode: upsert
@@ -507,8 +513,9 @@ tables:
       branchName: {type: string, nullable: true}
       towerNoList: {type: json, nullable: true}
       spanList: {type: json, nullable: true}
+      unknown_fields: {type: json, nullable: true}
 
-  dcp_line_sections:
+  dcp_project_line_sections:
     dataset_key: line_section
     description: DCP line sections (inner layer from sectionVo.sectionDTOList). Each row is one section within a branch.
     write_mode: upsert
@@ -533,12 +540,13 @@ tables:
       startDistance: {type: string, nullable: true}
       endAdjustType: {type: string, nullable: true}
       endDistance: {type: string, nullable: true}
+      unknown_fields: {type: json, nullable: true}
 
   # ============================================================
   # 安全域 - 站班会
   # ============================================================
 
-  dcp_daily_meeting:
+  dcp_safe_daily_meeting:
     dataset_key: daily_meeting
     description: DCP safety daily meeting records for a date range.
     write_mode: upsert
@@ -587,9 +595,9 @@ tables:
       abnormalRiskCause: {type: string, nullable: true}
       subcontractUnitName: {type: string, nullable: true}
       dailyMeetingFileList: {type: json, nullable: true}
-      extra: {type: json, nullable: true}
+      unknown_fields: {type: json, nullable: true}
 
-  dcp_daily_meeting_snapshot:
+  dcp_safe_daily_meeting_snapshot:
     dataset_key: daily_meeting_snapshot
     description: DCP safety daily meeting snapshot for today.
     write_mode: upsert
@@ -638,4 +646,4 @@ tables:
       abnormalRiskCause: {type: string, nullable: true}
       subcontractUnitName: {type: string, nullable: true}
       dailyMeetingFileList: {type: json, nullable: true}
-      extra: {type: json, nullable: true}
+      unknown_fields: {type: json, nullable: true}

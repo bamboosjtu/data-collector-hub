@@ -299,10 +299,10 @@ class TestExtraFieldRules:
         assert result["extra"] is None
 
 
-# --- dcp_substation schema tests ---
+# --- dcp_project_substation schema tests ---
 
 class TestSubstationSchema:
-    """Tests for dcp_substation: id nullable, singleProjectCode as sole primary key."""
+    """Tests for dcp_project_substation: id nullable, singleProjectCode as sole primary key."""
 
     @staticmethod
     def _make_substation_table() -> TableSpec:
@@ -317,7 +317,7 @@ class TestSubstationSchema:
             "extra": ColumnSpec(name="extra", type="json", nullable=True),
         }
         return TableSpec(
-            table_name="dcp_substation",
+            table_name="dcp_project_substation",
             dataset_key="substation",
             description="test substation",
             write_mode="upsert",

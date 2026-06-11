@@ -8,12 +8,12 @@ from pathlib import Path
 DEFAULT_DB = Path(__file__).resolve().parents[2] / "data" / "datahub_mvp.db"
 
 biz_tables = [
-    'dcp_plan_projects', 'dcp_plan_single_projects',
+    'dcp_plan_year_project', 'dcp_plan_year_single_project',
     'dcp_plan_project_progress', 'dcp_plan_single_project_progress',
-    'dcp_plan_bidding_section_progress',
+    'dcp_plan_bidsection_progress',
     'dcp_plan_dept_key_personnel',
-    'dcp_tower', 'dcp_substation', 'dcp_line_sections', 'dcp_line_branches',
-    'dcp_daily_meeting', 'dcp_daily_meeting_snapshot',
+    'dcp_project_tower', 'dcp_project_substation', 'dcp_project_line_sections', 'dcp_project_line_branches',
+    'dcp_safe_daily_meeting', 'dcp_safe_daily_meeting_snapshot',
 ]
 
 
