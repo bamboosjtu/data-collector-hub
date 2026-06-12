@@ -9,9 +9,10 @@ DataCollectorHub 是独立 DataHub 服务。通过插件声明 schema、trigger 
 DCP MVP 已封板 (2026-06-09)。当前能力：
 
 - 基础域：年度计划、项目进度、关键人员 — 全量通过
-- 项目域：杆塔、变电站、架线区段 fan-out — 全量通过
+- 项目域：杆塔、变电站、架线区段 fan-out（max_concurrency=5）— 全量通过
 - 安全域：站班会 365 天回补 — 127,092 行，0 数据质量问题
 - Fan-out 熔断器：date 和 project fan-out 均已验证
+- Fan-out transient retry：session_expired / timeout 等可恢复错误自动重试（最多 2 次），不计入 consecutive failures
 - SQLite 稳定性：WAL + busy_timeout，connection-per-operation
 
 详见 [docs/devlog/dcp-mvp-final-acceptance.md](docs/devlog/dcp-mvp-final-acceptance.md)。
@@ -88,7 +89,7 @@ curl -X POST http://localhost:8000/ingestion/v1/jobs ^
 src/datahub/
   app.py                  # FastAPI app factory
   settings.py             # environment-backed settings
-  core/                   # plugin loading, registry, trigger runtime, time_utils
+  core/                   # plugin loading, registry, trigger runtime, fanout scheduler, time_utils
   ingestion/              # TableBatch v1 models, validation, idempotency, service
   storage/                # SQLite DDL, metadata tables, write modes
   api/                    # health, metadata, ingestion, admin, dynamic query routes
@@ -98,7 +99,7 @@ plugins/
     plugin.yaml           # external collector connector, commands, query routes
     tables.yaml           # 12 DCP business table schemas
     normalizers.py        # 6 normalizers (plan_sgcc_year, plan_progress, plan_dept_key_personnel, line_section, substation, daily_meeting)
-    fan_out.py            # project/date fan-out handlers with circuit breaker
+    fan_out.py            # project/date fan-out handlers with circuit breaker and transient retry
 
 scripts/
   dev/                    # 开发调试辅助
@@ -140,10 +141,10 @@ Dev 模式引导 API Key: `dev-admin-key` (scopes: admin, ingestion, query)
 
 - **8000 ops UI** (`/ops`) 是后续长期运维方向，当前功能有限
 - **command → service 抽象尚未开始**，当前 command 直接映射到 trigger
-- SQLite 单写者，fan-out 必须串行执行
-- DCP session/WAF 过期需手动重启 downloader-dcp
+- SQLite 单写者，fan-out 并发受 max_concurrency 控制
+- DCP session/WAF 过期后 fan-out transient retry 自动重试，超过重试上限后仍需手动处理
 - 部分表未配置 query route（返回 404）
-- 无自动重试机制，需通过 CLI 手动 retry
+- permanent failure 仍需通过 CLI 手动 retry
 
 ## Documentation
 
