@@ -9,8 +9,8 @@ DataCollectorHub 是独立 DataHub 服务。通过插件声明 schema、trigger 
 DCP MVP 已封板 (2026-06-09)。当前能力：
 
 - 基础域：年度计划、项目进度、关键人员 — 全量通过
-- 项目域：杆塔、变电站、架线区段 fan-out（max_concurrency=5）— 全量通过
-- 安全域：站班会 365 天回补 — 127,092 行，0 数据质量问题
+- 项目域：杆塔、变电站、架线区段 fan-out（max_concurrency=5）— partial（412~415/416），个案缺口追踪
+- 安全域：站班会 890 天回补 — 303,548 行，890/890 succeeded
 - Fan-out 熔断器：date 和 project fan-out 均已验证
 - Fan-out transient retry：session_expired / timeout 等可恢复错误自动重试（最多 2 次），不计入 consecutive failures
 - SQLite 稳定性：WAL + busy_timeout，connection-per-operation
@@ -148,6 +148,6 @@ Dev 模式引导 API Key: `dev-admin-key` (scopes: admin, ingestion, query)
 
 ## Documentation
 
-- [MVP_ARCHITECTURE.md](MVP_ARCHITECTURE.md) — 稳定架构设计
-- [docs/devlog/dcp-mvp-final-acceptance.md](docs/devlog/dcp-mvp-final-acceptance.md) — MVP 封板验收
-- [docs/runbooks/dcp-mvp-smoke-run.md](docs/runbooks/dcp-mvp-smoke-run.md) — Smoke 测试流程
+- [MVP_ARCHITECTURE.md](MVP_ARCHITECTURE.md) — 架构设计
+- [docs/devlog/dcp-mvp-final-acceptance.md](docs/devlog/dcp-mvp-final-acceptance.md) — 最终联调验收报告（三阶段结果、12 表入库数据、transient retry、circuit breaker）
+- [docs/runbooks/dcp-mvp-smoke-run.md](docs/runbooks/dcp-mvp-smoke-run.md) — 运行手册（三阶段执行顺序、验收 SQL、partial/failed 判断、失败子任务查询、replay 指引）

@@ -23,214 +23,422 @@ uv run python run.py
 
 ```powershell
 # 健康检查
-curl http://localhost:8000/health
-# 期望: {"status":"ok","schema_version":N}
+Invoke-RestMethod -Uri http://localhost:8000/health -Method Get
+# 期望: status=ok, schema_version=N
 
 # 元数据确认
-curl http://localhost:8000/metadata
-# 期望: 包含 plugins: [dcp], tables: [dcp_plan_projects, ...]
+Invoke-RestMethod -Uri http://localhost:8000/metadata -Method Get
+# 期望: 包含 plugins: [dcp], tables: [dcp_plan_year_project, ...]
 ```
 
 运维面板: `http://localhost:8000/ops`（长期运维方向，当前功能有限，首次访问需输入 API Key）
 
-## 2. 运行核心 Command
-
-以下示例使用 `$API_KEY` 代替实际 key。dev 模式下可使用自动创建的引导 key，或通过 `POST /admin/api-keys` 创建新 key。
+## 2. 启动 downloader-dcp
 
 ```powershell
-# 设置 API Key 变量（dev 模式引导 key，仅限本地开发）
-$API_KEY = "dev-admin-key"
+cd downloader-dcp
+uv run python -m downloader_dcp
+# 默认运行在 http://localhost:8010
 ```
 
-### 2.1 年度计划（当前）
-
-```powershell
-curl -X POST http://localhost:8000/ingestion/v1/jobs ^
-  -H "X-API-Key: $API_KEY" ^
-  -H "Content-Type: application/json" ^
-  -d "{\"command\":\"refresh_annual_plans_current\"}"
-```
-
-记录返回的 `ingestion_job_id`。
-
-### 2.2 项目进度
-
-```powershell
-curl -X POST http://localhost:8000/ingestion/v1/jobs ^
-  -H "X-API-Key: $API_KEY" ^
-  -H "Content-Type: application/json" ^
-  -d "{\"command\":\"refresh_plan_progress\"}"
-```
-
-### 2.3 关键人员
-
-```powershell
-curl -X POST http://localhost:8000/ingestion/v1/jobs ^
-  -H "X-API-Key: $API_KEY" ^
-  -H "Content-Type: application/json" ^
-  -d "{\"command\":\"refresh_dept_key_personnel\"}"
-```
-
-## 3. 验证 Row Count
-
-```powershell
-# 年度计划-项目级
-curl "http://localhost:8000/api/v1/plan/projects?year=2025" ^
-  -H "X-API-Key: $API_KEY"
-
-# 年度计划-单项级
-curl "http://localhost:8000/api/v1/plan/single-projects?year=2025" ^
-  -H "X-API-Key: $API_KEY"
-
-# 项目进度
-curl "http://localhost:8000/api/v1/plan/project-progress" ^
-  -H "X-API-Key: $API_KEY"
-
-# 关键人员
-curl "http://localhost:8000/api/v1/plan/dept-key-personnel" ^
-  -H "X-API-Key: $API_KEY"
-```
-
-或通过运维面板 / CLI 查看:
-
-```powershell
-# 单表统计
-curl "http://localhost:8000/api/v1/ops/table-stats?table=dcp_plan_projects" ^
-  -H "X-API-Key: $API_KEY"
-# 期望: {"table":"dcp_plan_projects","row_count":N,"last_updated":"..."}
-
-# CLI 方式
-uv run python -m src.datahub.cli tables
-```
-
-确认各表 `row_count > 0`。
-
-## 4. 验证 Parent/Child Jobs
-
-Fan-out command 会创建 parent job 和多个 child jobs:
-
-```powershell
-# 触发 fan-out（以杆塔为例）
-curl -X POST http://localhost:8000/ingestion/v1/jobs ^
-  -H "X-API-Key: $API_KEY" ^
-  -H "Content-Type: application/json" ^
-  -d "{\"command\":\"refresh_towers_for_current_plan_projects\"}"
-```
-
-记录 parent `ingestion_job_id`，然后:
-
-```powershell
-# 查看 parent job 状态
-curl "http://localhost:8000/ingestion/v1/jobs/{parent_job_id}" ^
-  -H "X-API-Key: $API_KEY"
-# 期望: status=succeeded 或 running
-
-# 查看 child jobs
-curl "http://localhost:8000/ingestion/v1/jobs/{parent_job_id}/children" ^
-  -H "X-API-Key: $API_KEY"
-# 期望: 返回多个 child job，每个对应一个 projectCode
-
-# CLI 方式
-uv run python -m src.datahub.cli children {parent_job_id}
-```
+DCP 站点凭证需在 downloader-dcp 侧配置。
 
 确认:
-- parent job 存在且 status 为 `succeeded`
-- children 数量与当前年度计划项目数一致
-- 每个 child job 的 status 为 `succeeded`
 
-## 5. 验证 Failed Jobs
+```powershell
+Invoke-RestMethod -Uri http://localhost:8010/health -Method Get
+# 期望: status=ok, pool_slots=5
+```
+
+## 3. 三阶段执行顺序
+
+按以下顺序依次触发，每步等待完成后再执行下一步：
+
+### 阶段 1：基础数据
+
+```powershell
+# 1. 年度计划
+uv run python -m src.datahub.cli trigger refresh_annual_plans_current
+
+# 2. 项目进度
+uv run python -m src.datahub.cli trigger refresh_plan_progress
+
+# 3. 关键人员
+uv run python -m src.datahub.cli trigger refresh_dept_key_personnel
+```
+
+### 阶段 2：项目域
+
+```powershell
+# 4. 杆塔（fan-out，416 个子任务）
+uv run python -m src.datahub.cli trigger refresh_towers_for_current_plan_projects
+
+# 5. 变电站（fan-out）
+uv run python -m src.datahub.cli trigger refresh_substations_for_current_plan_projects
+
+# 6. 架线区段（fan-out）
+uv run python -m src.datahub.cli trigger refresh_line_sections_for_current_plan_projects
+```
+
+### 阶段 3：安全域
+
+```powershell
+# 7. 站班会回补（fan-out，890 个子任务）
+uv run python -m src.datahub.cli trigger backfill_daily_meetings_by_range --params startDate=2024-01-01 endDate=2026-06-08 chunk_days=1 max_concurrency=5
+```
+
+### API 方式触发
+
+```powershell
+$API_KEY = "dev-admin-key"
+
+# 基础域
+Invoke-RestMethod -Uri http://localhost:8000/ingestion/v1/jobs -Method Post -Headers @{"X-API-Key"=$API_KEY; "Content-Type"="application/json"} -Body '{"command":"refresh_annual_plans_current"}'
+
+# 项目域 fan-out
+Invoke-RestMethod -Uri http://localhost:8000/ingestion/v1/jobs -Method Post -Headers @{"X-API-Key"=$API_KEY; "Content-Type"="application/json"} -Body '{"command":"refresh_towers_for_current_plan_projects"}'
+
+# 安全域回补
+Invoke-RestMethod -Uri http://localhost:8000/ingestion/v1/jobs -Method Post -Headers @{"X-API-Key"=$API_KEY; "Content-Type"="application/json"} -Body '{"command":"backfill_daily_meetings_by_range","params":{"startDate":"2024-01-01","endDate":"2026-06-08","chunk_days":1,"max_concurrency":5}}'
+```
+
+## 4. 查看 Job 状态
 
 ```powershell
 # 列出所有 jobs
-curl "http://localhost:8000/ingestion/v1/jobs" ^
-  -H "X-API-Key: $API_KEY"
-
-# CLI 方式
 uv run python -m src.datahub.cli jobs
+
+# 查看单个 job
+uv run python -m src.datahub.cli job <job_id>
+
+# 查看 fan-out 子任务
+uv run python -m src.datahub.cli children <parent_job_id>
+
+# 查看表行数
+uv run python -m src.datahub.cli tables
 ```
 
-确认:
-- 无 unexpected `failed` jobs
-- 如果有 failed job，检查 `error` 字段
-- 已知可能失败: DCP 站点返回空数据（空壳行会被 skipped，不计为失败）
+## 5. 验收 SQL
 
-### 重试 Failed Job
+以下 SQL 直接在 SQLite 上执行：
 
 ```powershell
-# API 方式
-curl -X POST "http://localhost:8000/ingestion/v1/jobs/{failed_job_id}/retry" ^
-  -H "X-API-Key: $API_KEY"
-
-# CLI 方式
-uv run python -m src.datahub.cli retry {failed_job_id}
+uv run python -c "
+import sqlite3
+conn = sqlite3.connect('data/datahub_mvp.db')
+conn.row_factory = sqlite3.Row
+cur = conn.cursor()
+cur.execute('YOUR_SQL_HERE')
+for row in cur.fetchall():
+    print(dict(row))
+conn.close()
+"
 ```
 
-## 6. 验证 Callback
-
-downloader-dcp 回调 Hub 后，Hub 返回 **202 Accepted**:
+或使用 sqlite3 CLI：
 
 ```powershell
-# 查看入库消息
-curl "http://localhost:8000/ingestion/v1/messages" ^
-  -H "X-API-Key: $API_KEY"
+sqlite3 data/datahub_mvp.db "YOUR_SQL_HERE"
 ```
 
-确认:
-- 每条 message 的 `status` 为 `accepted`
-- `table_count` 和 `row_count` 符合预期
-- `skipped_rows` 字段记录了被跳过的空壳行数量
-- `skipped_details` 列出了跳过原因和涉及的表
+### 5.1 Job 状态分布
 
-也可直接查看 table_writes:
+```sql
+SELECT status, COUNT(*) FROM ingestion_jobs GROUP BY status;
+```
+
+### 5.2 按 trigger_key 分组的状态分布
+
+```sql
+SELECT
+  trigger_key,
+  status,
+  COUNT(*)
+FROM ingestion_jobs
+GROUP BY trigger_key, status
+ORDER BY trigger_key, status;
+```
+
+### 5.3 失败 Job 按 trigger_key 分组
+
+```sql
+SELECT
+  trigger_key,
+  COUNT(*) AS failed_count
+FROM ingestion_jobs
+WHERE status = 'failed'
+GROUP BY trigger_key
+ORDER BY failed_count DESC;
+```
+
+### 5.4 各业务表行数
+
+```sql
+SELECT 'dcp_plan_year_project' AS tbl, COUNT(*) FROM dcp_plan_year_project
+UNION ALL SELECT 'dcp_plan_year_single_project', COUNT(*) FROM dcp_plan_year_single_project
+UNION ALL SELECT 'dcp_plan_project_progress', COUNT(*) FROM dcp_plan_project_progress
+UNION ALL SELECT 'dcp_plan_single_project_progress', COUNT(*) FROM dcp_plan_single_project_progress
+UNION ALL SELECT 'dcp_plan_bidsection_progress', COUNT(*) FROM dcp_plan_bidsection_progress
+UNION ALL SELECT 'dcp_plan_dept_key_personnel', COUNT(*) FROM dcp_plan_dept_key_personnel
+UNION ALL SELECT 'dcp_project_tower', COUNT(*) FROM dcp_project_tower
+UNION ALL SELECT 'dcp_project_substation', COUNT(*) FROM dcp_project_substation
+UNION ALL SELECT 'dcp_project_line_sections', COUNT(*) FROM dcp_project_line_sections
+UNION ALL SELECT 'dcp_project_line_branches', COUNT(*) FROM dcp_project_line_branches
+UNION ALL SELECT 'dcp_safe_daily_meeting', COUNT(*) FROM dcp_safe_daily_meeting
+UNION ALL SELECT 'dcp_safe_daily_meeting_snapshot', COUNT(*) FROM dcp_safe_daily_meeting_snapshot;
+```
+
+### 5.5 Daily Meeting 日期覆盖范围
+
+```sql
+SELECT
+  MIN(date) AS min_date,
+  MAX(date) AS max_date,
+  COUNT(DISTINCT date) AS day_count,
+  COUNT(*) AS row_count
+FROM dcp_safe_daily_meeting;
+```
+
+### 5.6 项目域 scope 覆盖
+
+```sql
+-- 杆塔覆盖的 distinct project
+SELECT COUNT(DISTINCT singleProjectCode) FROM dcp_project_tower;
+
+-- 变电站覆盖的 distinct project
+SELECT COUNT(DISTINCT singleProjectCode) FROM dcp_project_substation;
+
+-- 架线区段覆盖的 distinct bidding section
+SELECT COUNT(DISTINCT biddingSectionCode) FROM dcp_project_line_sections;
+```
+
+### 5.7 Fan-out 汇总
+
+```sql
+SELECT
+  parent_job_id,
+  trigger_key,
+  COUNT(*) AS total_children,
+  SUM(CASE WHEN status = 'succeeded' THEN 1 ELSE 0 END) AS succeeded,
+  SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed,
+  SUM(CASE WHEN status = 'skipped' THEN 1 ELSE 0 END) AS skipped
+FROM ingestion_jobs
+WHERE parent_job_id IS NOT NULL
+GROUP BY parent_job_id, trigger_key
+ORDER BY parent_job_id;
+```
+
+## 6. Partial / Failed 判断
+
+| 父 Job 状态 | 含义 | 处理 |
+|-------------|------|------|
+| `succeeded` | 全部子任务成功 | 无需处理 |
+| `partial` | 有成功子任务，也有少量 failed/skipped | 检查失败子任务，进入个案追踪 |
+| `failed` | 无成功结果或全部失败 | 需排查根因 |
+
+**项目域 partial 不等于主链路失败。** 416 个项目中 1~4 个失败属于 DCP 端个案，不阻塞 MVP 验收。
+
+**安全域 `backfill_daily_meetings_by_range` 应要求 890/890 succeeded。** 如果不是 890/890，需排查是否有 DCP session 过期或网络问题。
+
+**区分 succeeded row_count=0 和 failed：**
+- `succeeded` + `row_count=0`：DCP 端该日期/项目无数据，正常
+- `failed`：采集过程出错，需要追踪
+
+## 7. 失败子任务查询
+
+### 7.1 查询所有 failed child jobs
+
+```sql
+SELECT
+  ingestion_job_id,
+  parent_job_id,
+  trigger_key,
+  params_json,
+  status,
+  current_message,
+  error,
+  created_at,
+  updated_at
+FROM ingestion_jobs
+WHERE status = 'failed'
+ORDER BY created_at;
+```
+
+### 7.2 按 trigger_key 分组统计失败数
+
+```sql
+SELECT
+  trigger_key,
+  COUNT(*) AS failed_count
+FROM ingestion_jobs
+WHERE status = 'failed'
+GROUP BY trigger_key
+ORDER BY failed_count DESC;
+```
+
+### 7.3 提取失败子任务的 projectCode
+
+```sql
+SELECT
+  ingestion_job_id,
+  trigger_key,
+  json_extract(params_json, '$.projectCode') AS projectCode,
+  error,
+  current_message
+FROM ingestion_jobs
+WHERE status = 'failed'
+  AND trigger_key LIKE 'refresh_%_for_project'
+ORDER BY trigger_key, projectCode;
+```
+
+### 7.4 导出失败 projectCode 清单
+
+```sql
+SELECT DISTINCT
+  json_extract(params_json, '$.projectCode') AS projectCode,
+  trigger_key
+FROM ingestion_jobs
+WHERE status = 'failed'
+  AND json_extract(params_json, '$.projectCode') IS NOT NULL
+ORDER BY projectCode;
+```
+
+### 7.5 Fanout items 重试状态
+
+```sql
+SELECT
+  fi.item_id,
+  fi.status,
+  fi.retry_count,
+  fi.next_attempt_at,
+  fi.error_message,
+  fr.trigger_key
+FROM fanout_items fi
+JOIN fanout_runs fr ON fi.run_id = fr.run_id
+WHERE fi.retry_count > 0
+ORDER BY fi.retry_count DESC;
+```
+
+## 8. Replay 指引
+
+### 8.1 Replay 单个失败项目
 
 ```powershell
-curl "http://localhost:8000/ingestion/v1/table-writes" ^
-  -H "X-API-Key: $API_KEY"
+# 查看失败 job 详情
+uv run python -m src.datahub.cli job <failed_job_id>
+
+# 重试单个失败 job
+uv run python -m src.datahub.cli retry <failed_job_id>
 ```
 
-确认每条 write 记录的 `row_count` > 0。
-
-## 7. 验证 Daily Meeting 单日回补
+或按 projectCode 手动触发：
 
 ```powershell
-# 回补指定日期范围
-curl -X POST http://localhost:8000/ingestion/v1/jobs ^
-  -H "X-API-Key: $API_KEY" ^
-  -H "Content-Type: application/json" ^
-  -d "{\"command\":\"refresh_daily_meetings_by_range\",\"params\":{\"startDate\":\"2025-06-01\",\"endDate\":\"2025-06-01\"}}"
+# 杆塔
+uv run python -m src.datahub.cli trigger refresh_towers_for_project --params projectCode=XXXX
+
+# 变电站
+uv run python -m src.datahub.cli trigger refresh_substations_for_project --params projectCode=XXXX
+
+# 架线区段
+uv run python -m src.datahub.cli trigger refresh_line_sections_for_project --params projectCode=XXXX
 ```
 
-确认:
-- job 创建成功
-- 回调完成后 `dcp_daily_meeting` 表有对应日期的数据
+### 8.2 何时需要重新跑 parent fan-out
+
+- **不需要**：仅 1~4 个子任务失败，属于个案缺口，replay 单个即可
+- **需要**：大面积失败（如 circuit breaker 打开导致大量 skipped），需排查根因后重新跑 parent fan-out
+
+### 8.3 幂等保障
+
+重复跑不会导致数据重复：
+- `upsert` 模式：按主键更新
+- `replace_scope` 模式：按 scope 替换
+- `message_id` + `idempotency_key` + `payload_hash` 重复抑制
+
+## 9. Transient Retry 与 Circuit Breaker
+
+### 9.1 Transient Retry
+
+Fan-out scheduler 对以下 transient child failure 自动重试：
+
+- `session_expired`
+- `recoverable`
+- `SGCC client is expired`
+- `DCP_CLIENT_EXPIRED`
+- `timeout`
+- `ETIMEDOUT`
+- `ECONNRESET`
+- `slot_unavailable`
+- `runner_timeout`
+
+机制：
+- 最多 retry 2 次，delay 为 3s、6s
+- transient retry 不计入 consecutive failures
+- 超过 retry 上限后转为 permanent failure，进入 `failed` 状态
+- permanent failure 计入 consecutive failures
+
+### 9.2 判断 transient retry 是否生效
+
+```sql
+-- 查看有重试记录的 fanout items
+SELECT item_id, status, retry_count, next_attempt_at, error_message
+FROM fanout_items
+WHERE retry_count > 0
+ORDER BY retry_count DESC;
+```
+
+如果 `retry_count > 0` 且 `status = 'succeeded'`，说明 transient retry 生效。
+
+### 9.3 Circuit Breaker
+
+当 consecutive failures 达到阈值（默认 5）时，circuit breaker 打开，剩余 pending 子任务被标记为 `skipped`。
+
+```sql
+-- 检查 circuit breaker 是否打开
+SELECT run_id, trigger_key, consecutive_failures, circuit_opened
+FROM fanout_runs
+WHERE circuit_opened = 1;
+```
+
+### 9.4 哪些失败可接受为 MVP 个案缺口
+
+- DCP 端项目接口异常（个别 projectCode）
+- 项目无对应业务数据（row_count=0 的 succeeded）
+- session_expired 经过 retry 后仍失败（个别）
+- upstream timeout（个别）
+
+### 9.5 哪些失败必须阻塞发布
+
+- `unknown_table`：schema 注册有问题
+- 大面积 422：校验逻辑有误
+- `message_failed` 持续增长：入库链路有问题
+- circuit breaker 大量 skipped：DCP 源端大面积故障
+- daily meeting 不是 890/890：安全域回补不完整
+
+## 10. 查询 API 验证
 
 ```powershell
-curl "http://localhost:8000/api/v1/safety/daily-meetings?date=2025-06-01" ^
-  -H "X-API-Key: $API_KEY"
+$API_KEY = "dev-admin-key"
+
+# 年度计划
+Invoke-RestMethod -Uri "http://localhost:8000/api/v1/plan/projects?year=2025" -Method Get -Headers @{"X-API-Key"=$API_KEY}
+
+# 项目进度
+Invoke-RestMethod -Uri "http://localhost:8000/api/v1/plan/project-progress" -Method Get -Headers @{"X-API-Key"=$API_KEY}
+
+# 关键人员
+Invoke-RestMethod -Uri "http://localhost:8000/api/v1/plan/dept-key-personnel" -Method Get -Headers @{"X-API-Key"=$API_KEY}
+
+# 杆塔
+Invoke-RestMethod -Uri "http://localhost:8000/api/v1/project/towers?singleProjectCode=XXXX" -Method Get -Headers @{"X-API-Key"=$API_KEY}
+
+# 站班会
+Invoke-RestMethod -Uri "http://localhost:8000/api/v1/safety/daily-meetings?date=2025-06-01" -Method Get -Headers @{"X-API-Key"=$API_KEY}
+
+# 单表统计
+Invoke-RestMethod -Uri "http://localhost:8000/api/v1/ops/table-stats?table=dcp_project_tower" -Method Get -Headers @{"X-API-Key"=$API_KEY}
 ```
-
-注意: daily_meeting 已字段化为 42 列，关键业务字段（singleProjectCode、biddingSectionCode、leaderName 等）可直接 SQL 查询。
-
-## 8. 验证 Snapshot 业务时段测试
-
-```powershell
-# 触发今日站班会快照
-curl -X POST http://localhost:8000/ingestion/v1/jobs ^
-  -H "X-API-Key: $API_KEY" ^
-  -H "Content-Type: application/json" ^
-  -d "{\"command\":\"refresh_daily_meeting_snapshot\"}"
-```
-
-确认:
-
-```powershell
-curl "http://localhost:8000/api/v1/safety/daily-meeting-snapshot" ^
-  -H "X-API-Key: $API_KEY"
-# 期望: 返回今日站班会数据（如果 DCP 站点有数据）
-```
-
-注意: 此 command 为 downloader_sync 类型，直接调用 downloader-dcp，非 fan-out。
 
 ## 环境变量参考
 
@@ -251,8 +459,9 @@ curl "http://localhost:8000/api/v1/safety/daily-meeting-snapshot" ^
 | `succeeded` | 成功完成 |
 | `failed` | 执行失败 |
 | `accepted` | 入库消息已接受 |
-| `partial` | 部分成功 |
+| `partial` | 部分成功（fan-out 有成功也有失败子任务） |
 | `conflict` | 幂等冲突 |
+| `skipped` | 被 circuit breaker 跳过 |
 
 ## CLI 速查
 
