@@ -382,6 +382,163 @@ class DataHubStore:
         row = self._get_row("SELECT 1 FROM fanout_runs WHERE parent_job_id = ?", (parent_job_id,))
         return row is not None
 
+    # ── Collection plan store APIs ──────────────────────────────
+
+    def upsert_scheduled_plan(
+        self,
+        *,
+        plan_name: str,
+        enabled: int = 0,
+        schedule_type: str = "daily",
+        schedule_time: str | None = None,
+        timezone: str = "Asia/Shanghai",
+        config_json: str,
+        next_run_at: str | None = None,
+    ) -> None:
+        now = datahub_now_text()
+        with closing(self.connect()) as conn, conn:
+            conn.execute(
+                """INSERT INTO scheduled_plans(plan_name, enabled, schedule_type, schedule_time, timezone, config_json, next_run_at, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(plan_name) DO UPDATE SET
+                     enabled = excluded.enabled,
+                     schedule_type = excluded.schedule_type,
+                     schedule_time = excluded.schedule_time,
+                     timezone = excluded.timezone,
+                     config_json = excluded.config_json,
+                     next_run_at = COALESCE(excluded.next_run_at, scheduled_plans.next_run_at),
+                     updated_at = excluded.updated_at""",
+                (plan_name, enabled, schedule_type, schedule_time, timezone, config_json, next_run_at, now, now),
+            )
+
+    def get_scheduled_plan(self, plan_name: str) -> dict[str, Any] | None:
+        return self._get_row("SELECT * FROM scheduled_plans WHERE plan_name = ?", (plan_name,))
+
+    def list_scheduled_plans(self) -> list[dict[str, Any]]:
+        return self._get_rows("SELECT * FROM scheduled_plans ORDER BY plan_name", ())
+
+    def update_plan_last_run(self, plan_name: str, *, run_id: str, status: str, next_run_at: str | None = None) -> None:
+        with closing(self.connect()) as conn, conn:
+            conn.execute(
+                """UPDATE scheduled_plans
+                   SET last_run_id = ?, last_status = ?, last_run_at = ?,
+                       next_run_at = COALESCE(?, next_run_at), updated_at = ?
+                   WHERE plan_name = ?""",
+                (run_id, status, datahub_now_text(), next_run_at, datahub_now_text(), plan_name),
+            )
+
+    def update_plan_next_run(self, plan_name: str, next_run_at: str | None) -> None:
+        with closing(self.connect()) as conn, conn:
+            conn.execute(
+                "UPDATE scheduled_plans SET next_run_at = ?, updated_at = ? WHERE plan_name = ?",
+                (next_run_at, datahub_now_text(), plan_name),
+            )
+
+    def create_scheduled_run(
+        self,
+        *,
+        run_id: str,
+        plan_name: str,
+        trigger_source: str,
+        status: str = "running",
+    ) -> None:
+        now = datahub_now_text()
+        with closing(self.connect()) as conn, conn:
+            conn.execute(
+                """INSERT INTO scheduled_runs(run_id, plan_name, trigger_source, status, started_at, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (run_id, plan_name, trigger_source, status, now, now, now),
+            )
+
+    def update_scheduled_run(
+        self,
+        run_id: str,
+        *,
+        status: str | None = None,
+        result_json: str | None = None,
+        error: str | None = None,
+    ) -> None:
+        with closing(self.connect()) as conn, conn:
+            finished = datahub_now_text() if status and status in ("succeeded", "partial", "failed", "skipped") else None
+            conn.execute(
+                """UPDATE scheduled_runs
+                   SET status = COALESCE(?, status),
+                       result_json = COALESCE(?, result_json),
+                       error = COALESCE(?, error),
+                       finished_at = COALESCE(?, finished_at),
+                       updated_at = ?
+                   WHERE run_id = ?""",
+                (status, result_json, error, finished, datahub_now_text(), run_id),
+            )
+
+    def get_scheduled_run(self, run_id: str) -> dict[str, Any] | None:
+        return self._get_row("SELECT * FROM scheduled_runs WHERE run_id = ?", (run_id,))
+
+    def list_scheduled_runs(self, plan_name: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+        if plan_name:
+            return self._get_rows(
+                "SELECT * FROM scheduled_runs WHERE plan_name = ? ORDER BY created_at DESC LIMIT ?",
+                (plan_name, limit),
+            )
+        return self._get_rows(
+            "SELECT * FROM scheduled_runs ORDER BY created_at DESC LIMIT ?",
+            (limit,),
+        )
+
+    def get_running_plan_run(self, plan_name: str) -> dict[str, Any] | None:
+        return self._get_row(
+            "SELECT * FROM scheduled_runs WHERE plan_name = ? AND status = 'running' ORDER BY created_at DESC LIMIT 1",
+            (plan_name,),
+        )
+
+    def create_scheduled_run_step(
+        self,
+        *,
+        run_id: str,
+        step_order: int,
+        command_name: str,
+        params_json: str,
+        status: str = "pending",
+        wait_for_terminal: int = 1,
+    ) -> None:
+        now = datahub_now_text()
+        with closing(self.connect()) as conn, conn:
+            conn.execute(
+                """INSERT INTO scheduled_run_steps(run_id, step_order, command_name, params_json, status, wait_for_terminal, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (run_id, step_order, command_name, params_json, status, wait_for_terminal, now, now),
+            )
+
+    def update_scheduled_run_step(
+        self,
+        step_id: int,
+        *,
+        status: str | None = None,
+        job_id: str | None = None,
+        result_json: str | None = None,
+        error: str | None = None,
+    ) -> None:
+        with closing(self.connect()) as conn, conn:
+            finished = datahub_now_text() if status and status in ("succeeded", "partial", "failed", "skipped") else None
+            conn.execute(
+                """UPDATE scheduled_run_steps
+                   SET status = COALESCE(?, status),
+                       job_id = COALESCE(?, job_id),
+                       result_json = COALESCE(?, result_json),
+                       error = COALESCE(?, error),
+                       started_at = CASE WHEN ? IS NOT NULL AND started_at IS NULL THEN ? ELSE started_at END,
+                       finished_at = COALESCE(?, finished_at),
+                       updated_at = ?
+                   WHERE id = ?""",
+                (status, job_id, result_json, error, status, datahub_now_text(), finished, datahub_now_text(), step_id),
+            )
+
+    def get_scheduled_run_steps(self, run_id: str) -> list[dict[str, Any]]:
+        return self._get_rows(
+            "SELECT * FROM scheduled_run_steps WHERE run_id = ? ORDER BY step_order",
+            (run_id,),
+        )
+
     def job_id_for_producer(self, conn: sqlite3.Connection, producer_job_id: str) -> str | None:
         row = conn.execute("SELECT ingestion_job_id FROM ingestion_jobs WHERE downloader_job_id = ?", (producer_job_id,)).fetchone()
         return row["ingestion_job_id"] if row else None

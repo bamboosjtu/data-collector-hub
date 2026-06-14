@@ -21,6 +21,11 @@ class Settings:
     callback_base_url: str = "http://localhost:8000"
     callback_api_key: str = _UNCONFIGURED
     dev_mode: bool = True
+    collection_scheduler_enabled: bool = False
+    daily_dcp_refresh_enabled: bool = False
+    daily_dcp_refresh_time: str = "02:00"
+    daily_dcp_recent_days: int = 3
+    collection_scheduler_tick_seconds: int = 30
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -45,4 +50,9 @@ class Settings:
             callback_base_url=os.getenv("DATAHUB_CALLBACK_BASE_URL", cls.callback_base_url).rstrip("/"),
             callback_api_key=raw_key,
             dev_mode=dev_mode,
+            collection_scheduler_enabled=os.getenv("DATAHUB_COLLECTION_SCHEDULER_ENABLED", "").strip().lower() in ("1", "true", "yes"),
+            daily_dcp_refresh_enabled=os.getenv("DATAHUB_DAILY_DCP_REFRESH_ENABLED", "").strip().lower() in ("1", "true", "yes"),
+            daily_dcp_refresh_time=os.getenv("DATAHUB_DAILY_DCP_REFRESH_TIME", cls.daily_dcp_refresh_time),
+            daily_dcp_recent_days=int(os.getenv("DATAHUB_DAILY_DCP_RECENT_DAYS", str(cls.daily_dcp_recent_days))),
+            collection_scheduler_tick_seconds=int(os.getenv("DATAHUB_COLLECTION_SCHEDULER_TICK_SECONDS", str(cls.collection_scheduler_tick_seconds))),
         )

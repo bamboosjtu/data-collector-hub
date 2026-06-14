@@ -4,6 +4,7 @@ from .ingestion import build_ingestion_router
 from .metadata import build_metadata_router
 from .ops import build_ops_router
 from .query import register_query_routes
+from .schedules import build_schedules_router
 
 __all__ = [
     "build_admin_router",
@@ -12,4 +13,5 @@ __all__ = [
     "build_metadata_router",
     "build_ops_router",
     "register_query_routes",
+    "build_schedules_router",
 ]

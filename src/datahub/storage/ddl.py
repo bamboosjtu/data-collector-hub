@@ -140,6 +140,53 @@ def create_metadata_tables(conn: sqlite3.Connection) -> None:
           ON fanout_items(parent_job_id, status, item_index);
         CREATE INDEX IF NOT EXISTS idx_fanout_items_child_job
           ON fanout_items(child_job_id);
+
+        CREATE TABLE IF NOT EXISTS scheduled_plans (
+          plan_name TEXT PRIMARY KEY,
+          enabled INTEGER NOT NULL DEFAULT 0,
+          schedule_type TEXT NOT NULL,
+          schedule_time TEXT,
+          timezone TEXT NOT NULL DEFAULT 'Asia/Shanghai',
+          config_json TEXT NOT NULL,
+          last_run_id TEXT,
+          last_status TEXT,
+          last_run_at TEXT,
+          next_run_at TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS scheduled_runs (
+          run_id TEXT PRIMARY KEY,
+          plan_name TEXT NOT NULL,
+          trigger_source TEXT NOT NULL,
+          status TEXT NOT NULL,
+          started_at TEXT,
+          finished_at TEXT,
+          result_json TEXT,
+          error TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS scheduled_run_steps (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          run_id TEXT NOT NULL,
+          step_order INTEGER NOT NULL,
+          command_name TEXT NOT NULL,
+          params_json TEXT NOT NULL,
+          job_id TEXT,
+          status TEXT NOT NULL,
+          wait_for_terminal INTEGER NOT NULL DEFAULT 1,
+          started_at TEXT,
+          finished_at TEXT,
+          result_json TEXT,
+          error TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_scheduled_runs_plan
+          ON scheduled_runs(plan_name);
+        CREATE INDEX IF NOT EXISTS idx_scheduled_run_steps_run
+          ON scheduled_run_steps(run_id);
         """
     )
 
