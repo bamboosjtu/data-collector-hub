@@ -26,6 +26,13 @@ def _migrate_fanout_items_columns(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE fanout_items ADD COLUMN next_attempt_at TEXT")
 
 
+def _migrate_ingestion_jobs_source(conn: sqlite3.Connection) -> None:
+    """Add source column to ingestion_jobs if missing."""
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(ingestion_jobs)").fetchall()}
+    if "source" not in existing:
+        conn.execute("ALTER TABLE ingestion_jobs ADD COLUMN source TEXT DEFAULT 'api'")
+
+
 def create_metadata_tables(conn: sqlite3.Connection) -> None:
     conn.executescript(
         """
@@ -154,6 +161,9 @@ def create_metadata_tables(conn: sqlite3.Connection) -> None:
     # Safe migration: add retry_count and next_attempt_at to fanout_items
     # if they don't exist (for existing databases).
     _migrate_fanout_items_columns(conn)
+
+    # Safe migration: add source to ingestion_jobs
+    _migrate_ingestion_jobs_source(conn)
 
 
 def create_business_table(conn: sqlite3.Connection, table: TableSpec) -> None:

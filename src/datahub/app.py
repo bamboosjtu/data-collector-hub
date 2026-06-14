@@ -17,6 +17,7 @@ from src.datahub.api import (
 )
 from src.datahub.core.plugin_loader import build_normalizer_map, build_scope_map, load_all_plugins
 from src.datahub.core.registry import load_registry_from_plugins
+from src.datahub.core.services.job_service import JobService
 from src.datahub.core.trigger_runtime import ExternalSyncClient, poll_downloader_jobs
 from src.datahub.core.fanout_scheduler import start_fanout_scheduler
 from src.datahub.ingestion.service import IngestionService
@@ -58,6 +59,14 @@ def create_app(
     clients = trigger_clients or {plugin.name: ExternalSyncClient(plugin.connector) for plugin in plugins if plugin.connector.base_url}
     normalizer_map = build_normalizer_map(plugins)
     ingestion_service = IngestionService(active_store, normalizer_map=normalizer_map)
+    callback_headers = {"X-API-Key": active_settings.callback_api_key} if active_settings.callback_api_key else None
+    job_service = JobService(
+        store=active_store,
+        plugins=plugins,
+        trigger_clients=clients,
+        callback_base_url=active_settings.callback_base_url,
+        callback_headers=callback_headers,
+    )
 
     app = FastAPI(title="DataCollectorHub MVP", version="1.0.0")
     app.state.settings = active_settings
@@ -65,6 +74,7 @@ def create_app(
     app.state.registry = registry
     app.state.store = active_store
     app.state.trigger_clients = clients
+    app.state.job_service = job_service
 
     @app.exception_handler(RequestValidationError)
     async def validation_error_handler(request: Request, exc: RequestValidationError):
@@ -83,6 +93,7 @@ def create_app(
             store=active_store,
             trigger_clients=clients,
             ingestion_service=ingestion_service,
+            job_service=job_service,
         )
     )
     register_query_routes(app, plugins, active_store)
@@ -93,7 +104,6 @@ def create_app(
         logger.info("status poller started (interval=5s, stale_threshold=1800s)")
 
         # Start fan-out scheduler
-        callback_headers = {"X-API-Key": active_settings.callback_api_key} if active_settings.callback_api_key else None
         app.state.fanout_scheduler_stop = start_fanout_scheduler(
             active_store,
             clients,

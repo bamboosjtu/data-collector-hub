@@ -70,7 +70,10 @@ def cmd_trigger(args):
         for p in group:
             k, _, v = p.partition("=")
             params[k] = v
-    result = _api("POST", "/ingestion/v1/jobs", body={"command": args.command, "params": params}, base=args.base, key=args.key)
+    body: dict = {"command": args.command, "params": params}
+    if args.source:
+        body["source"] = args.source
+    result = _api("POST", "/ingestion/v1/jobs", body=body, base=args.base, key=args.key)
     print(f"Job created: {result.get('ingestion_job_id', '?')}")
     print(f"Status:      {result.get('status', '?')}")
     if result.get("downloader_job_id"):
@@ -160,6 +163,7 @@ def main():
     p_trigger.add_argument("command", help="Command name")
     p_trigger.add_argument("--params", nargs="+", action="append",
                            help="key=value params (e.g. --params max_items=5 cooldown=3 or --params max_items=5 --params cooldown=3)")
+    p_trigger.add_argument("--source", default="cli", help="Trigger source (default: cli)")
     p_trigger.set_defaults(func=cmd_trigger)
 
     p_jobs = sub.add_parser("jobs", help="List ingestion jobs")

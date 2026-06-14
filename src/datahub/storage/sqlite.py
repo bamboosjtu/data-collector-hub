@@ -54,14 +54,15 @@ class DataHubStore:
         plugin_id: str | None = None,
         dataset_key: str | None = None,
         parent_job_id: str | None = None,
+        source: str = "api",
     ) -> None:
         with closing(self.connect()) as conn, conn:
             conn.execute(
                 """
-                INSERT INTO ingestion_jobs(ingestion_job_id, parent_job_id, plugin_id, trigger_key, downloader_job_id, dataset_key, params_json, status, started_at, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 'triggering', ?, ?, ?)
+                INSERT INTO ingestion_jobs(ingestion_job_id, parent_job_id, plugin_id, trigger_key, downloader_job_id, dataset_key, params_json, source, status, started_at, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'triggering', ?, ?, ?)
                 """,
-                (ingestion_job_id, parent_job_id, plugin_id, job_type, producer_job_id, dataset_key, self._json(params), datahub_now_text(), datahub_now_text(), datahub_now_text()),
+                (ingestion_job_id, parent_job_id, plugin_id, job_type, producer_job_id, dataset_key, self._json(params), source, datahub_now_text(), datahub_now_text(), datahub_now_text()),
             )
 
     def mark_job(
