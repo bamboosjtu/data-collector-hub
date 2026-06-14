@@ -27,9 +27,10 @@ RETRYABLE_STATUSES = frozenset({"failed", "partial", "cancelled"})
 class JobServiceError(Exception):
     """Raised when job submission fails due to validation or execution errors."""
 
-    def __init__(self, error_code: str, message: str):
+    def __init__(self, error_code: str, message: str, ingestion_job_id: str | None = None):
         self.error_code = error_code
         self.message = message
+        self.ingestion_job_id = ingestion_job_id
         super().__init__(message)
 
 
@@ -134,7 +135,7 @@ class JobService:
                 run_handler_async(handler, ctx)
             except Exception as exc:
                 self._store.mark_job(ingestion_job_id, status="failed", error=str(exc))
-                raise JobServiceError("plugin_handler_failed", str(exc)) from exc
+                raise JobServiceError("plugin_handler_failed", str(exc), ingestion_job_id=ingestion_job_id) from exc
 
             return JobResult(
                 ingestion_job_id=ingestion_job_id,
@@ -155,12 +156,12 @@ class JobService:
         client = self._trigger_clients.get(plugin.name)
         if client is None:
             self._store.mark_job(ingestion_job_id, status="failed", error="no external trigger connector configured")
-            raise JobServiceError("no_connector", f"no connector configured for command {command_name}")
+            raise JobServiceError("no_connector", f"no connector configured for command {command_name}", ingestion_job_id=ingestion_job_id)
 
         downloader_job_type = command.trigger.get("job_type")
         if not downloader_job_type:
             self._store.mark_job(ingestion_job_id, status="failed", error="command trigger has no job_type")
-            raise JobServiceError("invalid_trigger", f"command {command_name} trigger has no job_type")
+            raise JobServiceError("invalid_trigger", f"command {command_name} trigger has no job_type", ingestion_job_id=ingestion_job_id)
 
         callback_url = f"{self._callback_base_url}/ingestion/v1/table-batches"
         try:
@@ -173,7 +174,7 @@ class JobService:
             )
         except Exception as exc:
             self._store.mark_job(ingestion_job_id, status="failed", error=str(exc))
-            raise JobServiceError("external_sync_failed", str(exc)) from exc
+            raise JobServiceError("external_sync_failed", str(exc), ingestion_job_id=ingestion_job_id) from exc
 
         self._store.mark_job(ingestion_job_id, status=str(response.get("status") or "accepted"), producer_status=response)
         return JobResult(

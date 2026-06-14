@@ -193,6 +193,29 @@ class TestRunPlanNowAsync:
             plan_service.run_plan_now("daily_dcp_refresh")
         assert exc_info.value.error_code == "plan_already_running"
 
+    def test_failed_step_with_ingestion_job_id_writes_step_job_id(self, plan_service, mock_job_service, store):
+        """P1.2: When submit_command raises JobServiceError with ingestion_job_id,
+        the step's job_id should be written from the exception."""
+        plan_service.seed_default_plans()
+
+        def side_effect(cmd, params=None, source="api"):
+            if cmd == "refresh_plan_progress":
+                raise JobServiceError("external_sync_failed", "connection refused", ingestion_job_id="ing_failed_abc123")
+            return JobResult(ingestion_job_id=f"ing_{cmd}_ok", status="accepted")
+
+        mock_job_service.submit_command.side_effect = side_effect
+        result = plan_service.run_plan_now("daily_dcp_refresh", source="api")
+        run = _wait_for_run(store, result.run_id)
+
+        steps = store.get_scheduled_run_steps(result.run_id)
+        # Step 1 (refresh_plan_progress) should have job_id from exception
+        assert steps[1]["job_id"] == "ing_failed_abc123"
+        assert steps[1]["status"] == "failed"
+        # Step 0 should have succeeded
+        assert steps[0]["status"] == "succeeded"
+        # Run should be failed
+        assert run["status"] == "failed"
+
     def test_failed_step_marks_remaining_skipped(self, plan_service, mock_job_service, store):
         plan_service.seed_default_plans()
         call_count = 0

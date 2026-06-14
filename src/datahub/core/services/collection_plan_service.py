@@ -223,6 +223,7 @@ class CollectionPlanService:
             except JobServiceError as exc:
                 self._store.update_scheduled_run_step(
                     step_id, status="failed", error=exc.message,
+                    job_id=exc.ingestion_job_id,
                 )
                 run_status = "failed"
                 run_error = f"step {command_name} failed: {exc.message}"

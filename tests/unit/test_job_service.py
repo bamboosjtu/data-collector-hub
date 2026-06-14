@@ -381,6 +381,115 @@ class TestRetryJob:
 # source field in CREATE TABLE baseline
 # ---------------------------------------------------------------------------
 
+class TestJobServiceErrorIngestionJobId:
+    """P1.2: JobServiceError must carry ingestion_job_id when job already created."""
+
+    def test_external_sync_failed_carries_ingestion_job_id(self):
+        svc, store, client = _make_job_service()
+        client.sync.side_effect = ConnectionError("downloader unreachable")
+
+        with pytest.raises(JobServiceError) as exc_info:
+            svc.submit_command("dcp_current_plan")
+        assert exc_info.value.error_code == "external_sync_failed"
+        assert exc_info.value.ingestion_job_id is not None
+        assert exc_info.value.ingestion_job_id.startswith("ing_dcp_current_plan_")
+
+    def test_no_connector_carries_ingestion_job_id(self):
+        plugins = _make_plugins()
+        store = _make_store()
+        svc = JobService(
+            store=store,
+            plugins=plugins,
+            trigger_clients={},
+            callback_base_url="http://localhost:8000",
+        )
+
+        with pytest.raises(JobServiceError) as exc_info:
+            svc.submit_command("dcp_current_plan")
+        assert exc_info.value.error_code == "no_connector"
+        assert exc_info.value.ingestion_job_id is not None
+        assert exc_info.value.ingestion_job_id.startswith("ing_dcp_current_plan_")
+        # Job should be marked failed
+        mark_calls = store.mark_job.call_args_list
+        assert any(c[1].get("status") == "failed" for c in mark_calls)
+
+    def test_plugin_handler_failed_carries_ingestion_job_id(self):
+        cmd = _make_command(
+            name="bad_handler_cmd",
+            trigger_type="plugin_handler",
+            trigger={"type": "plugin_handler", "handler": "dcp.fan_out:nonexistent"},
+        )
+        plugins = _make_plugins(commands=[cmd])
+        store = _make_store()
+        client = _make_client()
+
+        with patch("src.datahub.core.services.job_service.load_plugin_handler", side_effect=ImportError("no module")):
+            svc = JobService(
+                store=store,
+                plugins=plugins,
+                trigger_clients={"dcp": client},
+                callback_base_url="http://localhost:8000",
+            )
+            with pytest.raises(JobServiceError) as exc_info:
+                svc.submit_command("bad_handler_cmd")
+            assert exc_info.value.error_code == "plugin_handler_failed"
+            assert exc_info.value.ingestion_job_id is not None
+            assert exc_info.value.ingestion_job_id.startswith("ing_bad_handler_cmd_")
+
+    def test_invalid_trigger_missing_job_type_carries_ingestion_job_id(self):
+        cmd = _make_command(
+            name="no_job_type_cmd",
+            trigger_type="downloader_sync",
+            trigger={"type": "downloader_sync"},  # no job_type
+        )
+        plugins = _make_plugins(commands=[cmd])
+        store = _make_store()
+        svc = JobService(
+            store=store,
+            plugins=plugins,
+            trigger_clients={"dcp": _make_client()},
+            callback_base_url="http://localhost:8000",
+        )
+
+        with pytest.raises(JobServiceError) as exc_info:
+            svc.submit_command("no_job_type_cmd")
+        assert exc_info.value.error_code == "invalid_trigger"
+        assert exc_info.value.ingestion_job_id is not None
+        assert exc_info.value.ingestion_job_id.startswith("ing_no_job_type_cmd_")
+
+    def test_unknown_command_no_ingestion_job_id(self):
+        svc, _, _ = _make_job_service(plugins=_make_plugins())
+        with pytest.raises(JobServiceError) as exc_info:
+            svc.submit_command("nonexistent_command")
+        assert exc_info.value.error_code == "unknown_command"
+        assert exc_info.value.ingestion_job_id is None
+
+    def test_missing_required_param_no_ingestion_job_id(self):
+        cmd = _make_command(name="needs_param", required_params=("projectCode",))
+        plugins = _make_plugins(commands=[cmd])
+        svc, _, _ = _make_job_service(plugins=plugins)
+        with pytest.raises(JobServiceError) as exc_info:
+            svc.submit_command("needs_param", params={})
+        assert exc_info.value.error_code == "missing_required_param"
+        assert exc_info.value.ingestion_job_id is None
+
+    def test_invalid_source_no_ingestion_job_id(self):
+        svc, _, _ = _make_job_service()
+        with pytest.raises(JobServiceError) as exc_info:
+            svc.submit_command("dcp_current_plan", source="invalid_source")
+        assert exc_info.value.error_code == "invalid_source"
+        assert exc_info.value.ingestion_job_id is None
+
+    def test_command_disabled_no_ingestion_job_id(self):
+        cmd = _make_command(name="disabled_cmd", enabled=False)
+        plugins = _make_plugins(commands=[cmd])
+        svc, _, _ = _make_job_service(plugins=plugins)
+        with pytest.raises(JobServiceError) as exc_info:
+            svc.submit_command("disabled_cmd")
+        assert exc_info.value.error_code == "command_disabled"
+        assert exc_info.value.ingestion_job_id is None
+
+
 class TestSourceFieldBaseline:
     def test_source_in_ingestion_jobs_baseline(self):
         """After init_schema, ingestion_jobs.source exists from CREATE TABLE, not ALTER TABLE."""
@@ -402,3 +511,60 @@ class TestSourceFieldBaseline:
             assert col[3] == 1, "source should be NOT NULL (notnull=1)"
             assert col[4] == "'api'", f"source default should be 'api', got {col[4]}"
             conn.close()
+
+
+# ---------------------------------------------------------------------------
+# API error response includes ingestion_job_id
+# ---------------------------------------------------------------------------
+
+class TestAPIErrorIngestionJobId:
+    """P1.2: API error responses must include ingestion_job_id when present."""
+
+    def _build_client(self, mock_job_svc):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from src.datahub.api.ingestion import build_ingestion_router
+        from src.datahub.settings import Settings
+
+        settings = Settings()
+        store = _make_store()
+
+        router = build_ingestion_router(
+            settings=settings,
+            plugins=_make_plugins(),
+            store=store,
+            trigger_clients={"dcp": _make_client()},
+            ingestion_service=MagicMock(),
+            job_service=mock_job_svc,
+        )
+        app = FastAPI()
+        app.include_router(router)
+        return TestClient(app)
+
+    def test_api_error_includes_ingestion_job_id(self):
+        """external_sync_failed with ingestion_job_id should include it in response detail."""
+        mock_job_svc = MagicMock(spec=JobService)
+        mock_job_svc.submit_command.side_effect = JobServiceError(
+            "external_sync_failed", "connection refused", ingestion_job_id="ing_test_abc123"
+        )
+
+        tc = self._build_client(mock_job_svc)
+        resp = tc.post("/ingestion/v1/jobs", json={"command": "dcp_current_plan", "params": {}})
+        assert resp.status_code == 502
+        detail = resp.json()["detail"]
+        assert detail["error"] == "external_sync_failed"
+        assert detail["ingestion_job_id"] == "ing_test_abc123"
+
+    def test_api_error_without_ingestion_job_id(self):
+        """unknown_command (no ingestion_job_id) should not include it in response detail."""
+        mock_job_svc = MagicMock(spec=JobService)
+        mock_job_svc.submit_command.side_effect = JobServiceError(
+            "unknown_command", "command not found"
+        )
+
+        tc = self._build_client(mock_job_svc)
+        resp = tc.post("/ingestion/v1/jobs", json={"command": "nonexistent", "params": {}})
+        assert resp.status_code == 422
+        detail = resp.json()["detail"]
+        assert detail["error"] == "unknown_command"
+        assert "ingestion_job_id" not in detail

@@ -95,7 +95,10 @@ def build_ingestion_router(
             result = _job_service.submit_command(payload.command, payload.params, source=payload.source)
         except JobServiceError as exc:
             status_code = _error_status(exc.error_code)
-            raise HTTPException(status_code=status_code, detail={"error": exc.error_code, "message": exc.message}) from exc
+            detail: dict[str, Any] = {"error": exc.error_code, "message": exc.message}
+            if exc.ingestion_job_id:
+                detail["ingestion_job_id"] = exc.ingestion_job_id
+            raise HTTPException(status_code=status_code, detail=detail) from exc
         resp: dict[str, Any] = {"ingestion_job_id": result.ingestion_job_id, "status": result.status}
         if result.downloader_job_id:
             resp["downloader_job_id"] = result.downloader_job_id
