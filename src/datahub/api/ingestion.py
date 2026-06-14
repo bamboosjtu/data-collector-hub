@@ -36,6 +36,7 @@ _ERROR_STATUS_MAP: dict[str, int] = {
     "retry_already_running": 409,
     "not_fanout_parent": 404,
     "no_failed_children": 409,
+    "no_retry_submitted": 409,
 }
 
 

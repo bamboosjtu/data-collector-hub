@@ -453,6 +453,20 @@ class DataHubStore:
                 (datahub_now_text(), parent_job_id),
             )
 
+    def reopen_parent_ingestion_job(self, ingestion_job_id: str) -> None:
+        """Reopen a parent ingestion_job: set running, clear error/result_json/finished_at."""
+        with closing(self.connect()) as conn, conn:
+            conn.execute(
+                """UPDATE ingestion_jobs
+                   SET status = 'running',
+                       error = NULL,
+                       result_json = NULL,
+                       finished_at = NULL,
+                       updated_at = ?
+                   WHERE ingestion_job_id = ?""",
+                (datahub_now_text(), ingestion_job_id),
+            )
+
     def list_job_retries(self, ingestion_job_id: str) -> list[dict[str, Any]]:
         """List all retry jobs for the given original job."""
         return self._get_rows(

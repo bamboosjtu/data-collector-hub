@@ -334,11 +334,17 @@ class JobService:
                     "reason": f"submit failed: {exc.message}",
                 })
 
-        # Reopen fanout_run if it was closed
-        if fanout_run["status"] in ("partial", "failed", "succeeded"):
-            self._store.reopen_fanout_run(parent_job_id)
-            # Mark parent job as running
-            self._store.mark_job(parent_job_id, status="running", error=None)
+        # Only reopen if we actually submitted new children
+        if len(submitted) > 0:
+            if fanout_run["status"] in ("partial", "failed", "succeeded"):
+                self._store.reopen_fanout_run(parent_job_id)
+                self._store.reopen_parent_ingestion_job(parent_job_id)
+        elif skipped:
+            raise JobServiceError(
+                "no_retry_submitted",
+                f"0 of {len(failed_items)} items submitted, {len(skipped)} skipped: "
+                + "; ".join(f"item {s['item_index']}: {s['reason']}" for s in skipped[:5]),
+            )
 
         return {
             "parent_job_id": parent_job_id,
