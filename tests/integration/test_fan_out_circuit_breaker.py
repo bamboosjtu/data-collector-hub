@@ -783,43 +783,29 @@ class TestTransientRetry:
 
 
 # ---------------------------------------------------------------------------
-# Real SQLite: migration, next_attempt_at, retry_fanout_item
+# Real SQLite: baseline, next_attempt_at, retry_fanout_item
 # ---------------------------------------------------------------------------
 
-class TestFanoutRetryMigration:
-    def test_migration_adds_columns_to_existing_db(self):
-        """Migration should add retry_count and next_attempt_at to existing fanout_items."""
+class TestFanoutRetryBaseline:
+    def test_fanout_items_columns_in_baseline(self):
+        """retry_count and next_attempt_at should exist in fanout_items from CREATE TABLE baseline."""
         import sqlite3
-        from src.datahub.storage.ddl import _migrate_fanout_items_columns
+        from src.datahub.storage.ddl import create_metadata_tables
 
         conn = sqlite3.connect(":memory:")
-        # Create fanout_items WITHOUT the new columns
-        conn.execute("""CREATE TABLE fanout_items (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            parent_job_id TEXT NOT NULL,
-            item_index INTEGER NOT NULL,
-            params_json TEXT NOT NULL,
-            child_job_id TEXT,
-            status TEXT NOT NULL DEFAULT 'pending',
-            error TEXT,
-            claimed_by TEXT,
-            claimed_at TEXT,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            UNIQUE(parent_job_id, item_index)
-        )""")
+        create_metadata_tables(conn)
 
-        _migrate_fanout_items_columns(conn)
+        columns = {row[1]: row for row in conn.execute("PRAGMA table_info(fanout_items)").fetchall()}
+        assert "retry_count" in columns, "retry_count missing from fanout_items baseline"
+        assert "next_attempt_at" in columns, "next_attempt_at missing from fanout_items baseline"
 
-        columns = {row[1] for row in conn.execute("PRAGMA table_info(fanout_items)").fetchall()}
-        assert "retry_count" in columns
-        assert "next_attempt_at" in columns
+        # Verify retry_count is NOT NULL DEFAULT 0
+        rc = columns["retry_count"]
+        assert rc[2] == "INTEGER"
+        assert rc[3] == 1, "retry_count should be NOT NULL"
+        assert rc[4] == "0", f"retry_count default should be 0, got {rc[4]}"
 
-        # Migration should be idempotent
-        _migrate_fanout_items_columns(conn)
-        columns2 = {row[1] for row in conn.execute("PRAGMA table_info(fanout_items)").fetchall()}
-        assert "retry_count" in columns2
-        assert "next_attempt_at" in columns2
+        conn.close()
 
     def test_next_attempt_at_not_yet_not_claimed(self):
         """Pending item with next_attempt_at in the future should not be claimed."""
