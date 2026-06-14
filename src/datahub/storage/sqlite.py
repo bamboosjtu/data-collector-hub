@@ -54,15 +54,16 @@ class DataHubStore:
         plugin_id: str | None = None,
         dataset_key: str | None = None,
         parent_job_id: str | None = None,
+        retry_of_job_id: str | None = None,
         source: str = "api",
     ) -> None:
         with closing(self.connect()) as conn, conn:
             conn.execute(
                 """
-                INSERT INTO ingestion_jobs(ingestion_job_id, parent_job_id, plugin_id, trigger_key, downloader_job_id, dataset_key, params_json, source, status, started_at, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'triggering', ?, ?, ?)
+                INSERT INTO ingestion_jobs(ingestion_job_id, parent_job_id, retry_of_job_id, plugin_id, trigger_key, downloader_job_id, dataset_key, params_json, source, status, started_at, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'triggering', ?, ?, ?)
                 """,
-                (ingestion_job_id, parent_job_id, plugin_id, job_type, producer_job_id, dataset_key, self._json(params), source, datahub_now_text(), datahub_now_text(), datahub_now_text()),
+                (ingestion_job_id, parent_job_id, retry_of_job_id, plugin_id, job_type, producer_job_id, dataset_key, self._json(params), source, datahub_now_text(), datahub_now_text(), datahub_now_text()),
             )
 
     def mark_job(
@@ -381,6 +382,83 @@ class DataHubStore:
     def has_fanout_run(self, parent_job_id: str) -> bool:
         row = self._get_row("SELECT 1 FROM fanout_runs WHERE parent_job_id = ?", (parent_job_id,))
         return row is not None
+
+    def find_active_retry(self, retry_of_job_id: str) -> dict[str, Any] | None:
+        """Find an active (non-terminal) retry job for the given original job."""
+        return self._get_row(
+            """SELECT * FROM ingestion_jobs
+               WHERE retry_of_job_id = ? AND status NOT IN ('succeeded','partial','failed','cancelled')
+               ORDER BY created_at DESC LIMIT 1""",
+            (retry_of_job_id,),
+        )
+
+    def list_failed_fanout_items(self, parent_job_id: str, item_indexes: list[int] | None = None) -> list[dict[str, Any]]:
+        """List fanout_items eligible for retry: failed/skipped, or with failed/partial/cancelled child job."""
+        items = self._get_rows(
+            """SELECT fi.* FROM fanout_items fi
+               WHERE fi.parent_job_id = ? AND fi.status IN ('failed', 'skipped')
+               ORDER BY fi.item_index""",
+            (parent_job_id,),
+        )
+        # Also include items whose child job is in a retryable terminal state
+        child_items = self._get_rows(
+            """SELECT fi.* FROM fanout_items fi
+               JOIN ingestion_jobs ij ON fi.child_job_id = ij.ingestion_job_id
+               WHERE fi.parent_job_id = ? AND ij.status IN ('failed', 'partial', 'cancelled')
+               AND fi.status NOT IN ('pending', 'submitting', 'submitted')
+               ORDER BY fi.item_index""",
+            (parent_job_id,),
+        )
+        # Merge, deduplicate by id
+        seen = set()
+        result = []
+        for item in items + child_items:
+            if item["id"] not in seen:
+                seen.add(item["id"])
+                result.append(item)
+        # Filter by item_indexes if provided
+        if item_indexes is not None:
+            index_set = set(item_indexes)
+            result = [item for item in result if item["item_index"] in index_set]
+        return result
+
+    def update_fanout_item_for_retry(self, item_id: int, *, new_child_job_id: str) -> None:
+        """Reset a fanout_item for retry: set status to submitted, update child_job_id, increment retry_count."""
+        with closing(self.connect()) as conn, conn:
+            conn.execute(
+                """UPDATE fanout_items
+                   SET status = 'submitted',
+                       child_job_id = ?,
+                       error = NULL,
+                       claimed_by = NULL,
+                       claimed_at = NULL,
+                       retry_count = retry_count + 1,
+                       next_attempt_at = NULL,
+                       updated_at = ?
+                   WHERE id = ?""",
+                (new_child_job_id, datahub_now_text(), item_id),
+            )
+
+    def reopen_fanout_run(self, parent_job_id: str) -> None:
+        """Reopen a closed fanout_run back to running status."""
+        with closing(self.connect()) as conn, conn:
+            conn.execute(
+                """UPDATE fanout_runs
+                   SET status = 'running',
+                       result_json = NULL,
+                       lease_owner = NULL,
+                       lease_until = NULL,
+                       updated_at = ?
+                   WHERE parent_job_id = ?""",
+                (datahub_now_text(), parent_job_id),
+            )
+
+    def list_job_retries(self, ingestion_job_id: str) -> list[dict[str, Any]]:
+        """List all retry jobs for the given original job."""
+        return self._get_rows(
+            "SELECT * FROM ingestion_jobs WHERE retry_of_job_id = ? ORDER BY created_at",
+            (ingestion_job_id,),
+        )
 
     # ── Collection plan store APIs ──────────────────────────────
 

@@ -33,6 +33,9 @@ _ERROR_STATUS_MAP: dict[str, int] = {
     "job_not_found": 404,
     "no_command": 422,
     "job_not_retryable": 409,
+    "retry_already_running": 409,
+    "not_fanout_parent": 404,
+    "no_failed_children": 409,
 }
 
 
@@ -46,6 +49,10 @@ class IngestionJobRequest(BaseModel):
     downloader_job_id: str | None = None
     source: str = "api"
     debug: bool = False
+
+
+class RetryFailedChildrenRequest(BaseModel):
+    item_indexes: list[int] | None = None
 
 
 def build_ingestion_router(
@@ -135,7 +142,20 @@ def build_ingestion_router(
             resp["downloader_job_id"] = result.downloader_job_id
         if result.original_job_id:
             resp["original_job_id"] = result.original_job_id
+        if result.retry_of_job_id:
+            resp["retry_of_job_id"] = result.retry_of_job_id
         return resp
+
+    @router.post("/ingestion/v1/jobs/{parent_job_id}/retry-failed-children", status_code=202, dependencies=[Depends(require_scope(store, "ingestion"))])
+    def retry_failed_children(parent_job_id: str, payload: RetryFailedChildrenRequest | None = None) -> dict[str, Any]:
+        """Retry failed/skipped children of a fan-out parent job."""
+        item_indexes = payload.item_indexes if payload else None
+        try:
+            result = _job_service.retry_failed_children(parent_job_id, item_indexes=item_indexes)
+        except JobServiceError as exc:
+            status_code = _error_status(exc.error_code)
+            raise HTTPException(status_code=status_code, detail={"error": exc.error_code, "message": exc.message}) from exc
+        return result
 
     @router.get("/ingestion/v1/messages", dependencies=[Depends(require_scope(store, "admin"))])
     def list_messages(limit: int = Query(default=50, ge=1, le=200)) -> dict[str, Any]:

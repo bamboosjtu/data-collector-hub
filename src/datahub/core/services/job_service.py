@@ -43,6 +43,7 @@ class JobResult:
     downloader_job_id: str | None = None
     message: str | None = None
     original_job_id: str | None = None
+    retry_of_job_id: str | None = None
 
 
 class JobService:
@@ -68,6 +69,9 @@ class JobService:
         command_name: str,
         params: dict[str, Any] | None = None,
         source: str = "api",
+        *,
+        parent_job_id: str | None = None,
+        retry_of_job_id: str | None = None,
     ) -> JobResult:
         """Submit a command for execution.
 
@@ -117,6 +121,8 @@ class JobService:
                 params=params,
                 plugin_id=plugin.name,
                 source=source,
+                parent_job_id=parent_job_id,
+                retry_of_job_id=retry_of_job_id,
             )
             self._store.mark_job(ingestion_job_id, status="running")
             try:
@@ -151,6 +157,8 @@ class JobService:
             params=params,
             plugin_id=plugin.name,
             source=source,
+            parent_job_id=parent_job_id,
+            retry_of_job_id=retry_of_job_id,
         )
 
         client = self._trigger_clients.get(plugin.name)
@@ -201,11 +209,11 @@ class JobService:
             source: Source label for the retry job (default: "retry").
 
         Returns:
-            JobResult for the new retry job, with original_job_id set.
+            JobResult for the new retry job, with original_job_id and retry_of_job_id set.
 
         Raises:
             JobServiceError: If the original job is not found, has no command,
-                or is not in a retryable state.
+                is not in a retryable state, or an active retry already exists.
         """
         import json
 
@@ -220,10 +228,122 @@ class JobService:
                 f"job {ingestion_job_id} has status '{original_status}', only {sorted(RETRYABLE_STATUSES)} can be retried",
             )
 
+        # Check for active retry
+        active_retry = self._store.find_active_retry(ingestion_job_id)
+        if active_retry:
+            raise JobServiceError(
+                "retry_already_running",
+                f"an active retry job {active_retry['ingestion_job_id']} (status={active_retry['status']}) already exists for {ingestion_job_id}",
+            )
+
         command_name = original.get("trigger_key")
         if not command_name:
             raise JobServiceError("no_command", f"original job {ingestion_job_id} has no command")
         params = json.loads(original.get("params_json") or "{}")
-        result = self.submit_command(command_name, params, source=source)
+        parent_job_id = original.get("parent_job_id")
+        result = self.submit_command(
+            command_name, params, source=source,
+            parent_job_id=parent_job_id,
+            retry_of_job_id=ingestion_job_id,
+        )
         result.original_job_id = ingestion_job_id
+        result.retry_of_job_id = ingestion_job_id
         return result
+
+    def retry_failed_children(
+        self,
+        parent_job_id: str,
+        item_indexes: list[int] | None = None,
+        *,
+        source: str = "retry",
+    ) -> dict[str, Any]:
+        """Retry failed/skipped children of a fan-out parent job.
+
+        Args:
+            parent_job_id: The parent job ID with a fanout_run.
+            item_indexes: Optional list of specific item indexes to retry.
+                If None, all failed/skipped children are retried.
+            source: Source label for retry jobs (default: "retry").
+
+        Returns:
+            Dict with parent_job_id, submitted count, skipped count, and item details.
+
+        Raises:
+            JobServiceError: If parent is not a fanout run or no failed children.
+        """
+        import json
+
+        fanout_run = self._store.get_fanout_run(parent_job_id)
+        if not fanout_run:
+            raise JobServiceError("not_fanout_parent", f"job {parent_job_id} is not a fanout parent")
+
+        failed_items = self._store.list_failed_fanout_items(parent_job_id, item_indexes=item_indexes)
+        if not failed_items:
+            raise JobServiceError("no_failed_children", f"no failed/skipped children found for fanout parent {parent_job_id}")
+
+        child_command = fanout_run["child_command"]
+        submitted = []
+        skipped = []
+
+        for item in failed_items:
+            old_child_job_id = item.get("child_job_id")
+
+            # Skip items with active child jobs
+            if old_child_job_id:
+                child_job = self._store.get_job(old_child_job_id)
+                if child_job and child_job["status"] not in RETRYABLE_STATUSES:
+                    skipped.append({
+                        "item_index": item["item_index"],
+                        "old_child_job_id": old_child_job_id,
+                        "reason": f"child status={child_job['status']}",
+                    })
+                    continue
+
+                # Check for active retry of this child
+                active_retry = self._store.find_active_retry(old_child_job_id)
+                if active_retry:
+                    skipped.append({
+                        "item_index": item["item_index"],
+                        "old_child_job_id": old_child_job_id,
+                        "reason": f"active retry {active_retry['ingestion_job_id']} already running",
+                    })
+                    continue
+
+            # Submit new child job
+            params = json.loads(item.get("params_json") or "{}")
+            try:
+                result = self.submit_command(
+                    child_command,
+                    params,
+                    source=source,
+                    parent_job_id=parent_job_id,
+                    retry_of_job_id=old_child_job_id,
+                )
+                # Update fanout_item to point to new child
+                self._store.update_fanout_item_for_retry(item["id"], new_child_job_id=result.ingestion_job_id)
+                submitted.append({
+                    "item_index": item["item_index"],
+                    "old_child_job_id": old_child_job_id,
+                    "new_child_job_id": result.ingestion_job_id,
+                    "status": "submitted",
+                })
+            except JobServiceError as exc:
+                skipped.append({
+                    "item_index": item["item_index"],
+                    "old_child_job_id": old_child_job_id,
+                    "reason": f"submit failed: {exc.message}",
+                })
+
+        # Reopen fanout_run if it was closed
+        if fanout_run["status"] in ("partial", "failed", "succeeded"):
+            self._store.reopen_fanout_run(parent_job_id)
+            # Mark parent job as running
+            self._store.mark_job(parent_job_id, status="running", error=None)
+
+        return {
+            "parent_job_id": parent_job_id,
+            "submitted": len(submitted),
+            "skipped": len(skipped),
+            "items": submitted,
+            "skipped_items": skipped,
+        }

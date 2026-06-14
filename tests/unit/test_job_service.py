@@ -57,6 +57,11 @@ def _make_store():
     store.create_ingestion_job = MagicMock()
     store.mark_job = MagicMock()
     store.get_job = MagicMock(return_value=None)
+    store.find_active_retry = MagicMock(return_value=None)
+    store.get_fanout_run = MagicMock(return_value=None)
+    store.list_failed_fanout_items = MagicMock(return_value=[])
+    store.update_fanout_item_for_retry = MagicMock()
+    store.reopen_fanout_run = MagicMock()
     return store
 
 
@@ -274,19 +279,24 @@ class TestRetryJob:
             "trigger_key": "dcp_current_plan",
             "params_json": json.dumps({"domain": "basic"}),
             "status": "failed",
+            "parent_job_id": None,
         }
         store.get_job.return_value = original
+        store.find_active_retry = MagicMock(return_value=None)
 
         result = svc.retry_job("ing_old_123")
         assert isinstance(result, JobResult)
         assert result.ingestion_job_id != "ing_old_123"
         assert result.original_job_id == "ing_old_123"
+        assert result.retry_of_job_id == "ing_old_123"
 
         # New job should have source="retry"
         call_kwargs = store.create_ingestion_job.call_args[1]
         assert call_kwargs["source"] == "retry"
         assert call_kwargs["job_type"] == "dcp_current_plan"
         assert call_kwargs["params"] == {"domain": "basic"}
+        assert call_kwargs["retry_of_job_id"] == "ing_old_123"
+        assert call_kwargs["parent_job_id"] is None
 
     def test_retry_partial_job_succeeds(self):
         svc, store, _ = _make_job_service()
@@ -295,10 +305,13 @@ class TestRetryJob:
             "trigger_key": "dcp_current_plan",
             "params_json": json.dumps({}),
             "status": "partial",
+            "parent_job_id": None,
         }
         store.get_job.return_value = original
+        store.find_active_retry = MagicMock(return_value=None)
         result = svc.retry_job("ing_partial_1")
         assert result.original_job_id == "ing_partial_1"
+        assert result.retry_of_job_id == "ing_partial_1"
 
     def test_retry_cancelled_job_succeeds(self):
         svc, store, _ = _make_job_service()
@@ -307,8 +320,10 @@ class TestRetryJob:
             "trigger_key": "dcp_current_plan",
             "params_json": json.dumps({}),
             "status": "cancelled",
+            "parent_job_id": None,
         }
         store.get_job.return_value = original
+        store.find_active_retry = MagicMock(return_value=None)
         result = svc.retry_job("ing_cancel_1")
         assert result.original_job_id == "ing_cancel_1"
 
@@ -375,6 +390,195 @@ class TestRetryJob:
         with pytest.raises(JobServiceError) as exc_info:
             svc.retry_job("ing_x")
         assert exc_info.value.error_code == "no_command"
+
+
+# ---------------------------------------------------------------------------
+# P2: retry_of_job_id and retry_already_running
+# ---------------------------------------------------------------------------
+
+class TestRetryOfJobId:
+    """P2: retry_job writes retry_of_job_id and rejects active retries."""
+
+    def test_retry_writes_retry_of_job_id(self):
+        svc, store, _ = _make_job_service()
+        original = {
+            "ingestion_job_id": "ing_orig_1",
+            "trigger_key": "dcp_current_plan",
+            "params_json": json.dumps({"domain": "basic"}),
+            "status": "failed",
+            "parent_job_id": "ing_parent_1",
+        }
+        store.get_job.return_value = original
+        store.find_active_retry = MagicMock(return_value=None)
+
+        result = svc.retry_job("ing_orig_1")
+        assert result.retry_of_job_id == "ing_orig_1"
+        assert result.original_job_id == "ing_orig_1"
+
+        call_kwargs = store.create_ingestion_job.call_args[1]
+        assert call_kwargs["retry_of_job_id"] == "ing_orig_1"
+        assert call_kwargs["parent_job_id"] == "ing_parent_1"
+
+    def test_retry_already_running_rejected(self):
+        svc, store, _ = _make_job_service()
+        original = {
+            "ingestion_job_id": "ing_orig_1",
+            "trigger_key": "dcp_current_plan",
+            "params_json": json.dumps({}),
+            "status": "failed",
+            "parent_job_id": None,
+        }
+        store.get_job.return_value = original
+        store.find_active_retry = MagicMock(return_value={
+            "ingestion_job_id": "ing_retry_active",
+            "status": "accepted",
+        })
+
+        with pytest.raises(JobServiceError) as exc_info:
+            svc.retry_job("ing_orig_1")
+        assert exc_info.value.error_code == "retry_already_running"
+
+    def test_retry_child_preserves_parent_job_id(self):
+        """Fanout child retry should preserve parent_job_id from original."""
+        svc, store, _ = _make_job_service()
+        original = {
+            "ingestion_job_id": "ing_child_1",
+            "trigger_key": "dcp_current_plan",
+            "params_json": json.dumps({"domain": "basic"}),
+            "status": "failed",
+            "parent_job_id": "ing_parent_fanout",
+        }
+        store.get_job.return_value = original
+        store.find_active_retry = MagicMock(return_value=None)
+
+        result = svc.retry_job("ing_child_1")
+        call_kwargs = store.create_ingestion_job.call_args[1]
+        assert call_kwargs["parent_job_id"] == "ing_parent_fanout"
+        assert call_kwargs["retry_of_job_id"] == "ing_child_1"
+
+
+# ---------------------------------------------------------------------------
+# P2: retry_failed_children
+# ---------------------------------------------------------------------------
+
+class TestRetryFailedChildren:
+    """P2: retry_failed_children for fan-out parent jobs."""
+
+    def _make_fanout_setup(self):
+        """Create a JobService with fanout_run and items mocked."""
+        svc, store, client = _make_job_service()
+        fanout_run = {
+            "parent_job_id": "ing_parent_1",
+            "child_command": "dcp_current_plan",
+            "status": "partial",
+            "total": 3,
+        }
+        store.get_fanout_run = MagicMock(return_value=fanout_run)
+        store.list_failed_fanout_items = MagicMock(return_value=[
+            {"id": 1, "item_index": 0, "params_json": json.dumps({"domain": "a"}), "child_job_id": "ing_child_0", "status": "failed"},
+            {"id": 2, "item_index": 1, "params_json": json.dumps({"domain": "b"}), "child_job_id": "ing_child_1", "status": "skipped"},
+        ])
+        store.get_job = MagicMock(side_effect=lambda jid: {
+            "ing_child_0": {"ingestion_job_id": "ing_child_0", "status": "failed"},
+            "ing_child_1": {"ingestion_job_id": "ing_child_1", "status": "cancelled"},
+        }.get(jid))
+        store.find_active_retry = MagicMock(return_value=None)
+        store.update_fanout_item_for_retry = MagicMock()
+        store.reopen_fanout_run = MagicMock()
+        return svc, store, client
+
+    def test_not_fanout_parent_raises_error(self):
+        svc, store, _ = _make_job_service()
+        store.get_fanout_run = MagicMock(return_value=None)
+
+        with pytest.raises(JobServiceError) as exc_info:
+            svc.retry_failed_children("ing_not_fanout")
+        assert exc_info.value.error_code == "not_fanout_parent"
+
+    def test_no_failed_children_raises_error(self):
+        svc, store, _ = _make_job_service()
+        store.get_fanout_run = MagicMock(return_value={"parent_job_id": "ing_parent_1", "child_command": "dcp_current_plan", "status": "succeeded"})
+        store.list_failed_fanout_items = MagicMock(return_value=[])
+
+        with pytest.raises(JobServiceError) as exc_info:
+            svc.retry_failed_children("ing_parent_1")
+        assert exc_info.value.error_code == "no_failed_children"
+
+    def test_failed_items_submit_new_child_jobs(self):
+        svc, store, _ = self._make_fanout_setup()
+
+        result = svc.retry_failed_children("ing_parent_1")
+        assert result["submitted"] == 2
+        assert result["skipped"] == 0
+        assert len(result["items"]) == 2
+
+        # Check first item
+        item0 = result["items"][0]
+        assert item0["old_child_job_id"] == "ing_child_0"
+        assert item0["new_child_job_id"].startswith("ing_dcp_current_plan_")
+        assert item0["status"] == "submitted"
+
+    def test_new_child_has_parent_and_retry_of(self):
+        svc, store, _ = self._make_fanout_setup()
+        svc.retry_failed_children("ing_parent_1")
+
+        # Check create_ingestion_job calls
+        calls = store.create_ingestion_job.call_args_list
+        assert len(calls) == 2
+        for call in calls:
+            kwargs = call[1]
+            assert kwargs["parent_job_id"] == "ing_parent_1"
+            assert kwargs["source"] == "retry"
+
+        # First call should have retry_of_job_id = ing_child_0
+        assert calls[0][1]["retry_of_job_id"] == "ing_child_0"
+        assert calls[1][1]["retry_of_job_id"] == "ing_child_1"
+
+    def test_fanout_item_updated_with_new_child(self):
+        svc, store, _ = self._make_fanout_setup()
+        result = svc.retry_failed_children("ing_parent_1")
+
+        # update_fanout_item_for_retry should be called for each item
+        assert store.update_fanout_item_for_retry.call_count == 2
+
+    def test_fanout_run_reopened_when_closed(self):
+        svc, store, _ = self._make_fanout_setup()
+        svc.retry_failed_children("ing_parent_1")
+
+        store.reopen_fanout_run.assert_called_once_with("ing_parent_1")
+        # Parent job should be marked running
+        mark_calls = store.mark_job.call_args_list
+        assert any(c[1].get("status") == "running" for c in mark_calls)
+
+    def test_active_child_not_retried(self):
+        svc, store, _ = _make_job_service()
+        fanout_run = {
+            "parent_job_id": "ing_parent_1",
+            "child_command": "dcp_current_plan",
+            "status": "running",
+            "total": 1,
+        }
+        store.get_fanout_run = MagicMock(return_value=fanout_run)
+        store.list_failed_fanout_items = MagicMock(return_value=[
+            {"id": 1, "item_index": 0, "params_json": json.dumps({"domain": "a"}), "child_job_id": "ing_child_0", "status": "failed"},
+        ])
+        # Child is still running (not in RETRYABLE_STATUSES)
+        store.get_job = MagicMock(return_value={"ingestion_job_id": "ing_child_0", "status": "accepted"})
+        store.find_active_retry = MagicMock(return_value=None)
+
+        result = svc.retry_failed_children("ing_parent_1")
+        assert result["submitted"] == 0
+        assert result["skipped"] == 1
+
+    def test_item_indexes_filter(self):
+        svc, store, _ = self._make_fanout_setup()
+        # Only retry item_index=0
+        store.list_failed_fanout_items = MagicMock(return_value=[
+            {"id": 1, "item_index": 0, "params_json": json.dumps({"domain": "a"}), "child_job_id": "ing_child_0", "status": "failed"},
+        ])
+
+        result = svc.retry_failed_children("ing_parent_1", item_indexes=[0])
+        assert result["submitted"] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -512,6 +716,22 @@ class TestSourceFieldBaseline:
             assert col[4] == "'api'", f"source default should be 'api', got {col[4]}"
             conn.close()
 
+    def test_retry_of_job_id_in_ingestion_jobs_baseline(self):
+        """P2: retry_of_job_id column exists in ingestion_jobs CREATE TABLE baseline."""
+        from src.datahub.storage.ddl import create_metadata_tables
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            conn = sqlite3.connect(str(db_path))
+            create_metadata_tables(conn)
+
+            columns = {row[1]: row for row in conn.execute("PRAGMA table_info(ingestion_jobs)").fetchall()}
+            assert "retry_of_job_id" in columns, "retry_of_job_id column missing from ingestion_jobs"
+            col = columns["retry_of_job_id"]
+            assert col[2] == "TEXT"
+            assert col[3] == 0, "retry_of_job_id should be nullable (notnull=0)"
+            conn.close()
+
 
 # ---------------------------------------------------------------------------
 # API error response includes ingestion_job_id
@@ -568,3 +788,100 @@ class TestAPIErrorIngestionJobId:
         detail = resp.json()["detail"]
         assert detail["error"] == "unknown_command"
         assert "ingestion_job_id" not in detail
+
+
+# ---------------------------------------------------------------------------
+# P2: API retry and retry-failed-children
+# ---------------------------------------------------------------------------
+
+class TestAPIRetryP2:
+    """P2: API retry returns retry_of_job_id; retry-failed-children endpoint."""
+
+    def _build_client(self, mock_job_svc):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from src.datahub.api.ingestion import build_ingestion_router
+        from src.datahub.settings import Settings
+
+        settings = Settings()
+        store = _make_store()
+
+        router = build_ingestion_router(
+            settings=settings,
+            plugins=_make_plugins(),
+            store=store,
+            trigger_clients={"dcp": _make_client()},
+            ingestion_service=MagicMock(),
+            job_service=mock_job_svc,
+        )
+        app = FastAPI()
+        app.include_router(router)
+        return TestClient(app)
+
+    def test_retry_returns_retry_of_job_id(self):
+        mock_job_svc = MagicMock(spec=JobService)
+        mock_job_svc.retry_job.return_value = JobResult(
+            ingestion_job_id="ing_new_retry",
+            status="accepted",
+            original_job_id="ing_old_1",
+            retry_of_job_id="ing_old_1",
+        )
+
+        tc = self._build_client(mock_job_svc)
+        resp = tc.post("/ingestion/v1/jobs/ing_old_1/retry")
+        assert resp.status_code == 202
+        data = resp.json()
+        assert data["ingestion_job_id"] == "ing_new_retry"
+        assert data["original_job_id"] == "ing_old_1"
+        assert data["retry_of_job_id"] == "ing_old_1"
+
+    def test_retry_already_running_returns_409(self):
+        mock_job_svc = MagicMock(spec=JobService)
+        mock_job_svc.retry_job.side_effect = JobServiceError(
+            "retry_already_running", "active retry exists"
+        )
+
+        tc = self._build_client(mock_job_svc)
+        resp = tc.post("/ingestion/v1/jobs/ing_old_1/retry")
+        assert resp.status_code == 409
+        assert resp.json()["detail"]["error"] == "retry_already_running"
+
+    def test_retry_failed_children_returns_submitted(self):
+        mock_job_svc = MagicMock(spec=JobService)
+        mock_job_svc.retry_failed_children.return_value = {
+            "parent_job_id": "ing_parent_1",
+            "submitted": 2,
+            "skipped": 0,
+            "items": [
+                {"item_index": 0, "old_child_job_id": "ing_c0", "new_child_job_id": "ing_c0_new", "status": "submitted"},
+                {"item_index": 1, "old_child_job_id": "ing_c1", "new_child_job_id": "ing_c1_new", "status": "submitted"},
+            ],
+            "skipped_items": [],
+        }
+
+        tc = self._build_client(mock_job_svc)
+        resp = tc.post("/ingestion/v1/jobs/ing_parent_1/retry-failed-children")
+        assert resp.status_code == 202
+        data = resp.json()
+        assert data["submitted"] == 2
+        assert len(data["items"]) == 2
+
+    def test_no_failed_children_returns_409(self):
+        mock_job_svc = MagicMock(spec=JobService)
+        mock_job_svc.retry_failed_children.side_effect = JobServiceError(
+            "no_failed_children", "no failed children"
+        )
+
+        tc = self._build_client(mock_job_svc)
+        resp = tc.post("/ingestion/v1/jobs/ing_parent_1/retry-failed-children")
+        assert resp.status_code == 409
+
+    def test_not_fanout_parent_returns_404(self):
+        mock_job_svc = MagicMock(spec=JobService)
+        mock_job_svc.retry_failed_children.side_effect = JobServiceError(
+            "not_fanout_parent", "not a fanout parent"
+        )
+
+        tc = self._build_client(mock_job_svc)
+        resp = tc.post("/ingestion/v1/jobs/ing_parent_1/retry-failed-children")
+        assert resp.status_code == 404

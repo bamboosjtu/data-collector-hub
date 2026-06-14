@@ -24,6 +24,7 @@ def create_metadata_tables(conn: sqlite3.Connection) -> None:
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           ingestion_job_id TEXT NOT NULL UNIQUE,
           parent_job_id TEXT,
+          retry_of_job_id TEXT,
           plugin_id TEXT,
           trigger_key TEXT,
           downloader_job_id TEXT UNIQUE,
