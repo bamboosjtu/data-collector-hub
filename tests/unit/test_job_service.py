@@ -5,18 +5,22 @@ Covers:
 2. submit_command with plugin_handler trigger
 3. submit_command validation (unknown command, disabled, missing params, invalid source)
 4. get_job_detail
-5. retry_job
+5. retry_job (status protection, original_job_id)
 6. source is recorded in ingestion_jobs
+7. source field in CREATE TABLE baseline
 """
 
 from __future__ import annotations
 
 import json
+import sqlite3
+import tempfile
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.datahub.core.services.job_service import JobService, JobServiceError, JobResult
+from src.datahub.core.services.job_service import JobService, JobServiceError, JobResult, RETRYABLE_STATUSES
 from src.datahub.core.specs import CommandSpec, PluginSpec, DisplaySpec, ConnectorSpec
 
 
@@ -263,7 +267,7 @@ class TestGetJobDetail:
 # ---------------------------------------------------------------------------
 
 class TestRetryJob:
-    def test_retry_creates_new_job_with_same_command_and_params(self):
+    def test_retry_failed_job_creates_new_job_with_same_command_and_params(self):
         svc, store, client = _make_job_service()
         original = {
             "ingestion_job_id": "ing_old_123",
@@ -276,12 +280,87 @@ class TestRetryJob:
         result = svc.retry_job("ing_old_123")
         assert isinstance(result, JobResult)
         assert result.ingestion_job_id != "ing_old_123"
+        assert result.original_job_id == "ing_old_123"
 
         # New job should have source="retry"
         call_kwargs = store.create_ingestion_job.call_args[1]
         assert call_kwargs["source"] == "retry"
         assert call_kwargs["job_type"] == "dcp_current_plan"
         assert call_kwargs["params"] == {"domain": "basic"}
+
+    def test_retry_partial_job_succeeds(self):
+        svc, store, _ = _make_job_service()
+        original = {
+            "ingestion_job_id": "ing_partial_1",
+            "trigger_key": "dcp_current_plan",
+            "params_json": json.dumps({}),
+            "status": "partial",
+        }
+        store.get_job.return_value = original
+        result = svc.retry_job("ing_partial_1")
+        assert result.original_job_id == "ing_partial_1"
+
+    def test_retry_cancelled_job_succeeds(self):
+        svc, store, _ = _make_job_service()
+        original = {
+            "ingestion_job_id": "ing_cancel_1",
+            "trigger_key": "dcp_current_plan",
+            "params_json": json.dumps({}),
+            "status": "cancelled",
+        }
+        store.get_job.return_value = original
+        result = svc.retry_job("ing_cancel_1")
+        assert result.original_job_id == "ing_cancel_1"
+
+    def test_retry_running_job_rejected(self):
+        svc, store, _ = _make_job_service()
+        store.get_job.return_value = {
+            "ingestion_job_id": "ing_run_1",
+            "trigger_key": "dcp_current_plan",
+            "params_json": "{}",
+            "status": "running",
+        }
+        with pytest.raises(JobServiceError) as exc_info:
+            svc.retry_job("ing_run_1")
+        assert exc_info.value.error_code == "job_not_retryable"
+        assert "ing_run_1" in exc_info.value.message
+        assert "running" in exc_info.value.message
+
+    def test_retry_triggering_job_rejected(self):
+        svc, store, _ = _make_job_service()
+        store.get_job.return_value = {
+            "ingestion_job_id": "ing_trig_1",
+            "trigger_key": "dcp_current_plan",
+            "params_json": "{}",
+            "status": "triggering",
+        }
+        with pytest.raises(JobServiceError) as exc_info:
+            svc.retry_job("ing_trig_1")
+        assert exc_info.value.error_code == "job_not_retryable"
+
+    def test_retry_succeeded_job_rejected(self):
+        svc, store, _ = _make_job_service()
+        store.get_job.return_value = {
+            "ingestion_job_id": "ing_ok_1",
+            "trigger_key": "dcp_current_plan",
+            "params_json": "{}",
+            "status": "succeeded",
+        }
+        with pytest.raises(JobServiceError) as exc_info:
+            svc.retry_job("ing_ok_1")
+        assert exc_info.value.error_code == "job_not_retryable"
+
+    def test_retry_accepted_job_rejected(self):
+        svc, store, _ = _make_job_service()
+        store.get_job.return_value = {
+            "ingestion_job_id": "ing_acc_1",
+            "trigger_key": "dcp_current_plan",
+            "params_json": "{}",
+            "status": "accepted",
+        }
+        with pytest.raises(JobServiceError) as exc_info:
+            svc.retry_job("ing_acc_1")
+        assert exc_info.value.error_code == "job_not_retryable"
 
     def test_retry_not_found_raises_error(self):
         svc, store, _ = _make_job_service()
@@ -292,7 +371,34 @@ class TestRetryJob:
 
     def test_retry_no_command_raises_error(self):
         svc, store, _ = _make_job_service()
-        store.get_job.return_value = {"ingestion_job_id": "ing_x", "trigger_key": None, "params_json": "{}"}
+        store.get_job.return_value = {"ingestion_job_id": "ing_x", "trigger_key": None, "params_json": "{}", "status": "failed"}
         with pytest.raises(JobServiceError) as exc_info:
             svc.retry_job("ing_x")
         assert exc_info.value.error_code == "no_command"
+
+
+# ---------------------------------------------------------------------------
+# source field in CREATE TABLE baseline
+# ---------------------------------------------------------------------------
+
+class TestSourceFieldBaseline:
+    def test_source_in_ingestion_jobs_baseline(self):
+        """After init_schema, ingestion_jobs.source exists from CREATE TABLE, not ALTER TABLE."""
+        from src.datahub.storage.ddl import create_metadata_tables
+        from src.datahub.core.registry import SchemaRegistry
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            conn = sqlite3.connect(str(db_path))
+            conn.row_factory = sqlite3.Row
+            create_metadata_tables(conn)
+
+            columns = {row[1]: row for row in conn.execute("PRAGMA table_info(ingestion_jobs)").fetchall()}
+            assert "source" in columns, "source column missing from ingestion_jobs"
+            # Verify it's NOT NULL DEFAULT 'api' from baseline
+            col = columns["source"]
+            # SQLite PRAGMA table_info: cid, name, type, notnull, dflt_value, pk
+            assert col[2] == "TEXT"
+            assert col[3] == 1, "source should be NOT NULL (notnull=1)"
+            assert col[4] == "'api'", f"source default should be 'api', got {col[4]}"
+            conn.close()

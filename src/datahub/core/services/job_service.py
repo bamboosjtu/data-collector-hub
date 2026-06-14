@@ -21,6 +21,8 @@ logger = logging.getLogger(__name__)
 
 VALID_SOURCES = frozenset({"cli", "api", "scheduler", "ui_manual", "retry"})
 
+RETRYABLE_STATUSES = frozenset({"failed", "partial", "cancelled"})
+
 
 class JobServiceError(Exception):
     """Raised when job submission fails due to validation or execution errors."""
@@ -39,6 +41,7 @@ class JobResult:
     status: str
     downloader_job_id: str | None = None
     message: str | None = None
+    original_job_id: str | None = None
 
 
 class JobService:
@@ -190,23 +193,36 @@ class JobService:
     def retry_job(self, ingestion_job_id: str, *, source: str = "retry") -> JobResult:
         """Retry a failed job by re-creating it with the same command and params.
 
+        Only jobs in a failed terminal state (failed / partial / cancelled) can be retried.
+
         Args:
             ingestion_job_id: The original failed job ID.
             source: Source label for the retry job (default: "retry").
 
         Returns:
-            JobResult for the new retry job.
+            JobResult for the new retry job, with original_job_id set.
 
         Raises:
-            JobServiceError: If the original job is not found or has no command.
+            JobServiceError: If the original job is not found, has no command,
+                or is not in a retryable state.
         """
         import json
 
         original = self._store.get_job(ingestion_job_id)
         if not original:
             raise JobServiceError("job_not_found", f"ingestion job {ingestion_job_id} not found")
+
+        original_status = original.get("status", "")
+        if original_status not in RETRYABLE_STATUSES:
+            raise JobServiceError(
+                "job_not_retryable",
+                f"job {ingestion_job_id} has status '{original_status}', only {sorted(RETRYABLE_STATUSES)} can be retried",
+            )
+
         command_name = original.get("trigger_key")
         if not command_name:
             raise JobServiceError("no_command", f"original job {ingestion_job_id} has no command")
         params = json.loads(original.get("params_json") or "{}")
-        return self.submit_command(command_name, params, source=source)
+        result = self.submit_command(command_name, params, source=source)
+        result.original_job_id = ingestion_job_id
+        return result

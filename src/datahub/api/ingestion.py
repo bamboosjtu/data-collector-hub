@@ -32,6 +32,7 @@ _ERROR_STATUS_MAP: dict[str, int] = {
     "plugin_handler_failed": 500,
     "job_not_found": 404,
     "no_command": 422,
+    "job_not_retryable": 409,
 }
 
 
@@ -129,6 +130,8 @@ def build_ingestion_router(
         resp: dict[str, Any] = {"ingestion_job_id": result.ingestion_job_id, "status": result.status}
         if result.downloader_job_id:
             resp["downloader_job_id"] = result.downloader_job_id
+        if result.original_job_id:
+            resp["original_job_id"] = result.original_job_id
         return resp
 
     @router.get("/ingestion/v1/messages", dependencies=[Depends(require_scope(store, "admin"))])
