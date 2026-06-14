@@ -1,15 +1,18 @@
 """Collection plan service: manages scheduled plans, runs, and step execution.
 
 All command triggering goes through JobService.submit_command().
+run_plan_now is async: it creates the run and kicks off a background thread,
+then returns immediately with status="running".
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Any
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -44,12 +47,10 @@ class CollectionPlanError(Exception):
 
 
 @dataclass
-class PlanRunResult:
-    """Result of a plan run."""
+class StartPlanRunResult:
+    """Result of starting a plan run (returned immediately, before execution)."""
     run_id: str
-    status: str
-    steps: list[dict[str, Any]]
-    error: str | None = None
+    status: str  # always "running" at this point
 
 
 class CollectionPlanService:
@@ -65,6 +66,8 @@ class CollectionPlanService:
         self._store = store
         self._job_service = job_service
         self._recent_days = recent_days
+
+    # ── Plan CRUD ────────────────────────────────────────────────
 
     def seed_default_plans(self) -> None:
         """Seed the built-in daily_dcp_refresh plan if not exists."""
@@ -97,19 +100,27 @@ class CollectionPlanService:
     def list_runs(self, plan_name: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
         return self._store.list_scheduled_runs(plan_name, limit)
 
-    def run_plan_now(self, plan_name: str, source: str = "api") -> PlanRunResult:
-        """Execute a plan immediately. Blocks until all steps complete or a step fails.
+    # ── Run lifecycle ────────────────────────────────────────────
+
+    def run_plan_now(self, plan_name: str, source: str = "api") -> StartPlanRunResult:
+        """Start a plan run immediately (async).
+
+        Creates the run record, creates step records, kicks off a background
+        thread to execute steps, and returns immediately with status="running".
 
         Args:
             plan_name: The plan to execute.
             source: Trigger source — api / cli / scheduler.
 
         Returns:
-            PlanRunResult with run_id, final status, and step details.
+            StartPlanRunResult with run_id and status="running".
 
         Raises:
             CollectionPlanError: If plan not found or already running.
         """
+        # Clean up stale runs before overlap check
+        self.mark_stale_runs()
+
         plan = self._store.get_scheduled_plan(plan_name)
         if not plan:
             raise CollectionPlanError("plan_not_found", f"plan {plan_name} not found")
@@ -158,10 +169,32 @@ class CollectionPlanService:
                 wait_for_terminal=1 if step_cfg.get("wait_for_terminal", True) else 0,
             )
 
-        # Execute steps sequentially
+        # Kick off background execution
+        thread = threading.Thread(
+            target=self._execute_run,
+            args=(run_id, plan_name, source),
+            daemon=True,
+            name=f"hub-plan-run-{run_id[:20]}",
+        )
+        thread.start()
+
+        logger.info("plan %s run %s started (source=%s)", plan_name, run_id, source)
+        return StartPlanRunResult(run_id=run_id, status="running")
+
+    def _execute_run(self, run_id: str, plan_name: str, source: str) -> None:
+        """Execute a plan run in the background.
+
+        Sequentially executes steps, updates step/run status, and computes
+        next_run_at when done.
+        """
+        plan = self._store.get_scheduled_plan(plan_name)
+        if not plan:
+            self._store.update_scheduled_run(run_id, status="failed", error="plan not found during execution")
+            return
+
         run_status = "succeeded"
         run_error = None
-        step_results = []
+        failed = False
 
         step_rows = self._store.get_scheduled_run_steps(run_id)
         for step_row in step_rows:
@@ -169,6 +202,13 @@ class CollectionPlanService:
             command_name = step_row["command_name"]
             params = json.loads(step_row["params_json"] or "{}")
             wait_for_terminal = bool(step_row["wait_for_terminal"])
+
+            # If a previous step failed, mark remaining as skipped
+            if failed:
+                self._store.update_scheduled_run_step(
+                    step_id, status="skipped", error="previous step failed",
+                )
+                continue
 
             # Mark step running
             self._store.update_scheduled_run_step(step_id, status="running")
@@ -186,8 +226,8 @@ class CollectionPlanService:
                 )
                 run_status = "failed"
                 run_error = f"step {command_name} failed: {exc.message}"
-                step_results.append({"command": command_name, "status": "failed", "error": exc.message})
-                break
+                failed = True
+                continue
 
             # Wait for terminal status if required
             if wait_for_terminal:
@@ -198,40 +238,54 @@ class CollectionPlanService:
                     step_id, status=step_status, error=step_error,
                     result_json=self._store._json(job_detail) if job_detail else None,
                 )
-                step_results.append({"command": command_name, "status": step_status, "job_id": job_result.ingestion_job_id})
 
                 if step_status == "failed":
                     run_status = "failed"
                     run_error = f"step {command_name} failed"
-                    break
+                    failed = True
                 elif step_status == "partial":
                     if run_status == "succeeded":
                         run_status = "partial"
             else:
                 # Fire-and-forget: mark succeeded once submitted
                 self._store.update_scheduled_run_step(step_id, status="succeeded")
-                step_results.append({"command": command_name, "status": "submitted", "job_id": job_result.ingestion_job_id})
 
-        # Compute next_run_at for daily plans
+        # Compute next_run_at: only for scheduler-triggered runs
         next_run_at = None
-        if plan["schedule_type"] == "daily" and plan["schedule_time"]:
-            tz = ZoneInfo(plan.get("timezone", "Asia/Shanghai"))
-            now_tz = datahub_now().astimezone(tz)
-            hour, minute = (int(x) for x in plan["schedule_time"].split(":"))
-            next_dt = now_tz.replace(hour=hour, minute=minute, second=0, microsecond=0) + timedelta(days=1)
-            next_run_at = next_dt.strftime("%Y-%m-%d %H:%M:%S")
+        if source == "scheduler" and plan["schedule_type"] == "daily" and plan["schedule_time"]:
+            next_run_at = self._compute_next_daily_run(plan)
+        elif source != "scheduler" and plan["schedule_type"] == "daily" and plan["schedule_time"]:
+            # Manual run: only fill next_run_at if it's currently empty
+            current_plan = self._store.get_scheduled_plan(plan_name)
+            if current_plan and not current_plan.get("next_run_at"):
+                next_run_at = self._compute_next_daily_run(plan)
 
         # Finalize run
         self._store.update_scheduled_run(run_id, status=run_status, error=run_error)
         self._store.update_plan_last_run(plan_name, run_id=run_id, status=run_status, next_run_at=next_run_at)
 
-        logger.info("plan %s run %s completed: %s", plan_name, run_id, run_status)
-        return PlanRunResult(run_id=run_id, status=run_status, steps=step_results, error=run_error)
+        logger.info("plan %s run %s completed: %s (source=%s)", plan_name, run_id, run_status, source)
+
+    def _compute_next_daily_run(self, plan: dict[str, Any]) -> str:
+        """Compute the next daily run time for a plan.
+
+        Uses: next_dt = today at schedule_time; if next_dt <= now, add 1 day.
+        """
+        tz = ZoneInfo(plan.get("timezone", "Asia/Shanghai"))
+        now_tz = datahub_now().astimezone(tz)
+        hour, minute = (int(x) for x in plan["schedule_time"].split(":"))
+        next_dt = now_tz.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if next_dt <= now_tz:
+            next_dt += timedelta(days=1)
+        return next_dt.strftime("%Y-%m-%d %H:%M:%S")
+
+    # ── Scheduler tick ───────────────────────────────────────────
 
     def scheduler_tick(self) -> None:
         """Check enabled plans and trigger runs that are due.
 
         Called periodically by the collection scheduler background thread.
+        Non-blocking: only calls run_plan_now which starts a background thread.
         """
         plans = self._store.list_scheduled_plans()
         now_text = datahub_now_text()
@@ -244,7 +298,7 @@ class CollectionPlanService:
             if plan["next_run_at"] > now_text:
                 continue
 
-            # Check for overlapping run
+            # Check for overlapping run (mark_stale_runs called inside run_plan_now)
             existing = self._store.get_running_plan_run(plan["plan_name"])
             if existing:
                 logger.debug("scheduler: plan %s already running (%s), skipping", plan["plan_name"], existing["run_id"])
@@ -257,6 +311,8 @@ class CollectionPlanService:
                 logger.error("scheduler: plan %s tick failed: %s", plan["plan_name"], exc.message)
             except Exception as exc:
                 logger.error("scheduler: plan %s tick error: %s", plan["plan_name"], exc, exc_info=True)
+
+    # ── Helpers ──────────────────────────────────────────────────
 
     def _wait_for_job_terminal(self, ingestion_job_id: str, timeout: float = 3600, poll_interval: float = 5.0) -> str:
         """Poll until an ingestion_job reaches terminal status."""
@@ -274,7 +330,6 @@ class CollectionPlanService:
         This handles crash recovery: if the process restarts with stale running runs,
         they get marked as failed so new runs can be triggered.
         """
-        from src.datahub.core.time_utils import datahub_now
         cutoff = (datahub_now() - timedelta(seconds=stale_seconds)).strftime("%Y-%m-%d %H:%M:%S")
         runs = self._store.list_scheduled_runs(limit=200)
         marked = 0

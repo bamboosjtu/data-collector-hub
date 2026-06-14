@@ -46,8 +46,6 @@ def build_schedules_router(
         return {
             "run_id": result.run_id,
             "status": result.status,
-            "steps": result.steps,
-            "error": result.error,
         }
 
     @router.get("/admin/schedules/runs", dependencies=[Depends(require_scope(store, "admin"))])

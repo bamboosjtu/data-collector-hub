@@ -57,9 +57,6 @@ def _start_collection_scheduler(
         logger.info("collection scheduler disabled (DATAHUB_COLLECTION_SCHEDULER_ENABLED not set)")
         return None
 
-    # Mark stale runs from previous crashes
-    plan_service.mark_stale_runs()
-
     # Seed default plans and enable daily_dcp_refresh if configured
     plan_service.seed_default_plans()
     if settings.daily_dcp_refresh_enabled:
@@ -142,6 +139,8 @@ def create_app(
         recent_days=active_settings.daily_dcp_recent_days,
     )
     plan_service.seed_default_plans()
+    # Always clean up stale runs on startup (regardless of scheduler enabled)
+    plan_service.mark_stale_runs()
     app.state.plan_service = plan_service
 
     @app.exception_handler(RequestValidationError)

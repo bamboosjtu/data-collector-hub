@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 import sqlite3
 import tempfile
+import time
+import threading
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, patch, PropertyMock
 
 import pytest
 
@@ -15,6 +17,7 @@ from src.datahub.core.services.collection_plan_service import (
     DAILY_DCP_REFRESH_STEPS,
     CollectionPlanError,
     CollectionPlanService,
+    StartPlanRunResult,
 )
 from src.datahub.core.services.job_service import JobResult, JobService, JobServiceError
 from src.datahub.core.specs import ColumnSpec, TableSpec
@@ -31,7 +34,6 @@ def db_path():
 @pytest.fixture
 def store(db_path):
     """Create a minimal store with schema initialized."""
-    # Create a minimal registry
     registry = SchemaRegistry(version=1, tables={}, datasets=set(), raw={})
     s = DataHubStore(str(db_path), registry)
     with s.connect() as conn:
@@ -52,11 +54,25 @@ def mock_job_service():
 
 @pytest.fixture
 def plan_service(store, mock_job_service):
-    return CollectionPlanService(
+    svc = CollectionPlanService(
         store=store,
         job_service=mock_job_service,
         recent_days=3,
     )
+    # Make _wait_for_job_terminal return immediately by default
+    svc._wait_for_job_terminal = MagicMock(return_value="succeeded")
+    return svc
+
+
+def _wait_for_run(store, run_id, timeout=5.0):
+    """Wait for a scheduled_run to reach terminal status."""
+    start = time.monotonic()
+    while time.monotonic() - start < timeout:
+        run = store.get_scheduled_run(run_id)
+        if run and run["status"] in ("succeeded", "partial", "failed", "skipped"):
+            return run
+        time.sleep(0.1)
+    return store.get_scheduled_run(run_id)
 
 
 # ── DDL baseline tests ──────────────────────────────────────────
@@ -129,27 +145,35 @@ class TestSeedDefaultPlan:
         assert len(config["steps"]) == 7
 
 
-# ── run_plan_now tests ──────────────────────────────────────────
+# ── run_plan_now async tests ────────────────────────────────────
 
 
-class TestRunPlanNow:
-    def test_run_plan_now_calls_submit_command(self, plan_service, mock_job_service, store):
+class TestRunPlanNowAsync:
+    def test_run_plan_now_returns_immediately(self, plan_service, mock_job_service, store):
         plan_service.seed_default_plans()
-        # Make job terminal quickly
-        with patch.object(plan_service, "_wait_for_job_terminal", return_value="succeeded"):
-            result = plan_service.run_plan_now("daily_dcp_refresh", source="api")
-        assert result.status == "succeeded"
+        result = plan_service.run_plan_now("daily_dcp_refresh", source="api")
+        assert isinstance(result, StartPlanRunResult)
+        assert result.status == "running"
         assert result.run_id.startswith("run_daily_dcp_refresh_")
-        # Should have called submit_command for each step
+
+    def test_run_plan_now_creates_steps(self, plan_service, mock_job_service, store):
+        plan_service.seed_default_plans()
+        result = plan_service.run_plan_now("daily_dcp_refresh", source="api")
+        steps = store.get_scheduled_run_steps(result.run_id)
+        assert len(steps) == 7
+
+    def test_run_plan_now_background_executes_steps(self, plan_service, mock_job_service, store):
+        plan_service.seed_default_plans()
+        result = plan_service.run_plan_now("daily_dcp_refresh", source="api")
+        run = _wait_for_run(store, result.run_id)
         assert mock_job_service.submit_command.call_count == 7
 
-    def test_run_plan_now_source_scheduler(self, plan_service, mock_job_service, store):
+    def test_run_plan_now_source_passed_to_submit_command(self, plan_service, mock_job_service, store):
         plan_service.seed_default_plans()
-        with patch.object(plan_service, "_wait_for_job_terminal", return_value="succeeded"):
-            result = plan_service.run_plan_now("daily_dcp_refresh", source="scheduler")
-        # Verify source is passed through
+        result = plan_service.run_plan_now("daily_dcp_refresh", source="scheduler")
+        _wait_for_run(store, result.run_id)
         for call in mock_job_service.submit_command.call_args_list:
-            assert call.kwargs.get("source") == "scheduler" or call.args[2] == "scheduler" if len(call.args) > 2 else True
+            assert call.kwargs["source"] == "scheduler"
 
     def test_run_plan_now_plan_not_found(self, plan_service):
         with pytest.raises(CollectionPlanError) as exc_info:
@@ -169,9 +193,8 @@ class TestRunPlanNow:
             plan_service.run_plan_now("daily_dcp_refresh")
         assert exc_info.value.error_code == "plan_already_running"
 
-    def test_failed_step_stops_subsequent(self, plan_service, mock_job_service, store):
+    def test_failed_step_marks_remaining_skipped(self, plan_service, mock_job_service, store):
         plan_service.seed_default_plans()
-        # Make step 2 fail
         call_count = 0
 
         def side_effect(cmd, params=None, source="api"):
@@ -182,30 +205,33 @@ class TestRunPlanNow:
             return JobResult(ingestion_job_id=f"ing_{cmd}_{call_count}", status="accepted")
 
         mock_job_service.submit_command.side_effect = side_effect
-        with patch.object(plan_service, "_wait_for_job_terminal", return_value="succeeded"):
-            result = plan_service.run_plan_now("daily_dcp_refresh", source="api")
-        assert result.status == "failed"
-        assert call_count == 2  # stopped after 2nd step failed
+        result = plan_service.run_plan_now("daily_dcp_refresh", source="api")
+        run = _wait_for_run(store, result.run_id)
+        # Check step statuses
+        steps = store.get_scheduled_run_steps(result.run_id)
+        statuses = [s["status"] for s in steps]
+        assert statuses[0] == "succeeded"
+        assert statuses[1] == "failed"
+        # Remaining steps should be skipped
+        for s in statuses[2:]:
+            assert s == "skipped"
+        # Run should be failed
+        assert run["status"] == "failed"
 
     def test_partial_step_continues_but_run_partial(self, plan_service, mock_job_service, store):
         plan_service.seed_default_plans()
-        # Make step 3 return partial
-        def side_effect(cmd, params=None, source="api"):
-            return JobResult(ingestion_job_id=f"ing_{cmd}_123", status="accepted")
-
-        mock_job_service.submit_command.side_effect = side_effect
-
-        # Make wait_for_job_terminal return partial for step 3, succeeded for others
+        # Make _wait_for_job_terminal return partial for step 3, succeeded for others
         wait_results = iter(["succeeded", "succeeded", "partial", "succeeded", "succeeded", "succeeded", "succeeded"])
-        with patch.object(plan_service, "_wait_for_job_terminal", side_effect=lambda jid: next(wait_results)):
-            result = plan_service.run_plan_now("daily_dcp_refresh", source="api")
-        assert result.status == "partial"
+        plan_service._wait_for_job_terminal = MagicMock(side_effect=lambda jid: next(wait_results))
+
+        result = plan_service.run_plan_now("daily_dcp_refresh", source="api")
+        run = _wait_for_run(store, result.run_id)
+        assert run["status"] == "partial"
 
     def test_daily_meetings_uses_recent_days(self, plan_service, mock_job_service, store):
         plan_service.seed_default_plans()
-        with patch.object(plan_service, "_wait_for_job_terminal", return_value="succeeded"):
-            plan_service.run_plan_now("daily_dcp_refresh", source="api")
-
+        result = plan_service.run_plan_now("daily_dcp_refresh", source="api")
+        _wait_for_run(store, result.run_id)
         # Find the backfill_daily_meetings_by_range call
         calls = mock_job_service.submit_command.call_args_list
         meeting_call = None
@@ -215,13 +241,46 @@ class TestRunPlanNow:
                 break
         assert meeting_call is not None
         params = meeting_call.kwargs.get("params") or meeting_call.args[1]
-        # Should have startDate = today - 3 days
         from datetime import date, timedelta
         today = date.today()
         expected_start = (today - timedelta(days=3)).isoformat()
         assert params["startDate"] == expected_start
         assert params["endDate"] == today.isoformat()
         assert params["chunk_days"] == 1
+
+
+# ── next_run_at logic tests ─────────────────────────────────────
+
+
+class TestNextRunAtLogic:
+    def test_api_run_now_does_not_change_next_run_at(self, plan_service, mock_job_service, store):
+        plan_service.seed_default_plans()
+        # Set a specific next_run_at
+        store.update_plan_next_run("daily_dcp_refresh", "2026-07-01 02:00:00")
+        result = plan_service.run_plan_now("daily_dcp_refresh", source="api")
+        _wait_for_run(store, result.run_id)
+        plan = store.get_scheduled_plan("daily_dcp_refresh")
+        # next_run_at should remain unchanged
+        assert plan["next_run_at"] == "2026-07-01 02:00:00"
+
+    def test_scheduler_run_advances_next_run_at(self, plan_service, mock_job_service, store):
+        plan_service.seed_default_plans()
+        store.update_plan_next_run("daily_dcp_refresh", "2020-01-01 02:00:00")
+        result = plan_service.run_plan_now("daily_dcp_refresh", source="scheduler")
+        _wait_for_run(store, result.run_id)
+        plan = store.get_scheduled_plan("daily_dcp_refresh")
+        # next_run_at should have been advanced
+        assert plan["next_run_at"] is not None
+        assert plan["next_run_at"] > "2020-01-01 02:00:00"
+
+    def test_api_run_fills_empty_next_run_at(self, plan_service, mock_job_service, store):
+        plan_service.seed_default_plans()
+        # next_run_at is NULL by default for seeded plans
+        result = plan_service.run_plan_now("daily_dcp_refresh", source="api")
+        _wait_for_run(store, result.run_id)
+        plan = store.get_scheduled_plan("daily_dcp_refresh")
+        # next_run_at should be filled since it was empty
+        assert plan["next_run_at"] is not None
 
 
 # ── scheduler_tick tests ────────────────────────────────────────
@@ -246,11 +305,12 @@ class TestSchedulerTick:
             next_run_at="2099-01-01 02:00:00",
         )
         plan_service.scheduler_tick()
+        time.sleep(0.5)
         mock_job_service.submit_command.assert_not_called()
 
     def test_scheduler_enabled_and_due_triggers_run(self, plan_service, mock_job_service, store):
         plan_service.seed_default_plans()
-        # Enable plan and set next_run_at to past
+        # Enable plan and set next_run_at to past, with single step
         store.upsert_scheduled_plan(
             plan_name="daily_dcp_refresh",
             enabled=1,
@@ -259,14 +319,31 @@ class TestSchedulerTick:
             config_json=json.dumps({"steps": [{"command": "refresh_annual_plans_current", "params": {}, "wait_for_terminal": True}]}),
             next_run_at="2020-01-01 02:00:00",
         )
-        with patch.object(plan_service, "_wait_for_job_terminal", return_value="succeeded"):
-            plan_service.scheduler_tick()
+        plan_service.scheduler_tick()
+        time.sleep(1)
         mock_job_service.submit_command.assert_called_once()
         call = mock_job_service.submit_command.call_args
-        assert call.kwargs.get("source") == "scheduler" or (len(call.args) > 2 and call.args[2] == "scheduler")
+        assert call.kwargs["source"] == "scheduler"
+
+    def test_scheduler_tick_is_non_blocking(self, plan_service, mock_job_service, store):
+        """scheduler_tick should return quickly, not wait for run to complete."""
+        plan_service.seed_default_plans()
+        store.upsert_scheduled_plan(
+            plan_name="daily_dcp_refresh",
+            enabled=1,
+            schedule_type="daily",
+            schedule_time="02:00",
+            config_json=json.dumps({"steps": [{"command": "refresh_annual_plans_current", "params": {}, "wait_for_terminal": True}]}),
+            next_run_at="2020-01-01 02:00:00",
+        )
+        # _wait_for_job_terminal is mocked to return immediately, so tick should be fast
+        start = time.monotonic()
+        plan_service.scheduler_tick()
+        elapsed = time.monotonic() - start
+        assert elapsed < 2.0
 
 
-# ── mark_stale_runs tests ───────────────────────────────────────
+# ── stale run cleanup tests ─────────────────────────────────────
 
 
 class TestMarkStaleRuns:
@@ -288,6 +365,25 @@ class TestMarkStaleRuns:
         assert marked == 1
         run = store.get_scheduled_run("run_stale_test")
         assert run["status"] == "failed"
+
+    def test_stale_run_does_not_block_run_now(self, plan_service, mock_job_service, store):
+        """Stale running run should be cleaned up by run_plan_now, allowing a new run."""
+        plan_service.seed_default_plans()
+        # Create a stale running run
+        store.create_scheduled_run(
+            run_id="run_stale_block",
+            plan_name="daily_dcp_refresh",
+            trigger_source="api",
+            status="running",
+        )
+        with store.connect() as conn:
+            conn.execute(
+                "UPDATE scheduled_runs SET started_at = '2020-01-01 00:00:00' WHERE run_id = 'run_stale_block'"
+            )
+            conn.commit()
+        # run_plan_now should succeed because stale run gets cleaned up first
+        result = plan_service.run_plan_now("daily_dcp_refresh", source="api")
+        assert result.status == "running"
 
 
 # ── Store CRUD tests ────────────────────────────────────────────
