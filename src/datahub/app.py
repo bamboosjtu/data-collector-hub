@@ -60,30 +60,30 @@ def _start_collection_scheduler(
     # Seed default plans and enable daily_dcp_refresh if configured
     plan_service.seed_default_plans()
     if settings.daily_dcp_refresh_enabled:
-        plan = plan_service.get_plan("daily_dcp_refresh")
+        # Enable dcp_daily_update (the new business plan) instead of legacy daily_dcp_refresh
+        plan = plan_service.get_plan("dcp_daily_update")
         if plan and not plan["enabled"]:
             import json
+            from zoneinfo import ZoneInfo
+            from src.datahub.core.time_utils import datahub_now
+            from datetime import timedelta
             config = json.loads(plan["config_json"] or "{}")
             plan_service._store.upsert_scheduled_plan(
-                plan_name="daily_dcp_refresh",
+                plan_name="dcp_daily_update",
                 enabled=1,
                 schedule_type="daily",
                 schedule_time=settings.daily_dcp_refresh_time,
                 timezone="Asia/Shanghai",
                 config_json=json.dumps(config, ensure_ascii=False),
             )
-            # Set next_run_at
-            from zoneinfo import ZoneInfo
-            from src.datahub.core.time_utils import datahub_now
-            from datetime import timedelta
             tz = ZoneInfo("Asia/Shanghai")
             now_tz = datahub_now().astimezone(tz)
             hour, minute = (int(x) for x in settings.daily_dcp_refresh_time.split(":"))
             next_dt = now_tz.replace(hour=hour, minute=minute, second=0, microsecond=0)
             if next_dt <= now_tz:
                 next_dt += timedelta(days=1)
-            plan_service._store.update_plan_next_run("daily_dcp_refresh", next_dt.strftime("%Y-%m-%d %H:%M:%S"))
-            logger.info("daily_dcp_refresh enabled, next run at %s", next_dt.strftime("%Y-%m-%d %H:%M:%S"))
+            plan_service._store.update_plan_next_run("dcp_daily_update", next_dt.strftime("%Y-%m-%d %H:%M:%S"))
+            logger.info("dcp_daily_update enabled, next run at %s", next_dt.strftime("%Y-%m-%d %H:%M:%S"))
 
     stop_event = threading.Event()
     tick_interval = float(settings.collection_scheduler_tick_seconds)

@@ -166,13 +166,48 @@ def refresh_line_sections_for_current_plan_projects(ctx: dict[str, Any]) -> dict
     )
 
 
+def refresh_towers_for_all_plan_projects(ctx: dict[str, Any]) -> dict[str, Any]:
+    """Fan-out: query dcp_plan_year_project for specified years, trigger tower refresh per projectCode."""
+    return _project_fan_out(
+        ctx=ctx,
+        child_command="refresh_towers_for_project",
+        params_mapping={"prjCode": "projectCode"},
+        multi_year=True,
+    )
+
+
+def refresh_substations_for_all_plan_projects(ctx: dict[str, Any]) -> dict[str, Any]:
+    """Fan-out: query dcp_plan_year_project for specified years, trigger substation refresh per projectCode."""
+    return _project_fan_out(
+        ctx=ctx,
+        child_command="refresh_substations_for_project",
+        params_mapping={"prjCode": "projectCode"},
+        multi_year=True,
+    )
+
+
+def refresh_line_sections_for_all_plan_projects(ctx: dict[str, Any]) -> dict[str, Any]:
+    """Fan-out: query dcp_plan_year_project for specified years, trigger line section refresh per projectCode."""
+    return _project_fan_out(
+        ctx=ctx,
+        child_command="refresh_line_sections_for_project",
+        params_mapping={"prjCode": "projectCode"},
+        multi_year=True,
+    )
+
+
 def _project_fan_out(
     *,
     ctx: dict[str, Any],
     child_command: str,
     params_mapping: dict[str, str],
+    multi_year: bool = False,
 ) -> dict[str, Any]:
-    """Generic project fan-out: query dcp_plan_year_project for current year, create fanout_run.
+    """Generic project fan-out: query dcp_plan_year_project, create fanout_run.
+
+    When multi_year=False (default): queries current year only.
+    When multi_year=True: queries years from params.years (list of ints),
+      falling back to [current_year] if not specified.
 
     Handler returns immediately — scheduler tick advances execution.
     """
@@ -207,19 +242,32 @@ def _project_fan_out(
             store.mark_job(parent_job_id, status="failed", error=error_msg)
             return {"total": 0, "succeeded": 0, "failed": 0, "error": error_msg}
 
-    # 1. Query dcp_plan_year_project for current year
-    current_year = datahub_current_year()
-    rows = store.query_table("dcp_plan_year_project", {"year": current_year}, limit=10000)
-    if not rows:
-        logger.warning("project fan-out %s: no rows in dcp_plan_year_project for year=%s", child_command, current_year)
+    # 1. Determine years to query
+    if multi_year:
+        years_param = params.get("years")
+        if years_param:
+            years = [str(y) for y in years_param]
+        else:
+            years = [datahub_current_year()]
+    else:
+        years = [datahub_current_year()]
+
+    # 2. Query dcp_plan_year_project for each year
+    all_rows: list[dict[str, Any]] = []
+    for year in years:
+        rows = store.query_table("dcp_plan_year_project", {"year": year}, limit=10000)
+        all_rows.extend(rows)
+
+    if not all_rows:
+        logger.warning("project fan-out %s: no rows in dcp_plan_year_project for years=%s", child_command, years)
         store.mark_job(parent_job_id, status="succeeded", result={"total": 0, "succeeded": 0, "failed": 0})
         return {"total": 0, "succeeded": 0, "failed": 0}
 
-    # 2. Extract unique projectCodes
+    # 3. Extract unique projectCodes
     source_columns = list(params_mapping.keys())
     param_sets: list[dict[str, str]] = []
     seen: set[str] = set()
-    for row in rows:
+    for row in all_rows:
         child_params: dict[str, str] = {}
         for source_col in source_columns:
             target_param = params_mapping.get(source_col, source_col)
@@ -232,7 +280,7 @@ def _project_fan_out(
                 seen.add(key)
                 # Clean fan-out control params
                 clean = {k: v for k, v in child_params.items()
-                         if k not in ("max_items", "max_concurrency", "cooldown_seconds", "consecutive_failure_threshold")}
+                         if k not in ("max_items", "max_concurrency", "cooldown_seconds", "consecutive_failure_threshold", "years")}
                 param_sets.append(clean)
 
     # Apply max_items limit
@@ -244,8 +292,8 @@ def _project_fan_out(
         store.mark_job(parent_job_id, status="succeeded", result={"total": 0, "succeeded": 0, "failed": 0})
         return {"total": 0, "succeeded": 0, "failed": 0}
 
-    logger.info("project fan-out %s: %d projects (of %d available, max_concurrency=%d, circuit_breaker=%d)",
-                child_command, len(param_sets), total_available, max_concurrency, consecutive_failure_threshold)
+    logger.info("project fan-out %s: %d projects (of %d available, years=%s, max_concurrency=%d, circuit_breaker=%d)",
+                child_command, len(param_sets), total_available, years, max_concurrency, consecutive_failure_threshold)
 
     # 3. Create fanout_run + fanout_items (single transaction)
     store.create_fanout_run_with_items(

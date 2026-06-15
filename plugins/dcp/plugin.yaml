@@ -66,7 +66,7 @@ commands:
       type: downloader_sync
       job_type: project_lines_each_bid_section
 
-  # 项目域 - 批量 fan-out：杆塔
+  # 项目域 - 批量 fan-out：杆塔（今年）
   - name: refresh_towers_for_current_plan_projects
     description: 批量刷新今年在建项目的杆塔信息（fan-out）
     required_params: []
@@ -77,7 +77,7 @@ commands:
     max_concurrency_limit: 5
     cooldown_seconds: 3
 
-  # 项目域 - 批量 fan-out：变电站
+  # 项目域 - 批量 fan-out：变电站（今年）
   - name: refresh_substations_for_current_plan_projects
     description: 批量刷新今年在建项目的变电站快照（fan-out）
     required_params: []
@@ -88,13 +88,46 @@ commands:
     max_concurrency_limit: 5
     cooldown_seconds: 3
 
-  # 项目域 - 批量 fan-out：架线区段
+  # 项目域 - 批量 fan-out：架线区段（今年）
   - name: refresh_line_sections_for_current_plan_projects
     description: 批量刷新今年在建项目的架线区段快照（fan-out）
     required_params: []
     trigger:
       type: plugin_handler
       handler: dcp.fan_out:refresh_line_sections_for_current_plan_projects
+    max_concurrency: 5
+    max_concurrency_limit: 5
+    cooldown_seconds: 3
+
+  # 项目域 - 批量 fan-out：杆塔（指定年份）
+  - name: refresh_towers_for_all_plan_projects
+    description: 批量刷新指定年份在建项目的杆塔信息（fan-out，支持 years 参数）
+    required_params: []
+    trigger:
+      type: plugin_handler
+      handler: dcp.fan_out:refresh_towers_for_all_plan_projects
+    max_concurrency: 5
+    max_concurrency_limit: 5
+    cooldown_seconds: 3
+
+  # 项目域 - 批量 fan-out：变电站（指定年份）
+  - name: refresh_substations_for_all_plan_projects
+    description: 批量刷新指定年份在建项目的变电站快照（fan-out，支持 years 参数）
+    required_params: []
+    trigger:
+      type: plugin_handler
+      handler: dcp.fan_out:refresh_substations_for_all_plan_projects
+    max_concurrency: 5
+    max_concurrency_limit: 5
+    cooldown_seconds: 3
+
+  # 项目域 - 批量 fan-out：架线区段（指定年份）
+  - name: refresh_line_sections_for_all_plan_projects
+    description: 批量刷新指定年份在建项目的架线区段快照（fan-out，支持 years 参数）
+    required_params: []
+    trigger:
+      type: plugin_handler
+      handler: dcp.fan_out:refresh_line_sections_for_all_plan_projects
     max_concurrency: 5
     max_concurrency_limit: 5
     cooldown_seconds: 3

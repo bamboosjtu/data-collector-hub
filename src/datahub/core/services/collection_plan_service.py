@@ -18,14 +18,79 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from src.datahub.core.services.job_service import JobService, JobServiceError
-from src.datahub.core.time_utils import datahub_now, datahub_now_text, datahub_today
+from src.datahub.core.time_utils import datahub_now, datahub_now_text, datahub_today, datahub_yesterday
 from src.datahub.storage.sqlite import DataHubStore
 
 logger = logging.getLogger(__name__)
 
 _TERMINAL_STATUSES = frozenset({"succeeded", "partial", "failed", "cancelled"})
 
-# Default daily_dcp_refresh plan steps
+# ---------------------------------------------------------------------------
+# Dynamic parameter resolver
+# ---------------------------------------------------------------------------
+
+# Placeholders that get resolved at plan-run time
+_DOLLAR_PLACEHOLDERS = {
+    "$today": lambda: datahub_today().isoformat(),
+    "$yesterday": lambda: datahub_yesterday().isoformat(),
+    "$current_year": lambda: str(datahub_today().year),
+}
+
+
+def resolve_plan_params(params: Any) -> Any:
+    """Recursively resolve $-placeholders in plan step params.
+
+    Supported placeholders:
+    - "$today" -> e.g. "2026-06-15"
+    - "$yesterday" -> e.g. "2026-06-14"
+    - "$current_year" -> e.g. "2026"
+
+    Only string values matching a placeholder are replaced.
+    Lists and dicts are traversed recursively.
+    """
+    if isinstance(params, str):
+        resolver = _DOLLAR_PLACEHOLDERS.get(params)
+        if resolver:
+            return resolver()
+        return params
+    if isinstance(params, list):
+        return [resolve_plan_params(item) for item in params]
+    if isinstance(params, dict):
+        return {k: resolve_plan_params(v) for k, v in params.items()}
+    return params
+
+
+# ---------------------------------------------------------------------------
+# Default plan configs
+# ---------------------------------------------------------------------------
+
+DCP_INITIAL_FULL_LOAD_CONFIG = {
+    "description": "DCP 初始化全量采集",
+    "steps": [
+        {"command": "refresh_annual_plans_history", "params": {}, "wait_for_terminal": True},
+        {"command": "refresh_plan_progress", "params": {}, "wait_for_terminal": True},
+        {"command": "refresh_dept_key_personnel", "params": {}, "wait_for_terminal": True},
+        {"command": "refresh_towers_for_all_plan_projects", "params": {"years": [2024, 2025, 2026], "max_concurrency": 5}, "wait_for_terminal": True},
+        {"command": "refresh_substations_for_all_plan_projects", "params": {"years": [2024, 2025, 2026], "max_concurrency": 5}, "wait_for_terminal": True},
+        {"command": "refresh_line_sections_for_all_plan_projects", "params": {"years": [2024, 2025, 2026], "max_concurrency": 5}, "wait_for_terminal": True},
+        {"command": "backfill_daily_meetings_by_range", "params": {"startDate": "2024-01-01", "endDate": "$yesterday", "chunk_days": 1, "max_concurrency": 5}, "wait_for_terminal": True},
+    ],
+}
+
+DCP_DAILY_UPDATE_CONFIG = {
+    "description": "DCP 每日增量更新",
+    "steps": [
+        {"command": "refresh_annual_plans_current", "params": {}, "wait_for_terminal": True},
+        {"command": "refresh_plan_progress", "params": {}, "wait_for_terminal": True},
+        {"command": "refresh_dept_key_personnel", "params": {}, "wait_for_terminal": True},
+        {"command": "refresh_towers_for_current_plan_projects", "params": {"max_concurrency": 5}, "wait_for_terminal": True},
+        {"command": "refresh_substations_for_current_plan_projects", "params": {"max_concurrency": 5}, "wait_for_terminal": True},
+        {"command": "refresh_line_sections_for_current_plan_projects", "params": {"max_concurrency": 5}, "wait_for_terminal": True},
+        {"command": "backfill_daily_meetings_by_range", "params": {"startDate": "$today", "endDate": "$today", "chunk_days": 1, "max_concurrency": 5}, "wait_for_terminal": True},
+    ],
+}
+
+# Legacy plan steps (kept for backward compat with existing DB records)
 DAILY_DCP_REFRESH_STEPS = [
     {"command": "refresh_annual_plans_current", "params": {}, "wait_for_terminal": True},
     {"command": "refresh_plan_progress", "params": {}, "wait_for_terminal": True},
@@ -33,7 +98,7 @@ DAILY_DCP_REFRESH_STEPS = [
     {"command": "refresh_towers_for_current_plan_projects", "params": {}, "wait_for_terminal": True},
     {"command": "refresh_substations_for_current_plan_projects", "params": {}, "wait_for_terminal": True},
     {"command": "refresh_line_sections_for_current_plan_projects", "params": {}, "wait_for_terminal": True},
-    {"command": "backfill_daily_meetings_by_range", "params": {}, "wait_for_terminal": True},
+    {"command": "backfill_daily_meetings_by_range", "params": {"startDate": "$today", "endDate": "$today", "chunk_days": 1}, "wait_for_terminal": True},
 ]
 
 
@@ -70,23 +135,52 @@ class CollectionPlanService:
     # ── Plan CRUD ────────────────────────────────────────────────
 
     def seed_default_plans(self) -> None:
-        """Seed the built-in daily_dcp_refresh plan if not exists."""
-        existing = self._store.get_scheduled_plan("daily_dcp_refresh")
-        if existing:
-            return
-        config = {
-            "steps": DAILY_DCP_REFRESH_STEPS,
-            "recent_days": self._recent_days,
-        }
-        self._store.upsert_scheduled_plan(
-            plan_name="daily_dcp_refresh",
-            enabled=0,
-            schedule_type="daily",
-            schedule_time="02:00",
-            timezone="Asia/Shanghai",
-            config_json=json.dumps(config, ensure_ascii=False),
-        )
-        logger.info("seeded default plan: daily_dcp_refresh (disabled)")
+        """Seed the built-in collection plans if they don't exist.
+
+        Creates:
+        - dcp_initial_full_load: manual, disabled
+        - dcp_daily_update: daily 02:00, disabled
+        - daily_dcp_refresh: legacy, kept if already exists
+        """
+        # Seed dcp_initial_full_load
+        if not self._store.get_scheduled_plan("dcp_initial_full_load"):
+            self._store.upsert_scheduled_plan(
+                plan_name="dcp_initial_full_load",
+                enabled=0,
+                schedule_type="manual",
+                schedule_time=None,
+                timezone="Asia/Shanghai",
+                config_json=json.dumps(DCP_INITIAL_FULL_LOAD_CONFIG, ensure_ascii=False),
+            )
+            logger.info("seeded default plan: dcp_initial_full_load (disabled, manual)")
+
+        # Seed dcp_daily_update
+        if not self._store.get_scheduled_plan("dcp_daily_update"):
+            self._store.upsert_scheduled_plan(
+                plan_name="dcp_daily_update",
+                enabled=0,
+                schedule_type="daily",
+                schedule_time="02:00",
+                timezone="Asia/Shanghai",
+                config_json=json.dumps(DCP_DAILY_UPDATE_CONFIG, ensure_ascii=False),
+            )
+            logger.info("seeded default plan: dcp_daily_update (disabled, daily 02:00)")
+
+        # Seed legacy daily_dcp_refresh if not exists
+        if not self._store.get_scheduled_plan("daily_dcp_refresh"):
+            config = {
+                "steps": DAILY_DCP_REFRESH_STEPS,
+                "recent_days": self._recent_days,
+            }
+            self._store.upsert_scheduled_plan(
+                plan_name="daily_dcp_refresh",
+                enabled=0,
+                schedule_type="daily",
+                schedule_time="02:00",
+                timezone="Asia/Shanghai",
+                config_json=json.dumps(config, ensure_ascii=False),
+            )
+            logger.info("seeded default plan: daily_dcp_refresh (disabled, legacy)")
 
     def get_plan(self, plan_name: str) -> dict[str, Any] | None:
         return self._store.get_scheduled_plan(plan_name)
@@ -110,7 +204,7 @@ class CollectionPlanService:
 
         Args:
             plan_name: The plan to execute.
-            source: Trigger source — api / cli / scheduler.
+            source: Trigger source — api / cli / scheduler / ui_manual.
 
         Returns:
             StartPlanRunResult with run_id and status="running".
@@ -147,19 +241,9 @@ class CollectionPlanService:
             status="running",
         )
 
-        # Create step records
+        # Create step records with resolved params
         for idx, step_cfg in enumerate(steps):
-            params = step_cfg.get("params", {})
-            # Dynamic params for backfill_daily_meetings_by_range
-            if step_cfg["command"] == "backfill_daily_meetings_by_range":
-                recent_days = config.get("recent_days", self._recent_days)
-                today = datahub_today()
-                start_date = today - timedelta(days=recent_days)
-                params = {
-                    "startDate": start_date.isoformat(),
-                    "endDate": today.isoformat(),
-                    "chunk_days": 1,
-                }
+            params = resolve_plan_params(step_cfg.get("params", {}))
             self._store.create_scheduled_run_step(
                 run_id=run_id,
                 step_order=idx,
@@ -251,7 +335,7 @@ class CollectionPlanService:
                 # Fire-and-forget: mark succeeded once submitted
                 self._store.update_scheduled_run_step(step_id, status="succeeded")
 
-        # Compute next_run_at: only for scheduler-triggered runs
+        # Compute next_run_at: only for scheduler-triggered runs on daily plans
         next_run_at = None
         if source == "scheduler" and plan["schedule_type"] == "daily" and plan["schedule_time"]:
             next_run_at = self._compute_next_daily_run(plan)
@@ -287,12 +371,16 @@ class CollectionPlanService:
 
         Called periodically by the collection scheduler background thread.
         Non-blocking: only calls run_plan_now which starts a background thread.
+        Manual plans are skipped — they can only be triggered via run-now.
         """
         plans = self._store.list_scheduled_plans()
         now_text = datahub_now_text()
 
         for plan in plans:
             if not plan["enabled"]:
+                continue
+            # Manual plans are never auto-triggered by scheduler
+            if plan["schedule_type"] == "manual":
                 continue
             if not plan["next_run_at"]:
                 continue

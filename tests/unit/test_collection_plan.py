@@ -251,7 +251,7 @@ class TestRunPlanNowAsync:
         run = _wait_for_run(store, result.run_id)
         assert run["status"] == "partial"
 
-    def test_daily_meetings_uses_recent_days(self, plan_service, mock_job_service, store):
+    def test_daily_meetings_uses_resolve_params(self, plan_service, mock_job_service, store):
         plan_service.seed_default_plans()
         result = plan_service.run_plan_now("daily_dcp_refresh", source="api")
         _wait_for_run(store, result.run_id)
@@ -264,11 +264,10 @@ class TestRunPlanNowAsync:
                 break
         assert meeting_call is not None
         params = meeting_call.kwargs.get("params") or meeting_call.args[1]
-        from datetime import date, timedelta
-        today = date.today()
-        expected_start = (today - timedelta(days=3)).isoformat()
-        assert params["startDate"] == expected_start
-        assert params["endDate"] == today.isoformat()
+        from src.datahub.core.time_utils import datahub_today
+        today = datahub_today().isoformat()
+        assert params["startDate"] == today
+        assert params["endDate"] == today
         assert params["chunk_days"] == 1
 
 
