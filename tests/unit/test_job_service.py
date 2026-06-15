@@ -1030,3 +1030,159 @@ class TestReopenParentIngestionJob:
             assert job["error"] is None
             assert job["result_json"] is None
             assert job["finished_at"] is None
+
+
+# ---------------------------------------------------------------------------
+# P3.1: Fan-out detail API
+# ---------------------------------------------------------------------------
+
+class TestFanoutDetailAPI:
+    """P3.1: GET /ingestion/v1/jobs/{parent}/fanout returns fanout_run/stats/items."""
+
+    @staticmethod
+    def _build_client(mock_job_svc):
+        from fastapi.testclient import TestClient
+        from src.datahub.storage.sqlite import DataHubStore
+        from src.datahub.core.registry import SchemaRegistry
+        from src.datahub.api.ingestion import build_ingestion_router
+        from src.datahub.settings import Settings
+        from fastapi import FastAPI
+        import tempfile
+
+        tmpdir = tempfile.mkdtemp()
+        db_path = str(Path(tmpdir) / "test.db")
+        registry = SchemaRegistry(version=1, tables={}, datasets=set(), raw={})
+        store = DataHubStore(db_path, registry)
+        store.init_schema(dev_mode=True)
+
+        settings = Settings()
+        app = FastAPI()
+        router = build_ingestion_router(
+            settings=settings,
+            plugins=_make_plugins(),
+            store=store,
+            trigger_clients={"dcp": _make_client()},
+            ingestion_service=MagicMock(),
+            job_service=mock_job_svc,
+        )
+        app.include_router(router)
+        return TestClient(app), store
+
+    def test_fanout_detail_returns_items_with_child_info(self):
+        """Fanout detail API returns item_index, retry_count, child fields."""
+        from src.datahub.core.services.job_service import JobService
+
+        svc = MagicMock(spec=JobService)
+        client, store = self._build_client(svc)
+
+        # Create parent job
+        store.create_ingestion_job(
+            ingestion_job_id="ing_parent_1",
+            producer_job_id="prod_1",
+            job_type="dcp_current_plan",
+            params={"domain": "all"},
+            plugin_id="dcp",
+        )
+        # Create fanout_run
+        with sqlite3.connect(store.db_path) as conn:
+            conn.execute(
+                "INSERT INTO fanout_runs(parent_job_id, plugin_id, parent_command, child_command, total, status, created_at, updated_at) VALUES (?,?,?,?,?,?,datetime('now'),datetime('now'))",
+                ("ing_parent_1", "dcp", "dcp_current_plan", "dcp_current_plan_for_project", 3, "partial"),
+            )
+            conn.execute(
+                "INSERT INTO fanout_items(parent_job_id, item_index, params_json, status, child_job_id, retry_count, created_at, updated_at) VALUES (?,?,?,'failed',?,0,datetime('now'),datetime('now'))",
+                ("ing_parent_1", 0, '{"projectCode":"A"}', "ing_child_0"),
+            )
+            conn.execute(
+                "INSERT INTO fanout_items(parent_job_id, item_index, params_json, status, child_job_id, retry_count, created_at, updated_at) VALUES (?,?,?,'succeeded',?,0,datetime('now'),datetime('now'))",
+                ("ing_parent_1", 1, '{"projectCode":"B"}', "ing_child_1"),
+            )
+            conn.execute(
+                "INSERT INTO fanout_items(parent_job_id, item_index, params_json, status, retry_count, created_at, updated_at) VALUES (?,?,?,'skipped',0,datetime('now'),datetime('now'))",
+                ("ing_parent_1", 2, '{"projectCode":"C"}'),
+            )
+        # Create child jobs
+        store.create_ingestion_job(
+            ingestion_job_id="ing_child_0",
+            producer_job_id="prod_c0",
+            job_type="dcp_current_plan_for_project",
+            params={"projectCode": "A"},
+            plugin_id="dcp",
+            parent_job_id="ing_parent_1",
+        )
+        store.mark_job("ing_child_0", status="failed", error="connection refused")
+        store.create_ingestion_job(
+            ingestion_job_id="ing_child_1",
+            producer_job_id="prod_c1",
+            job_type="dcp_current_plan_for_project",
+            params={"projectCode": "B"},
+            plugin_id="dcp",
+            parent_job_id="ing_parent_1",
+        )
+        store.mark_job("ing_child_1", status="succeeded")
+
+        resp = client.get(
+            "/ingestion/v1/jobs/ing_parent_1/fanout",
+            headers={"X-API-Key": "dev-admin-key"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["parent_job_id"] == "ing_parent_1"
+        assert data["fanout_run"]["status"] == "partial"
+        assert data["fanout_run"]["child_command"] == "dcp_current_plan_for_project"
+        assert data["stats"]["failed"] == 1
+        assert data["stats"]["succeeded"] == 1
+        assert data["stats"]["skipped"] == 1
+        assert len(data["items"]) == 3
+
+        # Item 0: failed with child
+        item0 = data["items"][0]
+        assert item0["item_index"] == 0
+        assert item0["status"] == "failed"
+        assert item0["retry_count"] == 0
+        assert item0["child_job_id"] == "ing_child_0"
+        assert item0["child_status"] == "failed"
+        assert item0["child_error"] == "connection refused"
+
+        # Item 2: skipped, no child
+        item2 = data["items"][2]
+        assert item2["item_index"] == 2
+        assert item2["status"] == "skipped"
+        assert item2["child_job_id"] is None
+        assert item2["child_status"] is None
+
+    def test_not_fanout_parent_returns_404(self):
+        """Non-fanout parent returns 404 not_fanout_parent."""
+        from src.datahub.core.services.job_service import JobService
+
+        svc = MagicMock(spec=JobService)
+        client, store = self._build_client(svc)
+
+        # Create a non-fanout job
+        store.create_ingestion_job(
+            ingestion_job_id="ing_normal_1",
+            producer_job_id="prod_1",
+            job_type="test_cmd",
+            params={"domain": "a"},
+            plugin_id="dcp",
+        )
+
+        resp = client.get(
+            "/ingestion/v1/jobs/ing_normal_1/fanout",
+            headers={"X-API-Key": "dev-admin-key"},
+        )
+        assert resp.status_code == 404
+        assert resp.json()["detail"]["error"] == "not_fanout_parent"
+
+    def test_nonexistent_job_returns_404(self):
+        """Nonexistent job returns 404 not_fanout_parent."""
+        from src.datahub.core.services.job_service import JobService
+
+        svc = MagicMock(spec=JobService)
+        client, store = self._build_client(svc)
+
+        resp = client.get(
+            "/ingestion/v1/jobs/ing_nonexistent/fanout",
+            headers={"X-API-Key": "dev-admin-key"},
+        )
+        assert resp.status_code == 404

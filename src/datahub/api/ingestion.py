@@ -125,10 +125,49 @@ def build_ingestion_router(
             raise HTTPException(status_code=404, detail="ingestion job not found")
         return row
 
-    @router.get("/ingestion/v1/jobs/{ingestion_job_id}/children", dependencies=[Depends(require_scope(store, "admin"))])
-    def list_child_jobs(ingestion_job_id: str) -> dict[str, Any]:
-        children = store.list_child_jobs(ingestion_job_id)
-        return {"parent_job_id": ingestion_job_id, "total": len(children), "items": children}
+    @router.get("/ingestion/v1/jobs/{parent_job_id}/children", dependencies=[Depends(require_scope(store, "admin"))])
+    def list_child_jobs(parent_job_id: str) -> dict[str, Any]:
+        children = store.list_child_jobs(parent_job_id)
+        return {"parent_job_id": parent_job_id, "total": len(children), "items": children}
+
+    @router.get("/ingestion/v1/jobs/{parent_job_id}/fanout", dependencies=[Depends(require_scope(store, "admin"))])
+    def get_fanout_detail(parent_job_id: str) -> dict[str, Any]:
+        """Get fanout run detail with items and child job info."""
+        fanout_run = store.get_fanout_run(parent_job_id)
+        if not fanout_run:
+            raise HTTPException(status_code=404, detail={"error": "not_fanout_parent", "message": f"job {parent_job_id} is not a fanout parent"})
+
+        items = store.list_fanout_items_with_child_jobs(parent_job_id)
+
+        # Compute stats from fanout_items
+        stats: dict[str, int] = {}
+        for item in items:
+            s = item["item_status"]
+            stats[s] = stats.get(s, 0) + 1
+
+        # Format items for response
+        formatted_items = []
+        for item in items:
+            formatted_items.append({
+                "item_id": item["item_id"],
+                "item_index": item["item_index"],
+                "status": item["item_status"],
+                "retry_count": item["retry_count"],
+                "child_job_id": item["child_job_id"],
+                "error": item["item_error"],
+                "params_json": item["params_json"],
+                "child_status": item["child_status"],
+                "child_source": item["child_source"],
+                "child_retry_of_job_id": item["child_retry_of_job_id"],
+                "child_error": item["child_error"],
+            })
+
+        return {
+            "parent_job_id": parent_job_id,
+            "fanout_run": fanout_run,
+            "stats": stats,
+            "items": formatted_items,
+        }
 
     @router.post("/ingestion/v1/jobs/{ingestion_job_id}/retry", status_code=202, dependencies=[Depends(require_scope(store, "ingestion"))])
     def retry_ingestion_job(ingestion_job_id: str) -> dict[str, Any]:

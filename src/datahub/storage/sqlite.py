@@ -474,6 +474,29 @@ class DataHubStore:
             (ingestion_job_id,),
         )
 
+    def list_fanout_items_with_child_jobs(self, parent_job_id: str) -> list[dict[str, Any]]:
+        """List fanout_items joined with child ingestion_jobs for fanout detail API."""
+        return self._get_rows(
+            """SELECT
+                 fi.id as item_id,
+                 fi.item_index,
+                 fi.status as item_status,
+                 fi.retry_count,
+                 fi.child_job_id,
+                 fi.error as item_error,
+                 fi.params_json,
+                 ij.ingestion_job_id,
+                 ij.status as child_status,
+                 ij.source as child_source,
+                 ij.retry_of_job_id as child_retry_of_job_id,
+                 ij.error as child_error
+               FROM fanout_items fi
+               LEFT JOIN ingestion_jobs ij ON fi.child_job_id = ij.ingestion_job_id
+               WHERE fi.parent_job_id = ?
+               ORDER BY fi.item_index""",
+            (parent_job_id,),
+        )
+
     # ── Collection plan store APIs ──────────────────────────────
 
     def upsert_scheduled_plan(

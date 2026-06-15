@@ -169,20 +169,22 @@ if (!KEY) {
 }
 
 const RETRYABLE = new Set(['failed','partial','cancelled']);
-const TERMINAL = new Set(['succeeded','failed','partial','cancelled']);
+
+function esc(s) { return (s==null?'':String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function jsArg(v) { return JSON.stringify(v||''); }
+function htmlJson(s) { return esc(fmtJson(s)); }
+function fmtJson(s) { try { return JSON.stringify(JSON.parse(s), null, 2); } catch { return s || '-'; } }
+function fmtTime(s) { return s ? String(s).replace('T',' ').substring(0, 19) : '-'; }
+function shortId(s) { return s ? (s.length > 30 ? s.substring(0,30)+'...' : s) : '-'; }
 
 function statusBadge(s) {
   const m = {succeeded:'green',accepted:'blue',running:'yellow',triggering:'yellow',partial:'yellow',failed:'red',cancelled:'red',conflict:'red',submitted:'blue',pending:'gray',skipped:'gray'};
-  return `<span class="badge badge-${m[s]||'gray'}">${s}</span>`;
+  return '<span class="badge badge-'+(m[s]||'gray')+'">'+esc(s)+'</span>';
 }
 function sourceBadge(s) {
   const m = {api:'blue',cli:'purple',scheduler:'green',retry:'yellow',ui_manual:'blue'};
-  return s ? `<span class="badge badge-${m[s]||'gray'}">${s}</span>` : '-';
+  return s ? '<span class="badge badge-'+(m[s]||'gray')+'">'+esc(s)+'</span>' : '-';
 }
-function fmtJson(s) { try { return JSON.stringify(JSON.parse(s), null, 2); } catch { return s || '-'; } }
-function fmtTime(s) { return s ? s.replace('T',' ').substring(0, 19) : '-'; }
-function shortId(s) { return s ? (s.length > 30 ? s.substring(0,30)+'...' : s) : '-'; }
-function esc(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
 function toast(msg, type='info') {
   const el = document.createElement('div');
@@ -194,10 +196,10 @@ function toast(msg, type='info') {
 
 function confirmAction(msg, onConfirm) {
   const c = document.getElementById('confirm-container');
-  c.innerHTML = `<div class="confirm-overlay" onclick="if(event.target===this)this.remove()">
-    <div class="confirm-box"><h3>Confirm Action</h3><p>${esc(msg)}</p>
-    <div class="actions"><button onclick="this.closest('.confirm-overlay').remove()">Cancel</button>
-    <button class="danger" id="confirm-ok">Confirm</button></div></div></div>`;
+  c.innerHTML = '<div class="confirm-overlay" onclick="if(event.target===this)this.remove()">'
+    +'<div class="confirm-box"><h3>Confirm Action</h3><p>'+esc(msg)+'</p>'
+    +'<div class="actions"><button onclick="this.closest(\'.confirm-overlay\').remove()">Cancel</button>'
+    +'<button class="danger" id="confirm-ok">Confirm</button></div></div></div>';
   document.getElementById('confirm-ok').onclick = function() { c.innerHTML=''; onConfirm(); };
 }
 
@@ -205,7 +207,7 @@ function switchTab(name) {
   const idx = {commands:1,jobs:2,fanout:3,schedules:4,tables:5}[name];
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
   document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
-  document.querySelector(`.tab:nth-child(${idx})`).classList.add('active');
+  document.querySelector('.tab:nth-child('+idx+')').classList.add('active');
   document.getElementById('tab-'+name).classList.add('active');
   if (name==='jobs') loadJobs();
   if (name==='fanout') loadFanout();
@@ -222,7 +224,11 @@ async function loadCommands() {
   for (const p of data.items) {
     for (const c of p.commands) {
       if (!c.enabled) continue;
-      sel.innerHTML += `<option value="${c.name}" data-params='${JSON.stringify(c.required_params)}'>${c.name}</option>`;
+      const opt = document.createElement('option');
+      opt.value = c.name;
+      opt.dataset.params = JSON.stringify(c.required_params);
+      opt.textContent = c.name;
+      sel.appendChild(opt);
     }
   }
 }
@@ -248,7 +254,7 @@ async function triggerCommand() {
   let params;
   try { params = JSON.parse(document.getElementById('cmd-params').value); }
   catch { return toast('Invalid JSON in params', 'error'); }
-  confirmAction(`Trigger command "${cmd}" with source=ui_manual?`, async () => {
+  confirmAction('Trigger command "'+cmd+'" with source=ui_manual?', async () => {
     try {
       const resp = await fetch(API+'/ingestion/v1/jobs', {
         method:'POST', headers,
@@ -256,11 +262,12 @@ async function triggerCommand() {
       });
       const result = await resp.json();
       if (resp.ok) {
-        toast(`Job created: ${result.ingestion_job_id} (status: ${result.status})`, 'success');
+        toast('Job created: '+result.ingestion_job_id+' (status: '+result.status+')', 'success');
       } else {
-        toast(`Error: ${result.detail?.error||''} - ${result.detail?.message||JSON.stringify(result)}`, 'error');
+        const d = result.detail || result;
+        toast('Error: '+(d.error||'')+' - '+(d.message||JSON.stringify(d)), 'error');
       }
-    } catch(e) { toast(`Request failed: ${e.message}`, 'error'); }
+    } catch(e) { toast('Request failed: '+e.message, 'error'); }
   });
 }
 
@@ -278,73 +285,76 @@ async function loadJobs() {
   let html = '<table><tr><th>Job ID</th><th>Command</th><th>Source</th><th>Status</th><th>Parent</th><th>Retry Of</th><th>Rows</th><th>Error</th><th>Created</th><th>Actions</th></tr>';
   for (const j of items) {
     const canRetry = RETRYABLE.has(j.status);
-    html += `<tr>
-      <td class="mono"><span class="link" onclick="showJobDetail('${j.ingestion_job_id}')">${shortId(j.ingestion_job_id)}</span></td>
-      <td>${j.trigger_key||'-'}</td>
-      <td>${sourceBadge(j.source)}</td>
-      <td>${statusBadge(j.status)}</td>
-      <td>${j.parent_job_id ? `<span class="link" onclick="showJobDetail('${j.parent_job_id}')">${shortId(j.parent_job_id)}</span>` : '-'}</td>
-      <td>${j.retry_of_job_id ? `<span class="link" onclick="showJobDetail('${j.retry_of_job_id}')">${shortId(j.retry_of_job_id)}</span>` : '-'}</td>
-      <td>${j.row_count??'-'}</td>
-      <td class="error-cell" title="${esc(j.error||'')}">${j.error ? shortId(j.error) : '-'}</td>
-      <td>${fmtTime(j.created_at)}</td>
-      <td>
-        <button onclick="showJobDetail('${j.ingestion_job_id}')">Detail</button>
-        ${canRetry ? `<button class="danger" onclick="retryJob('${j.ingestion_job_id}','${j.trigger_key||''}')">Retry</button>` : ''}
-      </td>
-    </tr>`;
+    html += '<tr>'
+      +'<td class="mono"><span class="link" onclick="showJobDetail('+jsArg(j.ingestion_job_id)+')">'+esc(shortId(j.ingestion_job_id))+'</span></td>'
+      +'<td>'+esc(j.trigger_key||'-')+'</td>'
+      +'<td>'+sourceBadge(j.source)+'</td>'
+      +'<td>'+statusBadge(j.status)+'</td>'
+      +'<td>'+(j.parent_job_id ? '<span class="link" onclick="showJobDetail('+jsArg(j.parent_job_id)+')">'+esc(shortId(j.parent_job_id))+'</span>' : '-')+'</td>'
+      +'<td>'+(j.retry_of_job_id ? '<span class="link" onclick="showJobDetail('+jsArg(j.retry_of_job_id)+')">'+esc(shortId(j.retry_of_job_id))+'</span>' : '-')+'</td>'
+      +'<td>'+(j.row_count!=null?j.row_count:'-')+'</td>'
+      +'<td class="error-cell" title="'+esc(j.error||'')+'">'+esc(j.error ? shortId(j.error) : '-')+'</td>'
+      +'<td>'+esc(fmtTime(j.created_at))+'</td>'
+      +'<td>'
+        +'<button onclick="showJobDetail('+jsArg(j.ingestion_job_id)+')">Detail</button>'
+        +(canRetry ? '<button class="danger" onclick="retryJob('+jsArg(j.ingestion_job_id)+','+jsArg(j.trigger_key||'')+')">Retry</button>' : '')
+      +'</td></tr>';
   }
   html += '</table>';
   el.innerHTML = html;
 }
 
 async function showJobDetail(jobId) {
-  const r = await fetch(API+`/ingestion/v1/jobs/${jobId}`, {headers});
+  const r = await fetch(API+'/ingestion/v1/jobs/'+encodeURIComponent(jobId), {headers});
   const j = await r.json();
   const el = document.getElementById('job-detail');
   el.style.display = 'block';
   const canRetry = RETRYABLE.has(j.status);
 
-  let html = `<div class="card">
-    <div class="card-header"><span class="card-title">Job Detail</span><button onclick="document.getElementById('job-detail').style.display='none'">Close</button></div>
-    <table>
-      <tr><td style="color:#94a3b8;width:140px">Job ID</td><td class="mono">${j.ingestion_job_id}</td></tr>
-      <tr><td style="color:#94a3b8">Command</td><td>${j.trigger_key||'-'}</td></tr>
-      <tr><td style="color:#94a3b8">Source</td><td>${sourceBadge(j.source)}</td></tr>
-      <tr><td style="color:#94a3b8">Status</td><td>${statusBadge(j.status)}</td></tr>
-      <tr><td style="color:#94a3b8">Parent Job</td><td class="mono">${j.parent_job_id ? `<span class="link" onclick="showJobDetail('${j.parent_job_id}')">${j.parent_job_id}</span>` : '-'} ${j.parent_job_id ? `<button onclick="showJobDetail('${j.parent_job_id}')">View</button>` : ''}</td></tr>
-      <tr><td style="color:#94a3b8">Retry Of</td><td class="mono">${j.retry_of_job_id ? `<span class="link" onclick="showJobDetail('${j.retry_of_job_id}')">${j.retry_of_job_id}</span>` : '-'}</td></tr>
-      <tr><td style="color:#94a3b8">Params</td><td class="mono"><pre style="white-space:pre-wrap">${fmtJson(j.params_json)}</pre></td></tr>
-      <tr><td style="color:#94a3b8">Error</td><td class="error-cell">${j.error||'-'}</td></tr>
-      <tr><td style="color:#94a3b8">Result</td><td class="mono"><pre style="white-space:pre-wrap">${fmtJson(j.result_json)}</pre></td></tr>
-      <tr><td style="color:#94a3b8">Producer Status</td><td class="mono"><pre style="white-space:pre-wrap">${fmtJson(j.producer_status_json)}</pre></td></tr>
-      <tr><td style="color:#94a3b8">Row Count</td><td>${j.row_count??'-'}</td></tr>
-      <tr><td style="color:#94a3b8">Created</td><td>${fmtTime(j.created_at)}</td></tr>
-      <tr><td style="color:#94a3b8">Updated</td><td>${fmtTime(j.updated_at)}</td></tr>
-      <tr><td style="color:#94a3b8">Finished</td><td>${fmtTime(j.finished_at)}</td></tr>
-    </table>
-    ${canRetry ? `<button class="danger" onclick="retryJob('${j.ingestion_job_id}','${j.trigger_key||''}')">Retry This Job</button>` : ''}
-  </div>`;
+  let html = '<div class="card">'
+    +'<div class="card-header"><span class="card-title">Job Detail</span><button onclick="document.getElementById(\'job-detail\').style.display=\'none\'">Close</button></div>'
+    +'<table>'
+    +'<tr><td style="color:#94a3b8;width:140px">Job ID</td><td class="mono">'+esc(j.ingestion_job_id)+'</td></tr>'
+    +'<tr><td style="color:#94a3b8">Command</td><td>'+esc(j.trigger_key||'-')+'</td></tr>'
+    +'<tr><td style="color:#94a3b8">Source</td><td>'+sourceBadge(j.source)+'</td></tr>'
+    +'<tr><td style="color:#94a3b8">Status</td><td>'+statusBadge(j.status)+'</td></tr>'
+    +'<tr><td style="color:#94a3b8">Parent Job</td><td class="mono">'
+      +(j.parent_job_id ? '<span class="link" onclick="showJobDetail('+jsArg(j.parent_job_id)+')">'+esc(j.parent_job_id)+'</span> <button onclick="showJobDetail('+jsArg(j.parent_job_id)+')">View</button>' : '-')
+    +'</td></tr>'
+    +'<tr><td style="color:#94a3b8">Retry Of</td><td class="mono">'
+      +(j.retry_of_job_id ? '<span class="link" onclick="showJobDetail('+jsArg(j.retry_of_job_id)+')">'+esc(j.retry_of_job_id)+'</span>' : '-')
+    +'</td></tr>'
+    +'<tr><td style="color:#94a3b8">Params</td><td class="mono"><pre style="white-space:pre-wrap">'+htmlJson(j.params_json)+'</pre></td></tr>'
+    +'<tr><td style="color:#94a3b8">Error</td><td class="error-cell">'+esc(j.error||'-')+'</td></tr>'
+    +'<tr><td style="color:#94a3b8">Result</td><td class="mono"><pre style="white-space:pre-wrap">'+htmlJson(j.result_json)+'</pre></td></tr>'
+    +'<tr><td style="color:#94a3b8">Producer Status</td><td class="mono"><pre style="white-space:pre-wrap">'+htmlJson(j.producer_status_json)+'</pre></td></tr>'
+    +'<tr><td style="color:#94a3b8">Row Count</td><td>'+(j.row_count!=null?j.row_count:'-')+'</td></tr>'
+    +'<tr><td style="color:#94a3b8">Created</td><td>'+esc(fmtTime(j.created_at))+'</td></tr>'
+    +'<tr><td style="color:#94a3b8">Updated</td><td>'+esc(fmtTime(j.updated_at))+'</td></tr>'
+    +'<tr><td style="color:#94a3b8">Finished</td><td>'+esc(fmtTime(j.finished_at))+'</td></tr>'
+    +'</table>'
+    +(canRetry ? '<button class="danger" onclick="retryJob('+jsArg(j.ingestion_job_id)+','+jsArg(j.trigger_key||'')+')">Retry This Job</button>' : '')
+    +'</div>';
 
   // Load child jobs
   try {
-    const cr = await fetch(API+`/ingestion/v1/jobs/${jobId}/children`, {headers});
+    const cr = await fetch(API+'/ingestion/v1/jobs/'+encodeURIComponent(jobId)+'/children', {headers});
     const children = await cr.json();
     if (children.total > 0) {
-      html += `<div class="card"><h3>Child Jobs (${children.total})</h3><table>
-        <tr><th>Job ID</th><th>Source</th><th>Status</th><th>Retry Of</th><th>Params</th><th>Error</th><th>Action</th></tr>`;
+      html += '<div class="card"><h3>Child Jobs ('+children.total+')</h3><table>'
+        +'<tr><th>Job ID</th><th>Source</th><th>Status</th><th>Retry Of</th><th>Params</th><th>Error</th><th>Action</th></tr>';
       for (const c of children.items) {
         const cp = fmtJson(c.params_json);
         const cRetry = RETRYABLE.has(c.status);
-        html += `<tr>
-          <td class="mono"><span class="link" onclick="showJobDetail('${c.ingestion_job_id}')">${shortId(c.ingestion_job_id)}</span></td>
-          <td>${sourceBadge(c.source)}</td>
-          <td>${statusBadge(c.status)}</td>
-          <td>${c.retry_of_job_id ? `<span class="link" onclick="showJobDetail('${c.retry_of_job_id}')">${shortId(c.retry_of_job_id)}</span>` : '-'}</td>
-          <td class="mono params-cell" title="${esc(cp)}">${cp.substring(0,50)}</td>
-          <td class="error-cell">${c.error||'-'}</td>
-          <td>${cRetry ? `<button class="danger" onclick="retryJob('${c.ingestion_job_id}','${c.trigger_key||''}')">Retry</button>` : ''}</td>
-        </tr>`;
+        html += '<tr>'
+          +'<td class="mono"><span class="link" onclick="showJobDetail('+jsArg(c.ingestion_job_id)+')">'+esc(shortId(c.ingestion_job_id))+'</span></td>'
+          +'<td>'+sourceBadge(c.source)+'</td>'
+          +'<td>'+statusBadge(c.status)+'</td>'
+          +'<td>'+(c.retry_of_job_id ? '<span class="link" onclick="showJobDetail('+jsArg(c.retry_of_job_id)+')">'+esc(shortId(c.retry_of_job_id))+'</span>' : '-')+'</td>'
+          +'<td class="mono params-cell" title="'+esc(cp)+'">'+esc(cp.substring(0,50))+'</td>'
+          +'<td class="error-cell">'+esc(c.error||'-')+'</td>'
+          +'<td>'+(cRetry ? '<button class="danger" onclick="retryJob('+jsArg(c.ingestion_job_id)+','+jsArg(c.trigger_key||'')+')">Retry</button>' : '')+'</td>'
+          +'</tr>';
       }
       html += '</table></div>';
     }
@@ -355,18 +365,18 @@ async function showJobDetail(jobId) {
 }
 
 async function retryJob(jobId, cmd) {
-  confirmAction(`Retry job ${jobId}?\nCommand: ${cmd}`, async () => {
+  confirmAction('Retry job '+jobId+'?\nCommand: '+cmd, async () => {
     try {
-      const resp = await fetch(API+`/ingestion/v1/jobs/${jobId}/retry`, {method:'POST', headers});
+      const resp = await fetch(API+'/ingestion/v1/jobs/'+encodeURIComponent(jobId)+'/retry', {method:'POST', headers});
       const result = await resp.json();
       if (resp.ok) {
-        toast(`Retry job created: ${result.ingestion_job_id} (retry_of: ${result.retry_of_job_id||'-'})`, 'success');
+        toast('Retry job created: '+result.ingestion_job_id+' (retry_of: '+(result.retry_of_job_id||'-')+')', 'success');
         loadJobs();
       } else {
         const d = result.detail || result;
-        toast(`Error: ${d.error||''} - ${d.message||JSON.stringify(d)}${d.ingestion_job_id ? ' (job: '+d.ingestion_job_id+')' : ''}`, 'error');
+        toast('Error: '+(d.error||'')+' - '+(d.message||JSON.stringify(d))+(d.ingestion_job_id ? ' (job: '+d.ingestion_job_id+')' : ''), 'error');
       }
-    } catch(e) { toast(`Retry failed: ${e.message}`, 'error'); }
+    } catch(e) { toast('Retry failed: '+e.message, 'error'); }
   });
 }
 
@@ -374,20 +384,19 @@ async function retryJob(jobId, cmd) {
 async function loadFanout() {
   const r = await fetch(API+'/ingestion/v1/jobs?limit=200', {headers});
   const data = await r.json();
-  // Find parent jobs (those with children)
   const parents = (data.items||[]).filter(j => j.parent_job_id === null && j.status !== 'triggering');
   const el = document.getElementById('fanout-list');
 
   let html = '<table><tr><th>Parent Job ID</th><th>Command</th><th>Status</th><th>Source</th><th>Created</th><th>Action</th></tr>';
   for (const j of parents.slice(0, 30)) {
-    html += `<tr>
-      <td class="mono"><span class="link" onclick="showFanoutDetail('${j.ingestion_job_id}')">${shortId(j.ingestion_job_id)}</span></td>
-      <td>${j.trigger_key||'-'}</td>
-      <td>${statusBadge(j.status)}</td>
-      <td>${sourceBadge(j.source)}</td>
-      <td>${fmtTime(j.created_at)}</td>
-      <td><button onclick="showFanoutDetail('${j.ingestion_job_id}')">Details</button></td>
-    </tr>`;
+    html += '<tr>'
+      +'<td class="mono"><span class="link" onclick="showFanoutDetail('+jsArg(j.ingestion_job_id)+')">'+esc(shortId(j.ingestion_job_id))+'</span></td>'
+      +'<td>'+esc(j.trigger_key||'-')+'</td>'
+      +'<td>'+statusBadge(j.status)+'</td>'
+      +'<td>'+sourceBadge(j.source)+'</td>'
+      +'<td>'+esc(fmtTime(j.created_at))+'</td>'
+      +'<td><button onclick="showFanoutDetail('+jsArg(j.ingestion_job_id)+')">Details</button></td>'
+      +'</tr>';
   }
   html += '</table>';
   el.innerHTML = html;
@@ -399,71 +408,79 @@ async function showFanoutDetail(parentJobId) {
   el.innerHTML = '<p style="color:#94a3b8">Loading...</p>';
 
   try {
-    const [parentR, childrenR] = await Promise.all([
-      fetch(API+`/ingestion/v1/jobs/${parentJobId}`, {headers}),
-      fetch(API+`/ingestion/v1/jobs/${parentJobId}/children`, {headers})
-    ]);
-    const parent = await parentR.json();
-    const children = await childrenR.json();
+    const r = await fetch(API+'/ingestion/v1/jobs/'+encodeURIComponent(parentJobId)+'/fanout', {headers});
+    if (!r.ok) {
+      const err = await r.json();
+      const detail = err.detail || err;
+      if (detail.error === 'not_fanout_parent') {
+        el.innerHTML = '<div class="card"><p style="color:#fde047">This job is not a fan-out parent. No fanout_run found for '+esc(parentJobId)+'.</p>'
+          +'<button onclick="showJobDetail('+jsArg(parentJobId)+')">View Job Detail</button></div>';
+      } else {
+        el.innerHTML = '<p style="color:#fca5a5">Error: '+esc(detail.error||'')+' - '+esc(detail.message||'unknown')+'</p>';
+      }
+      return;
+    }
+    const data = await r.json();
+    const run = data.fanout_run;
+    const stats = data.stats;
+    const items = data.items;
 
-    // Stats
-    const stats = {};
-    children.items.forEach(c => { stats[c.status] = (stats[c.status]||0) + 1; });
-
-    let html = `<div class="card">
-      <div class="card-header"><span class="card-title">Fan-out Parent: ${shortId(parentJobId)}</span><button onclick="document.getElementById('fanout-detail').style.display='none'">Close</button></div>
-      <table>
-        <tr><td style="color:#94a3b8;width:140px">Job ID</td><td class="mono">${parent.ingestion_job_id}</td></tr>
-        <tr><td style="color:#94a3b8">Command</td><td>${parent.trigger_key||'-'}</td></tr>
-        <tr><td style="color:#94a3b8">Status</td><td>${statusBadge(parent.status)}</td></tr>
-        <tr><td style="color:#94a3b8">Source</td><td>${sourceBadge(parent.source)}</td></tr>
-        <tr><td style="color:#94a3b8">Error</td><td class="error-cell">${parent.error||'-'}</td></tr>
-        <tr><td style="color:#94a3b8">Result</td><td class="mono"><pre style="white-space:pre-wrap">${fmtJson(parent.result_json)}</pre></td></tr>
-      </table>
-    </div>`;
+    let html = '<div class="card">'
+      +'<div class="card-header"><span class="card-title">Fan-out Parent: '+esc(shortId(parentJobId))+'</span><button onclick="document.getElementById(\'fanout-detail\').style.display=\'none\'">Close</button></div>'
+      +'<table>'
+      +'<tr><td style="color:#94a3b8;width:140px">Job ID</td><td class="mono">'+esc(parentJobId)+'</td></tr>'
+      +'<tr><td style="color:#94a3b8">Child Command</td><td>'+esc(run.child_command||'-')+'</td></tr>'
+      +'<tr><td style="color:#94a3b8">Run Status</td><td>'+statusBadge(run.status)+'</td></tr>'
+      +'<tr><td style="color:#94a3b8">Total Items</td><td>'+run.total+'</td></tr>'
+      +'<tr><td style="color:#94a3b8">Circuit Opened</td><td>'+(run.circuit_opened?'Yes':'No')+'</td></tr>'
+      +'</table></div>';
 
     // Stats cards
     html += '<div class="stats">';
     for (const [s, n] of Object.entries(stats)) {
-      html += `<div class="stat-card"><div class="stat-value">${n}</div><div class="stat-label">${s}</div></div>`;
+      html += '<div class="stat-card"><div class="stat-value">'+n+'</div><div class="stat-label">'+esc(s)+'</div></div>';
     }
     html += '</div>';
 
     // Retry failed children button
-    const failedCount = (stats['failed']||0) + (stats['partial']||0) + (stats['cancelled']||0);
-    if (failedCount > 0) {
-      html += `<div class="card">
-        <h3>Retry Failed Children</h3>
-        <p style="color:#94a3b8;font-size:12px">${failedCount} failed/partial/cancelled children found.</p>
-        <div class="trigger-form" style="margin-top:8px">
-          <label>Item indexes (optional, comma-sep) <input id="retry-item-indexes" size="30" placeholder="e.g. 322,402 or leave empty for all"></label>
-          <button class="danger" onclick="retryFailedChildren('${parentJobId}')">Retry Failed Children</button>
-        </div>
-      </div>`;
+    const failedCount = (stats['failed']||0) + (stats['skipped']||0);
+    const childRetryable = items.filter(i => i.child_status && RETRYABLE.has(i.child_status)).length;
+    const totalRetryable = failedCount + childRetryable;
+    if (totalRetryable > 0) {
+      html += '<div class="card">'
+        +'<h3>Retry Failed Children</h3>'
+        +'<p style="color:#94a3b8;font-size:12px">'+totalRetryable+' retryable items (failed/skipped items or failed/partial/cancelled child jobs).</p>'
+        +'<div class="trigger-form" style="margin-top:8px">'
+        +'<label>Item indexes (optional, comma-sep, copy from table below) <input id="retry-item-indexes" size="30" placeholder="e.g. 322,402 or leave empty for all"></label>'
+        +'<button class="danger" onclick="retryFailedChildren('+jsArg(parentJobId)+')">Retry Failed Children</button>'
+        +'</div></div>';
     }
 
-    // Children table
-    html += `<div class="card"><h3>Child Jobs (${children.total})</h3>
-      <table><tr><th>Job ID</th><th>Source</th><th>Status</th><th>Retry Of</th><th>Params</th><th>Error</th><th>Action</th></tr>`;
-    for (const c of children.items) {
-      const cp = fmtJson(c.params_json);
-      const cRetry = RETRYABLE.has(c.status);
-      html += `<tr>
-        <td class="mono"><span class="link" onclick="showJobDetail('${c.ingestion_job_id}')">${shortId(c.ingestion_job_id)}</span></td>
-        <td>${sourceBadge(c.source)}</td>
-        <td>${statusBadge(c.status)}</td>
-        <td>${c.retry_of_job_id ? `<span class="link" onclick="showJobDetail('${c.retry_of_job_id}')">${shortId(c.retry_of_job_id)}</span>` : '-'}</td>
-        <td class="mono params-cell" title="${esc(cp)}">${cp.substring(0,50)}</td>
-        <td class="error-cell">${c.error||'-'}</td>
-        <td>${cRetry ? `<button class="danger" onclick="retryJob('${c.ingestion_job_id}','${c.trigger_key||''}')">Retry</button>` : ''}</td>
-      </tr>`;
+    // Items table
+    html += '<div class="card"><h3>Fan-out Items ('+items.length+')</h3>'
+      +'<table><tr><th>Index</th><th>Item Status</th><th>Retry#</th><th>Child Job</th><th>Child Source</th><th>Child Status</th><th>Retry Of</th><th>Params</th><th>Error</th><th>Action</th></tr>';
+    for (const i of items) {
+      const cp = fmtJson(i.params_json);
+      const cRetry = i.child_status && RETRYABLE.has(i.child_status);
+      html += '<tr>'
+        +'<td>'+i.item_index+'</td>'
+        +'<td>'+statusBadge(i.status)+'</td>'
+        +'<td>'+i.retry_count+'</td>'
+        +'<td class="mono">'+(i.child_job_id ? '<span class="link" onclick="showJobDetail('+jsArg(i.child_job_id)+')">'+esc(shortId(i.child_job_id))+'</span>' : '-')+'</td>'
+        +'<td>'+sourceBadge(i.child_source)+'</td>'
+        +'<td>'+(i.child_status ? statusBadge(i.child_status) : '-')+'</td>'
+        +'<td>'+(i.child_retry_of_job_id ? '<span class="link" onclick="showJobDetail('+jsArg(i.child_retry_of_job_id)+')">'+esc(shortId(i.child_retry_of_job_id))+'</span>' : '-')+'</td>'
+        +'<td class="mono params-cell" title="'+esc(cp)+'">'+esc(cp.substring(0,50))+'</td>'
+        +'<td class="error-cell">'+esc(i.error||i.child_error||'-')+'</td>'
+        +'<td>'+(cRetry ? '<button class="danger" onclick="retryJob('+jsArg(i.child_job_id)+','+jsArg('')+')">Retry</button>' : '')+'</td>'
+        +'</tr>';
     }
     html += '</table></div>';
 
     el.innerHTML = html;
     el.scrollIntoView({behavior:'smooth'});
   } catch(e) {
-    el.innerHTML = `<p style="color:#fca5a5">Error: ${e.message}</p>`;
+    el.innerHTML = '<p style="color:#fca5a5">Error: '+esc(e.message)+'</p>';
   }
 }
 
@@ -475,21 +492,21 @@ async function retryFailedChildren(parentJobId) {
     if (indexes.length === 0) return toast('Invalid item indexes', 'error');
     body = {item_indexes: indexes};
   }
-  confirmAction(`Retry failed children of ${parentJobId}?${body ? ' Items: '+body.item_indexes.join(',') : ' All failed items'}`, async () => {
+  confirmAction('Retry failed children of '+parentJobId+'?'+(body ? ' Items: '+body.item_indexes.join(',') : ' All failed items'), async () => {
     try {
-      const resp = await fetch(API+`/ingestion/v1/jobs/${parentJobId}/retry-failed-children`, {
+      const resp = await fetch(API+'/ingestion/v1/jobs/'+encodeURIComponent(parentJobId)+'/retry-failed-children', {
         method:'POST', headers,
         body: body ? JSON.stringify(body) : undefined
       });
       const result = await resp.json();
       if (resp.ok) {
-        toast(`Retry submitted: ${result.submitted} submitted, ${result.skipped} skipped`, 'success');
+        toast('Retry submitted: '+result.submitted+' submitted, '+result.skipped+' skipped', 'success');
         showFanoutDetail(parentJobId);
       } else {
         const d = result.detail || result;
-        toast(`Error: ${d.error||''} - ${d.message||JSON.stringify(d)}`, 'error');
+        toast('Error: '+(d.error||'')+' - '+(d.message||JSON.stringify(d)), 'error');
       }
-    } catch(e) { toast(`Request failed: ${e.message}`, 'error'); }
+    } catch(e) { toast('Request failed: '+e.message, 'error'); }
   });
 }
 
@@ -502,112 +519,109 @@ async function loadSchedules() {
   const plans = await plansR.json();
   const runs = await runsR.json();
 
-  // Plans
   const pel = document.getElementById('schedule-plans');
   let html = '<table><tr><th>Plan</th><th>Enabled</th><th>Schedule</th><th>Next Run</th><th>Last Status</th><th>Actions</th></tr>';
   for (const p of (plans.items||plans)) {
-    html += `<tr>
-      <td><b>${p.plan_name}</b></td>
-      <td>${p.enabled ? '<span class="badge badge-green">enabled</span>' : '<span class="badge badge-gray">disabled</span>'}</td>
-      <td>${p.schedule_type} ${p.schedule_time||''}</td>
-      <td>${fmtTime(p.next_run_at)}</td>
-      <td>${p.last_status ? statusBadge(p.last_status) : '-'}</td>
-      <td>
-        <button onclick="showPlanRuns('${p.plan_name}')">Runs</button>
-        <button class="primary" onclick="runPlanNow('${p.plan_name}')">Run Now</button>
-      </td>
-    </tr>`;
+    html += '<tr>'
+      +'<td><b>'+esc(p.plan_name)+'</b></td>'
+      +'<td>'+(p.enabled ? '<span class="badge badge-green">enabled</span>' : '<span class="badge badge-gray">disabled</span>')+'</td>'
+      +'<td>'+esc(p.schedule_type)+' '+esc(p.schedule_time||'')+'</td>'
+      +'<td>'+esc(fmtTime(p.next_run_at))+'</td>'
+      +'<td>'+(p.last_status ? statusBadge(p.last_status) : '-')+'</td>'
+      +'<td>'
+        +'<button onclick="showPlanRuns('+jsArg(p.plan_name)+')">Runs</button>'
+        +'<button class="primary" onclick="runPlanNow('+jsArg(p.plan_name)+')">Run Now</button>'
+      +'</td></tr>';
   }
   html += '</table>';
   pel.innerHTML = html;
 
-  // Recent runs
   const rel = document.getElementById('schedule-runs');
   html = '<table><tr><th>Run ID</th><th>Plan</th><th>Source</th><th>Status</th><th>Started</th><th>Finished</th><th>Action</th></tr>';
   for (const r of (runs.items||runs)) {
-    html += `<tr>
-      <td class="mono"><span class="link" onclick="showRunDetail('${r.run_id}')">${shortId(r.run_id)}</span></td>
-      <td>${r.plan_name}</td>
-      <td>${sourceBadge(r.trigger_source)}</td>
-      <td>${statusBadge(r.status)}</td>
-      <td>${fmtTime(r.started_at)}</td>
-      <td>${fmtTime(r.finished_at)}</td>
-      <td><button onclick="showRunDetail('${r.run_id}')">Steps</button></td>
-    </tr>`;
+    html += '<tr>'
+      +'<td class="mono"><span class="link" onclick="showRunDetail('+jsArg(r.run_id)+')">'+esc(shortId(r.run_id))+'</span></td>'
+      +'<td>'+esc(r.plan_name)+'</td>'
+      +'<td>'+sourceBadge(r.trigger_source)+'</td>'
+      +'<td>'+statusBadge(r.status)+'</td>'
+      +'<td>'+esc(fmtTime(r.started_at))+'</td>'
+      +'<td>'+esc(fmtTime(r.finished_at))+'</td>'
+      +'<td><button onclick="showRunDetail('+jsArg(r.run_id)+')">Steps</button></td>'
+      +'</tr>';
   }
   html += '</table>';
   rel.innerHTML = html;
 }
 
 async function runPlanNow(planName) {
-  confirmAction(`Run plan "${planName}" now?`, async () => {
+  confirmAction('Run plan "'+planName+'" now?', async () => {
     try {
-      const resp = await fetch(API+`/admin/schedules/plans/${planName}/run`, {method:'POST', headers});
+      const resp = await fetch(API+'/admin/schedules/plans/'+encodeURIComponent(planName)+'/run', {method:'POST', headers});
       const result = await resp.json();
       if (resp.ok) {
-        toast(`Run started: ${result.run_id} (status: ${result.status})`, 'success');
+        toast('Run started: '+result.run_id+' (status: '+result.status+')', 'success');
         loadSchedules();
       } else {
         const d = result.detail || result;
-        toast(`Error: ${d.error||''} - ${d.message||JSON.stringify(d)}`, 'error');
+        toast('Error: '+(d.error||'')+' - '+(d.message||JSON.stringify(d)), 'error');
       }
-    } catch(e) { toast(`Request failed: ${e.message}`, 'error'); }
+    } catch(e) { toast('Request failed: '+e.message, 'error'); }
   });
 }
 
 async function showPlanRuns(planName) {
   try {
-    const r = await fetch(API+`/admin/schedules/runs?plan_name=${planName}&limit=10`, {headers});
+    const r = await fetch(API+'/admin/schedules/runs?plan_name='+encodeURIComponent(planName)+'&limit=10', {headers});
     const runs = await r.json();
     const el = document.getElementById('schedule-runs');
-    let html = `<h2>Runs for ${planName}</h2><table><tr><th>Run ID</th><th>Source</th><th>Status</th><th>Started</th><th>Finished</th><th>Action</th></tr>`;
+    let html = '<h2>Runs for '+esc(planName)+'</h2><table><tr><th>Run ID</th><th>Source</th><th>Status</th><th>Started</th><th>Finished</th><th>Action</th></tr>';
     for (const r of (runs.items||runs)) {
-      html += `<tr>
-        <td class="mono"><span class="link" onclick="showRunDetail('${r.run_id}')">${shortId(r.run_id)}</span></td>
-        <td>${sourceBadge(r.trigger_source)}</td>
-        <td>${statusBadge(r.status)}</td>
-        <td>${fmtTime(r.started_at)}</td>
-        <td>${fmtTime(r.finished_at)}</td>
-        <td><button onclick="showRunDetail('${r.run_id}')">Steps</button></td>
-      </tr>`;
+      html += '<tr>'
+        +'<td class="mono"><span class="link" onclick="showRunDetail('+jsArg(r.run_id)+')">'+esc(shortId(r.run_id))+'</span></td>'
+        +'<td>'+sourceBadge(r.trigger_source)+'</td>'
+        +'<td>'+statusBadge(r.status)+'</td>'
+        +'<td>'+esc(fmtTime(r.started_at))+'</td>'
+        +'<td>'+esc(fmtTime(r.finished_at))+'</td>'
+        +'<td><button onclick="showRunDetail('+jsArg(r.run_id)+')">Steps</button></td>'
+        +'</tr>';
     }
     html += '</table>';
     el.innerHTML = html;
-  } catch(e) { toast(`Failed: ${e.message}`, 'error'); }
+  } catch(e) { toast('Failed: '+e.message, 'error'); }
 }
 
 async function showRunDetail(runId) {
   const el = document.getElementById('run-detail');
   el.style.display = 'block';
   try {
-    const r = await fetch(API+`/admin/schedules/runs/${runId}`, {headers});
+    const r = await fetch(API+'/admin/schedules/runs/'+encodeURIComponent(runId), {headers});
     const run = await r.json();
-    let html = `<div class="card">
-      <div class="card-header"><span class="card-title">Run: ${shortId(runId)}</span><button onclick="document.getElementById('run-detail').style.display='none'">Close</button></div>
-      <table>
-        <tr><td style="color:#94a3b8;width:140px">Run ID</td><td class="mono">${run.run_id}</td></tr>
-        <tr><td style="color:#94a3b8">Plan</td><td>${run.plan_name}</td></tr>
-        <tr><td style="color:#94a3b8">Source</td><td>${sourceBadge(run.trigger_source)}</td></tr>
-        <tr><td style="color:#94a3b8">Status</td><td>${statusBadge(run.status)}</td></tr>
-        <tr><td style="color:#94a3b8">Error</td><td class="error-cell">${run.error||'-'}</td></tr>
-        <tr><td style="color:#94a3b8">Started</td><td>${fmtTime(run.started_at)}</td></tr>
-        <tr><td style="color:#94a3b8">Finished</td><td>${fmtTime(run.finished_at)}</td></tr>
-      </table>
-      <h3>Steps</h3>
-      <table><tr><th>Step</th><th>Command</th><th>Status</th><th>Job ID</th><th>Error</th></tr>`;
+    let html = '<div class="card">'
+      +'<div class="card-header"><span class="card-title">Run: '+esc(shortId(runId))+'</span><button onclick="document.getElementById(\'run-detail\').style.display=\'none\'">Close</button></div>'
+      +'<table>'
+      +'<tr><td style="color:#94a3b8;width:140px">Run ID</td><td class="mono">'+esc(run.run_id)+'</td></tr>'
+      +'<tr><td style="color:#94a3b8">Plan</td><td>'+esc(run.plan_name)+'</td></tr>'
+      +'<tr><td style="color:#94a3b8">Source</td><td>'+sourceBadge(run.trigger_source)+'</td></tr>'
+      +'<tr><td style="color:#94a3b8">Status</td><td>'+statusBadge(run.status)+'</td></tr>'
+      +'<tr><td style="color:#94a3b8">Error</td><td class="error-cell">'+esc(run.error||'-')+'</td></tr>'
+      +'<tr><td style="color:#94a3b8">Started</td><td>'+esc(fmtTime(run.started_at))+'</td></tr>'
+      +'<tr><td style="color:#94a3b8">Finished</td><td>'+esc(fmtTime(run.finished_at))+'</td></tr>'
+      +'</table>'
+      +'<h3>Steps</h3>'
+      +'<table><tr><th>Step</th><th>Command</th><th>Status</th><th>Job ID</th><th>Error</th></tr>';
     for (const s of (run.steps||[])) {
-      html += `<tr>
-        <td>${s.step_order}</td>
-        <td>${s.command_name}</td>
-        <td>${statusBadge(s.status)}</td>
-        <td>${s.job_id ? `<span class="link" onclick="showJobDetail('${s.job_id}')">${shortId(s.job_id)}</span>` : '-'}</td>
-        <td class="error-cell">${s.error||'-'}</td>
-      </tr>`;
+      html += '<tr>'
+        +'<td>'+s.step_order+'</td>'
+        +'<td>'+esc(s.command_name)+'</td>'
+        +'<td>'+statusBadge(s.status)+'</td>'
+        +'<td>'+(s.job_id ? '<span class="link" onclick="showJobDetail('+jsArg(s.job_id)+')">'+esc(shortId(s.job_id))+'</span>' : '-')+'</td>'
+        +'<td class="error-cell">'+esc(s.error||'-')+'</td>'
+        +'</tr>';
     }
     html += '</table></div>';
     el.innerHTML = html;
     el.scrollIntoView({behavior:'smooth'});
-  } catch(e) { el.innerHTML = `<p style="color:#fca5a5">Error: ${e.message}</p>`; }
+  } catch(e) { el.innerHTML = '<p style="color:#fca5a5">Error: '+esc(e.message)+'</p>'; }
 }
 
 // ========== Tables ==========
@@ -617,22 +631,23 @@ async function loadTables() {
   const el = document.getElementById('table-stats');
   let html = '<table><tr><th>Table</th><th>Primary Key</th><th>Write Mode</th><th>Columns</th><th>Row Count</th></tr>';
   for (const [name, spec] of Object.entries(data.tables || {})) {
-    html += `<tr>
-      <td><b>${name}</b></td>
-      <td class="mono">${(spec.primary_key||[]).join(', ')}</td>
-      <td>${spec.write_mode}</td>
-      <td>${Object.keys(spec.columns||{}).length}</td>
-      <td id="rows-${name}">...</td>
-    </tr>`;
+    html += '<tr>'
+      +'<td><b>'+esc(name)+'</b></td>'
+      +'<td class="mono">'+esc((spec.primary_key||[]).join(', '))+'</td>'
+      +'<td>'+esc(spec.write_mode)+'</td>'
+      +'<td>'+Object.keys(spec.columns||{}).length+'</td>'
+      +'<td id="rows-'+esc(name)+'">...</td>'
+      +'</tr>';
   }
   html += '</table>';
   el.innerHTML = html;
   for (const name of Object.keys(data.tables || {})) {
     try {
-      const qr = await fetch(API+`/api/v1/ops/table-stats?table=${name}`, {headers});
+      const qr = await fetch(API+'/api/v1/ops/table-stats?table='+encodeURIComponent(name), {headers});
       if (qr.ok) {
         const qd = await qr.json();
-        document.getElementById(`rows-${name}`).textContent = `${qd.row_count} (updated: ${fmtTime(qd.last_updated)})`;
+        const cell = document.getElementById('rows-'+name);
+        if (cell) cell.textContent = qd.row_count+' (updated: '+fmtTime(qd.last_updated)+')';
       }
     } catch {}
   }
