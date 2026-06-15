@@ -25,70 +25,136 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>DataHub Ops</title>
 <style>
+:root{--bg:#0f172a;--panel:#1e293b;--panel-2:#111827;--border:#334155;--text:#e2e8f0;--muted:#94a3b8;--primary:#38bdf8;--danger:#ef4444;--success:#10b981;--warning:#f59e0b}
 *{margin:0;padding:0;box-sizing:border-box}
-body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#0f172a;color:#e2e8f0;font-size:14px}
-.container{max-width:1400px;margin:0 auto;padding:16px}
-h1{font-size:20px;color:#38bdf8;margin-bottom:16px;font-weight:600}
-h2{font-size:16px;color:#94a3b8;margin:20px 0 10px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px}
-h3{font-size:14px;color:#cbd5e1;margin:12px 0 6px;font-weight:600}
-.card{background:#1e293b;border-radius:8px;padding:16px;margin-bottom:12px;border:1px solid #334155}
-.card-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
-.card-title{font-weight:600;color:#f1f5f9;font-size:14px}
-.badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--text);font-size:14px;line-height:1.5}
+.container{width:min(1920px,calc(100vw - 48px));margin:0 auto;padding:24px}
+@media(max-width:768px){.container{width:calc(100vw - 24px);padding:12px}}
+
+/* Header */
+.topbar{display:flex;justify-content:space-between;align-items:center;margin-bottom:4px}
+.topbar h1{font-size:22px;color:var(--primary);font-weight:700;letter-spacing:-0.3px}
+.topbar-right{display:flex;gap:8px;align-items:center}
+.subtitle{color:var(--muted);font-size:13px;margin-bottom:20px}
+
+/* Tabs */
+.tabs{display:flex;gap:6px;border-bottom:1px solid var(--border);margin-bottom:20px;flex-wrap:wrap}
+.tab{padding:10px 18px;border-radius:8px 8px 0 0;background:var(--panel-2);border:1px solid var(--border);border-bottom:none;cursor:pointer;color:var(--muted);font-size:13px;font-weight:500;transition:all .15s}
+.tab:hover{color:var(--text);background:var(--panel)}
+.tab.active{background:var(--panel);color:var(--primary);border-color:var(--primary);font-weight:600}
+.tab-content{display:none}
+.tab-content.active{display:block}
+
+/* Cards & Sections */
+h2{font-size:15px;color:var(--muted);margin:24px 0 12px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px}
+h3{font-size:14px;color:var(--text);margin:16px 0 8px;font-weight:600}
+.card{background:var(--panel);border-radius:10px;padding:20px;margin-bottom:16px;border:1px solid var(--border)}
+.card-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
+.card-title{font-weight:600;color:var(--text);font-size:15px}
+.section-label{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin:16px 0 8px;padding-bottom:4px;border-bottom:1px solid var(--border)}
+
+/* Summary Cards */
+.summary{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:10px;margin-bottom:16px}
+.summary-card{background:var(--panel);border-radius:8px;padding:14px 12px;border:1px solid var(--border);text-align:center}
+.summary-value{font-size:26px;font-weight:700;line-height:1.2}
+.summary-label{font-size:11px;color:var(--muted);margin-top:4px}
+.sv-primary{color:var(--primary)}.sv-success{color:var(--success)}.sv-danger{color:var(--danger)}.sv-warning{color:var(--warning)}.sv-muted{color:var(--muted)}
+
+/* Badges */
+.badge{display:inline-block;padding:3px 10px;border-radius:4px;font-size:11px;font-weight:600;vertical-align:middle}
 .badge-green{background:#065f46;color:#6ee7b7}
 .badge-red{background:#7f1d1d;color:#fca5a5}
 .badge-yellow{background:#713f12;color:#fde047}
 .badge-blue{background:#1e3a5f;color:#7dd3fc}
 .badge-gray{background:#374151;color:#9ca3af}
 .badge-purple{background:#3b0764;color:#c4b5fd}
-table{width:100%;border-collapse:collapse;font-size:13px}
-th{text-align:left;padding:6px 8px;color:#94a3b8;border-bottom:1px solid #334155;font-weight:600}
-td{padding:6px 8px;border-bottom:1px solid #1e293b}
-tr:hover td{background:#1e293b}
-button{padding:4px 12px;border-radius:4px;border:1px solid #475569;background:#334155;color:#e2e8f0;cursor:pointer;font-size:12px}
-button:hover{background:#475569}
+
+/* Tables */
+.table-wrap{overflow-x:auto;overflow-y:visible;border:1px solid var(--border);border-radius:10px;background:var(--panel)}
+.data-table{width:max-content;min-width:1500px;border-collapse:separate;border-spacing:0;font-size:13px}
+.data-table th{position:sticky;top:0;z-index:1;background:#172033;text-align:left;padding:10px 12px;color:var(--muted);border-bottom:1px solid var(--border);font-weight:600;font-size:12px;white-space:nowrap}
+.data-table td{padding:10px 12px;border-bottom:1px solid #1a2744;vertical-align:middle;white-space:nowrap}
+.data-table tr:hover td{background:#162033}
+.col-id{width:260px;max-width:260px}.col-command{width:240px;max-width:240px}.col-source{width:100px}.col-status{width:100px}.col-parent{width:230px;max-width:230px}.col-retry{width:230px;max-width:230px}.col-rows{width:80px;text-align:right}.col-error{width:300px;max-width:300px}.col-created{width:170px}.col-actions{width:140px}
+.text-ellipsis{display:inline-block;max-width:100%;overflow:hidden;text-overflow:ellipsis;vertical-align:bottom}
+
+/* Buttons */
+button{min-height:30px;padding:6px 12px;border-radius:6px;border:1px solid var(--border);background:var(--panel-2);color:var(--text);cursor:pointer;font-size:12px;font-weight:500;transition:all .15s;white-space:nowrap}
+button:hover{background:#2a3a52}
 button.primary{background:#1d4ed8;border-color:#1d4ed8;color:#fff}
 button.primary:hover{background:#2563eb}
-button.danger{background:#991b1b;border-color:#991b1b;color:#fff}
-button.danger:hover{background:#b91c1c}
+button.danger{background:transparent;border-color:var(--danger);color:var(--danger)}
+button.danger:hover{background:var(--danger);color:#fff}
 button:disabled{opacity:0.4;cursor:not-allowed}
-input,select,textarea{padding:4px 8px;border-radius:4px;border:1px solid #475569;background:#0f172a;color:#e2e8f0;font-size:12px}
+.action-stack{display:flex;gap:6px;flex-wrap:nowrap}
+
+/* Inputs */
+input,select,textarea{padding:6px 10px;border-radius:6px;border:1px solid var(--border);background:var(--panel-2);color:var(--text);font-size:12px}
 textarea{font-family:"Cascadia Code",Consolas,monospace;resize:vertical}
+select{height:30px}
+
+/* Utilities */
 .mono{font-family:"Cascadia Code",Consolas,monospace;font-size:12px}
-.params-cell{max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.error-cell{max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#fca5a5}
-.tabs{display:flex;gap:4px;margin-bottom:16px;flex-wrap:wrap}
-.tab{padding:8px 16px;border-radius:4px 4px 0 0;background:#1e293b;border:1px solid #334155;border-bottom:none;cursor:pointer;color:#94a3b8;font-size:13px}
-.tab.active{background:#334155;color:#38bdf8;border-color:#38bdf8}
-.tab-content{display:none}
-.tab-content.active{display:block}
-.trigger-form{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-.trigger-form label{color:#94a3b8;font-size:12px}
-.stats{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px}
-.stat-card{background:#1e293b;border-radius:8px;padding:12px;border:1px solid #334155;text-align:center}
-.stat-value{font-size:24px;font-weight:700;color:#38bdf8}
-.stat-label{font-size:11px;color:#94a3b8;margin-top:4px}
-.job-detail{margin-top:8px;padding:8px;background:#0f172a;border-radius:4px;font-size:12px}
-.child-jobs{margin-top:8px}
-.child-jobs table{font-size:12px}
-.link{color:#38bdf8;cursor:pointer;text-decoration:underline}
-.link:hover{color:#7dd3fc}
-.toast{position:fixed;top:16px;right:16px;padding:12px 20px;border-radius:8px;font-size:13px;z-index:9999;max-width:500px;word-break:break-word}
+.error-cell{color:#fca5a5}
+.link{color:var(--primary);cursor:pointer;text-decoration:none;border-bottom:1px dashed transparent;transition:border-color .15s}
+.link:hover{color:#7dd3fc;border-bottom-color:#7dd3fc}
+
+/* Commands layout */
+.cmd-grid{display:grid;grid-template-columns:1fr 2fr;gap:16px;align-items:start}
+@media(max-width:900px){.cmd-grid{grid-template-columns:1fr}}
+.cmd-left{display:flex;flex-direction:column;gap:12px}
+.cmd-right{display:flex;flex-direction:column;gap:12px}
+.cmd-right textarea{width:100%;height:160px}
+
+/* Filter bar */
+.filter-bar{display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap}
+.filter-bar label{color:var(--muted);font-size:12px;display:flex;align-items:center;gap:6px}
+
+/* Right-side Drawer */
+.drawer-overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9000;display:flex;justify-content:flex-end}
+.drawer-aside{width:min(920px,52vw);min-width:720px;height:100vh;background:var(--panel);border-left:1px solid var(--border);overflow:auto;box-shadow:-12px 0 40px rgba(0,0,0,.35)}
+@media(max-width:1200px){.drawer-aside{width:100vw;min-width:0}}
+.drawer-header{position:sticky;top:0;z-index:2;background:var(--panel);border-bottom:1px solid var(--border);padding:16px;display:flex;justify-content:space-between;gap:12px;align-items:flex-start}
+.drawer-body{padding:16px}
+.drawer-title{font-size:16px;font-weight:700;color:var(--primary)}
+.drawer-subtitle{color:var(--muted);font-size:12px;margin-top:4px;word-break:break-all}
+.detail-grid{display:grid;grid-template-columns:140px 1fr;gap:2px 12px;font-size:13px}
+.detail-grid dt{color:var(--muted);font-weight:500;padding:4px 0}
+.detail-grid dd{padding:4px 0;word-break:break-all}
+.detail-grid pre{white-space:pre-wrap;word-break:break-all;max-height:200px;overflow:auto;background:var(--bg);padding:8px;border-radius:6px;font-size:12px}
+.error-box{background:#7f1d1d;color:#fca5a5;padding:12px;border-radius:6px;font-size:13px}
+
+/* Toast */
+.toast{position:fixed;top:16px;right:16px;padding:14px 22px;border-radius:8px;font-size:13px;z-index:9999;max-width:520px;word-break:break-word;animation:slideIn .2s}
+@keyframes slideIn{from{transform:translateX(100%);opacity:0}to{transform:translateX(0);opacity:1}}
 .toast-success{background:#065f46;color:#6ee7b7;border:1px solid #047857}
-.toast-error{background:#7f1d1d;color:#fca5a5;border:1px solid #991b1b}
+.toast-error{background:#7f1d1d;color:#fca5a5;border:1px solid #991b1b;font-weight:500}
 .toast-info{background:#1e3a5f;color:#7dd3fc;border:1px solid #1d4ed8}
-.filter-bar{display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap}
-.filter-bar label{color:#94a3b8;font-size:12px}
+
+/* Confirm */
 .confirm-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;z-index:9998}
-.confirm-box{background:#1e293b;border:1px solid #475569;border-radius:8px;padding:24px;max-width:500px;width:90%}
-.confirm-box h3{color:#f1f5f9;margin-bottom:12px}
-.confirm-box p{color:#94a3b8;font-size:13px;margin-bottom:16px;word-break:break-word}
-.confirm-box .actions{display:flex;gap:8px;justify-content:flex-end}
+.confirm-box{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:24px;max-width:520px;width:90%}
+.confirm-box h3{color:var(--text);margin-bottom:12px;font-size:16px}
+.confirm-box p{color:var(--muted);font-size:13px;margin-bottom:20px;word-break:break-word;white-space:pre-line}
+.confirm-box .actions{display:flex;gap:10px;justify-content:flex-end}
+
+/* Stats row for fanout */
+.stats{display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:8px;margin:12px 0}
+.stat-card{background:var(--panel);border-radius:8px;padding:12px;border:1px solid var(--border);text-align:center}
+.stat-value{font-size:24px;font-weight:700;color:var(--primary)}
+.stat-label{font-size:11px;color:var(--muted);margin-top:2px}
 </style>
 </head>
 <body>
 <div class="container">
-<h1>DataHub Ops Dashboard</h1>
+<div class="topbar">
+  <h1>DataHub Ops</h1>
+  <div class="topbar-right">
+    <span class="badge badge-blue" id="api-key-badge">API Key</span>
+    <button class="primary" onclick="refreshCurrentTab()" title="Refresh current tab data">Refresh</button>
+  </div>
+</div>
+<p class="subtitle">Operational console for ingestion jobs, fan-out retries, and scheduled collection plans.</p>
 
 <div class="tabs">
   <div class="tab active" onclick="switchTab('commands')">Commands</div>
@@ -102,49 +168,49 @@ textarea{font-family:"Cascadia Code",Consolas,monospace;resize:vertical}
 <div id="tab-commands" class="tab-content active">
   <h2>Trigger Command</h2>
   <div class="card">
-    <div class="trigger-form">
-      <label>Command <select id="cmd-select" onchange="onCmdSelect()"><option value="">-- select --</option></select></label>
-      <label>Params JSON <textarea id="cmd-params" rows="2" cols="40">{}</textarea></label>
-      <button class="primary" onclick="triggerCommand()">Trigger (source=ui_manual)</button>
+    <div class="cmd-grid">
+      <div class="cmd-left">
+        <label style="color:var(--muted);font-size:12px;font-weight:600">Command</label>
+        <select id="cmd-select" onchange="onCmdSelect()" style="width:100%"><option value="">-- select --</option></select>
+        <div id="cmd-hint" style="color:var(--muted);font-size:12px"></div>
+        <div><span class="badge badge-blue">source: ui_manual</span></div>
+        <button class="primary" onclick="triggerCommand()" title="Trigger selected command with source=ui_manual">Trigger</button>
+      </div>
+      <div class="cmd-right">
+        <label style="color:var(--muted);font-size:12px;font-weight:600">Params JSON</label>
+        <textarea id="cmd-params">{}</textarea>
+      </div>
     </div>
-    <div id="cmd-hint" style="color:#64748b;font-size:12px;margin-top:6px"></div>
   </div>
 </div>
 
 <!-- Jobs Tab -->
 <div id="tab-jobs" class="tab-content">
   <div style="display:flex;justify-content:space-between;align-items:center">
-    <h2>Ingestion Jobs</h2>
-    <button class="primary" onclick="loadJobs()">Refresh</button>
+    <h2 style="margin-bottom:0">Ingestion Jobs</h2>
   </div>
+  <div id="job-summary" class="summary" style="margin-top:12px"></div>
   <div class="filter-bar">
     <label>Status <select id="job-status-filter" onchange="loadJobs()"><option value="">All</option><option value="failed">failed</option><option value="partial">partial</option><option value="cancelled">cancelled</option><option value="succeeded">succeeded</option><option value="running">running</option></select></label>
     <label>Source <select id="job-source-filter" onchange="loadJobs()"><option value="">All</option><option value="api">api</option><option value="cli">cli</option><option value="scheduler">scheduler</option><option value="retry">retry</option></select></label>
   </div>
   <div id="job-list"></div>
-  <div id="job-detail" style="display:none"></div>
 </div>
 
 <!-- Fan-out Tab -->
 <div id="tab-fanout" class="tab-content">
-  <div style="display:flex;justify-content:space-between;align-items:center">
-    <h2>Fan-out Parents</h2>
-    <button class="primary" onclick="loadFanout()">Refresh</button>
-  </div>
+  <h2>Fan-out Parents</h2>
+  <div id="fanout-summary" class="summary"></div>
   <div id="fanout-list"></div>
-  <div id="fanout-detail" style="display:none"></div>
 </div>
 
 <!-- Schedules Tab -->
 <div id="tab-schedules" class="tab-content">
-  <div style="display:flex;justify-content:space-between;align-items:center">
-    <h2>Scheduled Plans</h2>
-    <button class="primary" onclick="loadSchedules()">Refresh</button>
-  </div>
+  <h2>Scheduled Plans</h2>
+  <div id="schedule-summary" class="summary"></div>
   <div id="schedule-plans"></div>
   <h2>Recent Runs</h2>
   <div id="schedule-runs"></div>
-  <div id="run-detail" style="display:none"></div>
 </div>
 
 <!-- Tables Tab -->
@@ -152,6 +218,20 @@ textarea{font-family:"Cascadia Code",Consolas,monospace;resize:vertical}
   <h2>Business Tables</h2>
   <div id="table-stats"></div>
 </div>
+</div>
+
+<!-- Right-side Drawer -->
+<div id="drawer-overlay" class="drawer-overlay" style="display:none" onclick="closeDrawerIfOverlay(event)">
+  <aside id="detail-drawer" class="drawer-aside">
+    <div class="drawer-header">
+      <div>
+        <div id="drawer-title" class="drawer-title"></div>
+        <div id="drawer-subtitle" class="drawer-subtitle"></div>
+      </div>
+      <button onclick="closeDrawer()" title="Close drawer">Close</button>
+    </div>
+    <div id="drawer-body" class="drawer-body"></div>
+  </aside>
 </div>
 
 <div id="confirm-container"></div>
@@ -166,16 +246,22 @@ if (!KEY) {
     const key = prompt('Enter API Key (X-API-Key):');
     if (key) { localStorage.setItem('datahub_api_key', key); location.reload(); }
   });
+} else {
+  document.addEventListener('DOMContentLoaded', function() {
+    const b = document.getElementById('api-key-badge');
+    if (b) b.textContent = KEY.length > 12 ? KEY.substring(0,8)+'...' : KEY;
+  });
 }
 
 const RETRYABLE = new Set(['failed','partial','cancelled']);
+let _currentTab = 'commands';
 
 function esc(s) { return (s==null?'':String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function jsArg(v) { return JSON.stringify(v||''); }
 function htmlJson(s) { return esc(fmtJson(s)); }
 function fmtJson(s) { try { return JSON.stringify(JSON.parse(s), null, 2); } catch { return s || '-'; } }
 function fmtTime(s) { return s ? String(s).replace('T',' ').substring(0, 19) : '-'; }
-function shortId(s) { return s ? (s.length > 30 ? s.substring(0,30)+'...' : s) : '-'; }
+function shortId(s) { return s ? (s.length > 44 ? s.substring(0,44)+'...' : s) : '-'; }
 
 function statusBadge(s) {
   const m = {succeeded:'green',accepted:'blue',running:'yellow',triggering:'yellow',partial:'yellow',failed:'red',cancelled:'red',conflict:'red',submitted:'blue',pending:'gray',skipped:'gray'};
@@ -191,7 +277,7 @@ function toast(msg, type='info') {
   el.className = 'toast toast-'+type;
   el.textContent = msg;
   document.body.appendChild(el);
-  setTimeout(() => el.remove(), 5000);
+  setTimeout(() => el.remove(), type==='error' ? 8000 : 6000);
 }
 
 function confirmAction(msg, onConfirm) {
@@ -203,7 +289,23 @@ function confirmAction(msg, onConfirm) {
   document.getElementById('confirm-ok').onclick = function() { c.innerHTML=''; onConfirm(); };
 }
 
+// ========== Drawer ==========
+function openDrawer(title, subtitle, html) {
+  document.getElementById('drawer-title').textContent = title || 'Detail';
+  document.getElementById('drawer-subtitle').textContent = subtitle || '';
+  document.getElementById('drawer-body').innerHTML = html || '';
+  document.getElementById('drawer-overlay').style.display = 'flex';
+}
+function closeDrawer() {
+  document.getElementById('drawer-overlay').style.display = 'none';
+}
+function closeDrawerIfOverlay(event) {
+  if (event.target.id === 'drawer-overlay') closeDrawer();
+}
+document.addEventListener('keydown', function(e) { if (e.key === 'Escape') closeDrawer(); });
+
 function switchTab(name) {
+  _currentTab = name;
   const idx = {commands:1,jobs:2,fanout:3,schedules:4,tables:5}[name];
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
   document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
@@ -214,6 +316,8 @@ function switchTab(name) {
   if (name==='schedules') loadSchedules();
   if (name==='tables') loadTables();
 }
+
+function refreshCurrentTab() { switchTab(_currentTab); }
 
 // ========== Commands ==========
 async function loadCommands() {
@@ -278,90 +382,241 @@ async function loadJobs() {
   const statusFilter = document.getElementById('job-status-filter')?.value || '';
   const sourceFilter = document.getElementById('job-source-filter')?.value || '';
   let items = data.items || [];
+  const allItems = items;
   if (statusFilter) items = items.filter(j => j.status === statusFilter);
   if (sourceFilter) items = items.filter(j => j.source === sourceFilter);
 
+  // Summary cards
+  const se = document.getElementById('job-summary');
+  const counts = {total:allItems.length, running:0, failed:0, partial:0, retry:0};
+  allItems.forEach(j => { if(j.status==='running'||j.status==='triggering'||j.status==='accepted') counts.running++; if(j.status==='failed') counts.failed++; if(j.status==='partial') counts.partial++; if(j.source==='retry') counts.retry++; });
+  se.innerHTML = summaryCard('Shown',counts.total,'sv-primary') + summaryCard('Running',counts.running,'sv-warning') + summaryCard('Failed',counts.failed,'sv-danger') + summaryCard('Partial',counts.partial,'sv-warning') + summaryCard('Retry',counts.retry,'sv-primary');
+
   const el = document.getElementById('job-list');
-  let html = '<table><tr><th>Job ID</th><th>Command</th><th>Source</th><th>Status</th><th>Parent</th><th>Retry Of</th><th>Rows</th><th>Error</th><th>Created</th><th>Actions</th></tr>';
+  let html = '<div class="table-wrap"><table class="data-table"><tr>'
+    +'<th class="col-id">Job ID</th><th class="col-command">Command</th><th class="col-source">Source</th><th class="col-status">Status</th><th class="col-parent">Parent</th><th class="col-retry">Retry Of</th><th class="col-rows">Rows</th><th class="col-error">Error</th><th class="col-created">Created</th><th class="col-actions">Actions</th></tr>';
   for (const j of items) {
     const canRetry = RETRYABLE.has(j.status);
     html += '<tr>'
-      +'<td class="mono"><span class="link" onclick="showJobDetail('+jsArg(j.ingestion_job_id)+')">'+esc(shortId(j.ingestion_job_id))+'</span></td>'
-      +'<td>'+esc(j.trigger_key||'-')+'</td>'
-      +'<td>'+sourceBadge(j.source)+'</td>'
-      +'<td>'+statusBadge(j.status)+'</td>'
-      +'<td>'+(j.parent_job_id ? '<span class="link" onclick="showJobDetail('+jsArg(j.parent_job_id)+')">'+esc(shortId(j.parent_job_id))+'</span>' : '-')+'</td>'
-      +'<td>'+(j.retry_of_job_id ? '<span class="link" onclick="showJobDetail('+jsArg(j.retry_of_job_id)+')">'+esc(shortId(j.retry_of_job_id))+'</span>' : '-')+'</td>'
-      +'<td>'+(j.row_count!=null?j.row_count:'-')+'</td>'
-      +'<td class="error-cell" title="'+esc(j.error||'')+'">'+esc(j.error ? shortId(j.error) : '-')+'</td>'
-      +'<td>'+esc(fmtTime(j.created_at))+'</td>'
-      +'<td>'
-        +'<button onclick="showJobDetail('+jsArg(j.ingestion_job_id)+')">Detail</button>'
-        +(canRetry ? '<button class="danger" onclick="retryJob('+jsArg(j.ingestion_job_id)+','+jsArg(j.trigger_key||'')+')">Retry</button>' : '')
-      +'</td></tr>';
+      +'<td class="mono col-id"><span class="link text-ellipsis" title="'+esc(j.ingestion_job_id)+'" onclick="showJobDetail('+jsArg(j.ingestion_job_id)+')">'+esc(shortId(j.ingestion_job_id))+'</span></td>'
+      +'<td class="col-command"><span class="text-ellipsis" title="'+esc(j.trigger_key||'')+'">'+esc(j.trigger_key||'-')+'</span></td>'
+      +'<td class="col-source">'+sourceBadge(j.source)+'</td>'
+      +'<td class="col-status">'+statusBadge(j.status)+'</td>'
+      +'<td class="mono col-parent">'+(j.parent_job_id ? '<span class="link text-ellipsis" title="'+esc(j.parent_job_id)+'" onclick="showJobDetail('+jsArg(j.parent_job_id)+')">'+esc(shortId(j.parent_job_id))+'</span>' : '-')+'</td>'
+      +'<td class="mono col-retry">'+(j.retry_of_job_id ? '<span class="link text-ellipsis" title="'+esc(j.retry_of_job_id)+'" onclick="showJobDetail('+jsArg(j.retry_of_job_id)+')">'+esc(shortId(j.retry_of_job_id))+'</span>' : '-')+'</td>'
+      +'<td class="col-rows">'+(j.row_count!=null?j.row_count:'-')+'</td>'
+      +'<td class="error-cell col-error"><span class="text-ellipsis" title="'+esc(j.error||'')+'">'+esc(j.error ? shortId(j.error) : '-')+'</span></td>'
+      +'<td class="col-created">'+esc(fmtTime(j.created_at))+'</td>'
+      +'<td class="col-actions"><div class="action-stack">'
+        +'<button onclick="showJobDetail('+jsArg(j.ingestion_job_id)+')" title="View job detail">Detail</button>'
+        +(canRetry ? '<button class="danger" onclick="retryJob('+jsArg(j.ingestion_job_id)+','+jsArg(j.trigger_key||'')+')" title="Retry this job">Retry</button>' : '')
+      +'</div></td></tr>';
   }
-  html += '</table>';
+  html += '</table></div>';
   el.innerHTML = html;
 }
 
-async function showJobDetail(jobId) {
-  const r = await fetch(API+'/ingestion/v1/jobs/'+encodeURIComponent(jobId), {headers});
-  const j = await r.json();
-  const el = document.getElementById('job-detail');
-  el.style.display = 'block';
+function summaryCard(label, value, cls) {
+  return '<div class="summary-card"><div class="summary-value '+(cls||'sv-primary')+'">'+value+'</div><div class="summary-label">'+esc(label)+'</div></div>';
+}
+
+// ========== Render functions (pure HTML, no fetch) ==========
+function renderJobDetail(j) {
   const canRetry = RETRYABLE.has(j.status);
+  let html = '<div class="section-label">Basic</div>'
+    +'<dl class="detail-grid">'
+    +'<dt>Job ID</dt><dd class="mono">'+esc(j.ingestion_job_id)+'</dd>'
+    +'<dt>Command</dt><dd>'+esc(j.trigger_key||'-')+'</dd>'
+    +'<dt>Source</dt><dd>'+sourceBadge(j.source)+'</dd>'
+    +'<dt>Status</dt><dd>'+statusBadge(j.status)+'</dd>'
+    +'<dt>Parent Job</dt><dd class="mono">'+(j.parent_job_id ? '<span class="link" onclick="showJobDetail('+jsArg(j.parent_job_id)+')">'+esc(j.parent_job_id)+'</span>' : '-')+'</dd>'
+    +'<dt>Retry Of</dt><dd class="mono">'+(j.retry_of_job_id ? '<span class="link" onclick="showJobDetail('+jsArg(j.retry_of_job_id)+')">'+esc(j.retry_of_job_id)+'</span>' : '-')+'</dd>'
+    +'<dt>Row Count</dt><dd>'+(j.row_count!=null?j.row_count:'-')+'</dd>'
+    +'<dt>Created</dt><dd>'+esc(fmtTime(j.created_at))+'</dd>'
+    +'<dt>Updated</dt><dd>'+esc(fmtTime(j.updated_at))+'</dd>'
+    +'<dt>Finished</dt><dd>'+esc(fmtTime(j.finished_at))+'</dd>'
+    +'</dl>'
+    +'<div class="section-label">Params</div>'
+    +'<pre>'+htmlJson(j.params_json)+'</pre>'
+    +'<div class="section-label">Error</div>'
+    +'<pre style="color:#fca5a5">'+esc(j.error||'-')+'</pre>'
+    +'<div class="section-label">Producer Status</div>'
+    +'<pre>'+htmlJson(j.producer_status_json)+'</pre>'
+    +'<div class="section-label">Result</div>'
+    +'<pre>'+htmlJson(j.result_json)+'</pre>';
+  if (canRetry) {
+    html += '<div style="margin-top:12px"><button class="danger" onclick="retryJob('+jsArg(j.ingestion_job_id)+','+jsArg(j.trigger_key||'')+')" title="Retry this failed/partial/cancelled job">Retry This Job</button></div>';
+  }
+  return html;
+}
 
-  let html = '<div class="card">'
-    +'<div class="card-header"><span class="card-title">Job Detail</span><button onclick="document.getElementById(\'job-detail\').style.display=\'none\'">Close</button></div>'
-    +'<table>'
-    +'<tr><td style="color:#94a3b8;width:140px">Job ID</td><td class="mono">'+esc(j.ingestion_job_id)+'</td></tr>'
-    +'<tr><td style="color:#94a3b8">Command</td><td>'+esc(j.trigger_key||'-')+'</td></tr>'
-    +'<tr><td style="color:#94a3b8">Source</td><td>'+sourceBadge(j.source)+'</td></tr>'
-    +'<tr><td style="color:#94a3b8">Status</td><td>'+statusBadge(j.status)+'</td></tr>'
-    +'<tr><td style="color:#94a3b8">Parent Job</td><td class="mono">'
-      +(j.parent_job_id ? '<span class="link" onclick="showJobDetail('+jsArg(j.parent_job_id)+')">'+esc(j.parent_job_id)+'</span> <button onclick="showJobDetail('+jsArg(j.parent_job_id)+')">View</button>' : '-')
-    +'</td></tr>'
-    +'<tr><td style="color:#94a3b8">Retry Of</td><td class="mono">'
-      +(j.retry_of_job_id ? '<span class="link" onclick="showJobDetail('+jsArg(j.retry_of_job_id)+')">'+esc(j.retry_of_job_id)+'</span>' : '-')
-    +'</td></tr>'
-    +'<tr><td style="color:#94a3b8">Params</td><td class="mono"><pre style="white-space:pre-wrap">'+htmlJson(j.params_json)+'</pre></td></tr>'
-    +'<tr><td style="color:#94a3b8">Error</td><td class="error-cell">'+esc(j.error||'-')+'</td></tr>'
-    +'<tr><td style="color:#94a3b8">Result</td><td class="mono"><pre style="white-space:pre-wrap">'+htmlJson(j.result_json)+'</pre></td></tr>'
-    +'<tr><td style="color:#94a3b8">Producer Status</td><td class="mono"><pre style="white-space:pre-wrap">'+htmlJson(j.producer_status_json)+'</pre></td></tr>'
-    +'<tr><td style="color:#94a3b8">Row Count</td><td>'+(j.row_count!=null?j.row_count:'-')+'</td></tr>'
-    +'<tr><td style="color:#94a3b8">Created</td><td>'+esc(fmtTime(j.created_at))+'</td></tr>'
-    +'<tr><td style="color:#94a3b8">Updated</td><td>'+esc(fmtTime(j.updated_at))+'</td></tr>'
-    +'<tr><td style="color:#94a3b8">Finished</td><td>'+esc(fmtTime(j.finished_at))+'</td></tr>'
-    +'</table>'
-    +(canRetry ? '<button class="danger" onclick="retryJob('+jsArg(j.ingestion_job_id)+','+jsArg(j.trigger_key||'')+')">Retry This Job</button>' : '')
-    +'</div>';
+function renderFanoutDetail(data, parentJobId) {
+  const run = data.fanout_run;
+  const stats = data.stats;
+  const items = data.items;
 
-  // Load child jobs
+  let html = '<div class="section-label">Parent Summary</div>'
+    +'<dl class="detail-grid">'
+    +'<dt>Job ID</dt><dd class="mono">'+esc(parentJobId)+'</dd>'
+    +'<dt>Child Command</dt><dd>'+esc(run.child_command||'-')+'</dd>'
+    +'<dt>Run Status</dt><dd>'+statusBadge(run.status)+'</dd>'
+    +'<dt>Total Items</dt><dd>'+run.total+'</dd>'
+    +'<dt>Circuit Opened</dt><dd>'+(run.circuit_opened?'Yes':'No')+'</dd>'
+    +'</dl>'
+    +'<div class="section-label">Item Stats</div>'
+    +'<div class="stats">';
+  for (const [s, n] of Object.entries(stats)) {
+    const cls = s==='succeeded'?'sv-success':s==='failed'?'sv-danger':s==='running'?'sv-warning':'sv-primary';
+    html += '<div class="stat-card"><div class="stat-value '+cls+'">'+n+'</div><div class="stat-label">'+esc(s)+'</div></div>';
+  }
+  html += '</div>';
+
+  const failedCount = (stats['failed']||0) + (stats['skipped']||0);
+  const childRetryable = items.filter(i => i.child_status && RETRYABLE.has(i.child_status)).length;
+  const totalRetryable = failedCount + childRetryable;
+  if (totalRetryable > 0) {
+    html += '<div class="section-label">Retry Failed Children</div>'
+      +'<div class="card" style="margin-bottom:0">'
+      +'<p style="color:var(--muted);font-size:12px;margin-bottom:8px">'+totalRetryable+' retryable items (failed/skipped items or failed/partial/cancelled child jobs).</p>'
+      +'<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">'
+      +'<label style="color:var(--muted);font-size:12px">Item indexes <input id="retry-item-indexes" size="30" placeholder="e.g. 322,402 or leave empty for all"></label>'
+      +'<button class="danger" onclick="retryFailedChildren('+jsArg(parentJobId)+')" title="Retry failed/skipped fan-out items">Retry Failed Children</button>'
+      +'</div>'
+      +'<p style="color:var(--muted);font-size:11px;margin-top:6px">Copy item_index from table below. Leave empty to retry all failed/skipped items.</p>'
+      +'</div>';
+  }
+
+  html += '<div class="section-label">Fan-out Items ('+items.length+')</div>'
+    +'<div class="table-wrap"><table class="data-table" style="min-width:1100px"><tr><th style="width:70px">Index</th><th style="width:100px">Item Status</th><th style="width:60px">Retry#</th><th class="col-parent">Child Job</th><th class="col-source">Child Source</th><th class="col-status">Child Status</th><th class="col-retry">Retry Of</th><th>Params</th><th class="col-error">Error</th><th class="col-actions">Action</th></tr>';
+  for (const i of items) {
+    const cp = fmtJson(i.params_json);
+    const cRetry = i.child_status && RETRYABLE.has(i.child_status);
+    html += '<tr>'
+      +'<td>'+i.item_index+'</td>'
+      +'<td>'+statusBadge(i.status)+'</td>'
+      +'<td>'+i.retry_count+'</td>'
+      +'<td class="mono">'+(i.child_job_id ? '<span class="link" onclick="showJobDetail('+jsArg(i.child_job_id)+')">'+esc(shortId(i.child_job_id))+'</span>' : '-')+'</td>'
+      +'<td>'+sourceBadge(i.child_source)+'</td>'
+      +'<td>'+(i.child_status ? statusBadge(i.child_status) : '-')+'</td>'
+      +'<td class="mono">'+(i.child_retry_of_job_id ? '<span class="link" onclick="showJobDetail('+jsArg(i.child_retry_of_job_id)+')">'+esc(shortId(i.child_retry_of_job_id))+'</span>' : '-')+'</td>'
+      +'<td class="mono"><span class="text-ellipsis" title="'+esc(cp)+'">'+esc(cp.substring(0,50))+'</span></td>'
+      +'<td class="error-cell">'+esc(i.error||i.child_error||'-')+'</td>'
+      +'<td>'+(cRetry ? '<button class="danger" onclick="retryJob('+jsArg(i.child_job_id)+','+jsArg('')+')" title="Retry this child">Retry</button>' : '')+'</td>'
+      +'</tr>';
+  }
+  html += '</table></div>';
+  return html;
+}
+
+function renderRunDetail(run) {
+  let html = '<dl class="detail-grid">'
+    +'<dt>Run ID</dt><dd class="mono">'+esc(run.run_id)+'</dd>'
+    +'<dt>Plan</dt><dd>'+esc(run.plan_name)+'</dd>'
+    +'<dt>Source</dt><dd>'+sourceBadge(run.trigger_source)+'</dd>'
+    +'<dt>Status</dt><dd>'+statusBadge(run.status)+'</dd>'
+    +'<dt>Error</dt><dd class="error-cell">'+esc(run.error||'-')+'</dd>'
+    +'<dt>Started</dt><dd>'+esc(fmtTime(run.started_at))+'</dd>'
+    +'<dt>Finished</dt><dd>'+esc(fmtTime(run.finished_at))+'</dd>'
+    +'</dl>'
+    +'<div class="section-label">Steps</div>'
+    +'<div class="table-wrap"><table class="data-table" style="min-width:600px"><tr><th style="width:50px">Step</th><th>Command</th><th>Status</th><th>Job ID</th><th>Error</th></tr>';
+  for (const s of (run.steps||[])) {
+    html += '<tr>'
+      +'<td>'+s.step_order+'</td>'
+      +'<td>'+esc(s.command_name)+'</td>'
+      +'<td>'+statusBadge(s.status)+'</td>'
+      +'<td class="mono">'+(s.job_id ? '<span class="link" onclick="showJobDetail('+jsArg(s.job_id)+')">'+esc(s.job_id)+'</span>' : '-')+'</td>'
+      +'<td class="error-cell">'+esc(s.error||'-')+'</td>'
+      +'</tr>';
+  }
+  html += '</table></div>';
+  return html;
+}
+
+// ========== Detail show functions (fetch + drawer) ==========
+async function showJobDetail(jobId) {
+  openDrawer('Job Detail', jobId, '<p style="color:var(--muted)">Loading...</p>');
   try {
-    const cr = await fetch(API+'/ingestion/v1/jobs/'+encodeURIComponent(jobId)+'/children', {headers});
-    const children = await cr.json();
-    if (children.total > 0) {
-      html += '<div class="card"><h3>Child Jobs ('+children.total+')</h3><table>'
-        +'<tr><th>Job ID</th><th>Source</th><th>Status</th><th>Retry Of</th><th>Params</th><th>Error</th><th>Action</th></tr>';
-      for (const c of children.items) {
-        const cp = fmtJson(c.params_json);
-        const cRetry = RETRYABLE.has(c.status);
-        html += '<tr>'
-          +'<td class="mono"><span class="link" onclick="showJobDetail('+jsArg(c.ingestion_job_id)+')">'+esc(shortId(c.ingestion_job_id))+'</span></td>'
-          +'<td>'+sourceBadge(c.source)+'</td>'
-          +'<td>'+statusBadge(c.status)+'</td>'
-          +'<td>'+(c.retry_of_job_id ? '<span class="link" onclick="showJobDetail('+jsArg(c.retry_of_job_id)+')">'+esc(shortId(c.retry_of_job_id))+'</span>' : '-')+'</td>'
-          +'<td class="mono params-cell" title="'+esc(cp)+'">'+esc(cp.substring(0,50))+'</td>'
-          +'<td class="error-cell">'+esc(c.error||'-')+'</td>'
-          +'<td>'+(cRetry ? '<button class="danger" onclick="retryJob('+jsArg(c.ingestion_job_id)+','+jsArg(c.trigger_key||'')+')">Retry</button>' : '')+'</td>'
-          +'</tr>';
-      }
-      html += '</table></div>';
+    const r = await fetch(API+'/ingestion/v1/jobs/'+encodeURIComponent(jobId), {headers});
+    const data = await r.json();
+    if (!r.ok) {
+      const d = data.detail || data;
+      openDrawer('Job Detail Error', jobId, '<div class="error-box">'+esc(d.error||'error')+' - '+esc(d.message||JSON.stringify(d))+'</div>');
+      toast('Failed to load job: '+(d.error||'')+' - '+(d.message||''), 'error');
+      return;
     }
-  } catch {}
+    // Also load children
+    let childHtml = '';
+    try {
+      const cr = await fetch(API+'/ingestion/v1/jobs/'+encodeURIComponent(jobId)+'/children', {headers});
+      const children = await cr.json();
+      if (children.total > 0) {
+        childHtml = '<div class="section-label">Children ('+children.total+')</div>'
+          +'<div class="table-wrap"><table class="data-table" style="min-width:800px"><tr><th>Job ID</th><th>Source</th><th>Status</th><th>Retry Of</th><th>Params</th><th>Error</th><th>Action</th></tr>';
+        for (const c of children.items) {
+          const cp = fmtJson(c.params_json);
+          const cRetry = RETRYABLE.has(c.status);
+          childHtml += '<tr>'
+            +'<td class="mono"><span class="link" onclick="showJobDetail('+jsArg(c.ingestion_job_id)+')">'+esc(shortId(c.ingestion_job_id))+'</span></td>'
+            +'<td>'+sourceBadge(c.source)+'</td>'
+            +'<td>'+statusBadge(c.status)+'</td>'
+            +'<td class="mono">'+(c.retry_of_job_id ? '<span class="link" onclick="showJobDetail('+jsArg(c.retry_of_job_id)+')">'+esc(shortId(c.retry_of_job_id))+'</span>' : '-')+'</td>'
+            +'<td class="mono"><span class="text-ellipsis" title="'+esc(cp)+'">'+esc(cp.substring(0,50))+'</span></td>'
+            +'<td class="error-cell">'+esc(c.error||'-')+'</td>'
+            +'<td>'+(cRetry ? '<button class="danger" onclick="retryJob('+jsArg(c.ingestion_job_id)+','+jsArg(c.trigger_key||'')+')" title="Retry child">Retry</button>' : '')+'</td>'
+            +'</tr>';
+        }
+        childHtml += '</table></div>';
+      }
+    } catch {}
+    document.getElementById('drawer-body').innerHTML = renderJobDetail(data) + childHtml;
+  } catch(e) {
+    openDrawer('Job Detail Error', jobId, '<div class="error-box">'+esc(e.message)+'</div>');
+    toast('Failed to load job: '+e.message, 'error');
+  }
+}
 
-  el.innerHTML = html;
-  el.scrollIntoView({behavior:'smooth'});
+async function showFanoutDetail(parentJobId) {
+  openDrawer('Fan-out Detail', parentJobId, '<p style="color:var(--muted)">Loading...</p>');
+  try {
+    const r = await fetch(API+'/ingestion/v1/jobs/'+encodeURIComponent(parentJobId)+'/fanout', {headers});
+    if (!r.ok) {
+      const err = await r.json();
+      const detail = err.detail || err;
+      if (detail.error === 'not_fanout_parent') {
+        openDrawer('Not Fan-out Parent', parentJobId,
+          '<p style="color:var(--warning)">This job is not a fan-out parent. No fanout_run found.</p>'
+          +'<button onclick="showJobDetail('+jsArg(parentJobId)+')">View Job Detail</button>');
+      } else {
+        openDrawer('Fan-out Error', parentJobId, '<div class="error-box">'+esc(detail.error||'')+' - '+esc(detail.message||'unknown')+'</div>');
+        toast('Failed to load fan-out: '+(detail.error||''), 'error');
+      }
+      return;
+    }
+    const data = await r.json();
+    document.getElementById('drawer-body').innerHTML = renderFanoutDetail(data, parentJobId);
+  } catch(e) {
+    openDrawer('Fan-out Error', parentJobId, '<div class="error-box">'+esc(e.message)+'</div>');
+    toast('Failed to load fan-out: '+e.message, 'error');
+  }
+}
+
+async function showRunDetail(runId) {
+  openDrawer('Run Detail', runId, '<p style="color:var(--muted)">Loading...</p>');
+  try {
+    const r = await fetch(API+'/admin/schedules/runs/'+encodeURIComponent(runId), {headers});
+    const run = await r.json();
+    if (!r.ok) {
+      const d = run.detail || run;
+      openDrawer('Run Detail Error', runId, '<div class="error-box">'+esc(d.error||'error')+' - '+esc(d.message||JSON.stringify(d))+'</div>');
+      toast('Failed to load run: '+(d.error||''), 'error');
+      return;
+    }
+    document.getElementById('drawer-body').innerHTML = renderRunDetail(run);
+  } catch(e) {
+    openDrawer('Run Detail Error', runId, '<div class="error-box">'+esc(e.message)+'</div>');
+    toast('Failed to load run: '+e.message, 'error');
+  }
 }
 
 async function retryJob(jobId, cmd) {
@@ -385,103 +640,27 @@ async function loadFanout() {
   const r = await fetch(API+'/ingestion/v1/jobs?limit=200', {headers});
   const data = await r.json();
   const parents = (data.items||[]).filter(j => j.parent_job_id === null && j.status !== 'triggering');
-  const el = document.getElementById('fanout-list');
 
-  let html = '<table><tr><th>Parent Job ID</th><th>Command</th><th>Status</th><th>Source</th><th>Created</th><th>Action</th></tr>';
+  // Summary
+  const se = document.getElementById('fanout-summary');
+  const counts = {total:parents.length, running:0, partial:0, failed:0, succeeded:0};
+  parents.forEach(j => { if(j.status==='running') counts.running++; if(j.status==='partial') counts.partial++; if(j.status==='failed') counts.failed++; if(j.status==='succeeded') counts.succeeded++; });
+  se.innerHTML = summaryCard('Parents',counts.total,'sv-primary') + summaryCard('Running',counts.running,'sv-warning') + summaryCard('Partial',counts.partial,'sv-warning') + summaryCard('Failed',counts.failed,'sv-danger') + summaryCard('Succeeded',counts.succeeded,'sv-success');
+
+  const el = document.getElementById('fanout-list');
+  let html = '<div class="table-wrap"><table class="data-table" style="min-width:800px"><tr><th>Parent Job ID</th><th>Command</th><th>Status</th><th>Source</th><th>Created</th><th>Action</th></tr>';
   for (const j of parents.slice(0, 30)) {
     html += '<tr>'
-      +'<td class="mono"><span class="link" onclick="showFanoutDetail('+jsArg(j.ingestion_job_id)+')">'+esc(shortId(j.ingestion_job_id))+'</span></td>'
-      +'<td>'+esc(j.trigger_key||'-')+'</td>'
+      +'<td class="mono"><span class="link text-ellipsis" title="'+esc(j.ingestion_job_id)+'" onclick="showFanoutDetail('+jsArg(j.ingestion_job_id)+')">'+esc(shortId(j.ingestion_job_id))+'</span></td>'
+      +'<td><span class="text-ellipsis" title="'+esc(j.trigger_key||'')+'">'+esc(j.trigger_key||'-')+'</span></td>'
       +'<td>'+statusBadge(j.status)+'</td>'
       +'<td>'+sourceBadge(j.source)+'</td>'
       +'<td>'+esc(fmtTime(j.created_at))+'</td>'
-      +'<td><button onclick="showFanoutDetail('+jsArg(j.ingestion_job_id)+')">Details</button></td>'
+      +'<td><button onclick="showFanoutDetail('+jsArg(j.ingestion_job_id)+')" title="View fan-out details">Details</button></td>'
       +'</tr>';
   }
-  html += '</table>';
+  html += '</table></div>';
   el.innerHTML = html;
-}
-
-async function showFanoutDetail(parentJobId) {
-  const el = document.getElementById('fanout-detail');
-  el.style.display = 'block';
-  el.innerHTML = '<p style="color:#94a3b8">Loading...</p>';
-
-  try {
-    const r = await fetch(API+'/ingestion/v1/jobs/'+encodeURIComponent(parentJobId)+'/fanout', {headers});
-    if (!r.ok) {
-      const err = await r.json();
-      const detail = err.detail || err;
-      if (detail.error === 'not_fanout_parent') {
-        el.innerHTML = '<div class="card"><p style="color:#fde047">This job is not a fan-out parent. No fanout_run found for '+esc(parentJobId)+'.</p>'
-          +'<button onclick="showJobDetail('+jsArg(parentJobId)+')">View Job Detail</button></div>';
-      } else {
-        el.innerHTML = '<p style="color:#fca5a5">Error: '+esc(detail.error||'')+' - '+esc(detail.message||'unknown')+'</p>';
-      }
-      return;
-    }
-    const data = await r.json();
-    const run = data.fanout_run;
-    const stats = data.stats;
-    const items = data.items;
-
-    let html = '<div class="card">'
-      +'<div class="card-header"><span class="card-title">Fan-out Parent: '+esc(shortId(parentJobId))+'</span><button onclick="document.getElementById(\'fanout-detail\').style.display=\'none\'">Close</button></div>'
-      +'<table>'
-      +'<tr><td style="color:#94a3b8;width:140px">Job ID</td><td class="mono">'+esc(parentJobId)+'</td></tr>'
-      +'<tr><td style="color:#94a3b8">Child Command</td><td>'+esc(run.child_command||'-')+'</td></tr>'
-      +'<tr><td style="color:#94a3b8">Run Status</td><td>'+statusBadge(run.status)+'</td></tr>'
-      +'<tr><td style="color:#94a3b8">Total Items</td><td>'+run.total+'</td></tr>'
-      +'<tr><td style="color:#94a3b8">Circuit Opened</td><td>'+(run.circuit_opened?'Yes':'No')+'</td></tr>'
-      +'</table></div>';
-
-    // Stats cards
-    html += '<div class="stats">';
-    for (const [s, n] of Object.entries(stats)) {
-      html += '<div class="stat-card"><div class="stat-value">'+n+'</div><div class="stat-label">'+esc(s)+'</div></div>';
-    }
-    html += '</div>';
-
-    // Retry failed children button
-    const failedCount = (stats['failed']||0) + (stats['skipped']||0);
-    const childRetryable = items.filter(i => i.child_status && RETRYABLE.has(i.child_status)).length;
-    const totalRetryable = failedCount + childRetryable;
-    if (totalRetryable > 0) {
-      html += '<div class="card">'
-        +'<h3>Retry Failed Children</h3>'
-        +'<p style="color:#94a3b8;font-size:12px">'+totalRetryable+' retryable items (failed/skipped items or failed/partial/cancelled child jobs).</p>'
-        +'<div class="trigger-form" style="margin-top:8px">'
-        +'<label>Item indexes (optional, comma-sep, copy from table below) <input id="retry-item-indexes" size="30" placeholder="e.g. 322,402 or leave empty for all"></label>'
-        +'<button class="danger" onclick="retryFailedChildren('+jsArg(parentJobId)+')">Retry Failed Children</button>'
-        +'</div></div>';
-    }
-
-    // Items table
-    html += '<div class="card"><h3>Fan-out Items ('+items.length+')</h3>'
-      +'<table><tr><th>Index</th><th>Item Status</th><th>Retry#</th><th>Child Job</th><th>Child Source</th><th>Child Status</th><th>Retry Of</th><th>Params</th><th>Error</th><th>Action</th></tr>';
-    for (const i of items) {
-      const cp = fmtJson(i.params_json);
-      const cRetry = i.child_status && RETRYABLE.has(i.child_status);
-      html += '<tr>'
-        +'<td>'+i.item_index+'</td>'
-        +'<td>'+statusBadge(i.status)+'</td>'
-        +'<td>'+i.retry_count+'</td>'
-        +'<td class="mono">'+(i.child_job_id ? '<span class="link" onclick="showJobDetail('+jsArg(i.child_job_id)+')">'+esc(shortId(i.child_job_id))+'</span>' : '-')+'</td>'
-        +'<td>'+sourceBadge(i.child_source)+'</td>'
-        +'<td>'+(i.child_status ? statusBadge(i.child_status) : '-')+'</td>'
-        +'<td>'+(i.child_retry_of_job_id ? '<span class="link" onclick="showJobDetail('+jsArg(i.child_retry_of_job_id)+')">'+esc(shortId(i.child_retry_of_job_id))+'</span>' : '-')+'</td>'
-        +'<td class="mono params-cell" title="'+esc(cp)+'">'+esc(cp.substring(0,50))+'</td>'
-        +'<td class="error-cell">'+esc(i.error||i.child_error||'-')+'</td>'
-        +'<td>'+(cRetry ? '<button class="danger" onclick="retryJob('+jsArg(i.child_job_id)+','+jsArg('')+')">Retry</button>' : '')+'</td>'
-        +'</tr>';
-    }
-    html += '</table></div>';
-
-    el.innerHTML = html;
-    el.scrollIntoView({behavior:'smooth'});
-  } catch(e) {
-    el.innerHTML = '<p style="color:#fca5a5">Error: '+esc(e.message)+'</p>';
-  }
 }
 
 async function retryFailedChildren(parentJobId) {
@@ -518,38 +697,49 @@ async function loadSchedules() {
   ]);
   const plans = await plansR.json();
   const runs = await runsR.json();
+  const plansArr = plans.items||plans;
+  const runsArr = runs.items||runs;
 
+  // Summary
+  const se = document.getElementById('schedule-summary');
+  const pc = {total:plansArr.length, enabled:0, running:0, failed:0};
+  plansArr.forEach(p => { if(p.enabled) pc.enabled++; });
+  runsArr.forEach(r => { if(r.status==='running') pc.running++; if(r.status==='failed') pc.failed++; });
+  se.innerHTML = summaryCard('Plans',pc.total,'sv-primary') + summaryCard('Enabled',pc.enabled,'sv-success') + summaryCard('Running Runs',pc.running,'sv-warning') + summaryCard('Failed Runs',pc.failed,'sv-danger');
+
+  // Plans table
   const pel = document.getElementById('schedule-plans');
-  let html = '<table><tr><th>Plan</th><th>Enabled</th><th>Schedule</th><th>Next Run</th><th>Last Status</th><th>Actions</th></tr>';
-  for (const p of (plans.items||plans)) {
+  let html = '<div class="table-wrap"><table class="data-table" style="min-width:700px"><tr><th>Plan</th><th>Enabled</th><th>Schedule</th><th>Next Run</th><th>Last Status</th><th>Actions</th></tr>';
+  for (const p of plansArr) {
     html += '<tr>'
       +'<td><b>'+esc(p.plan_name)+'</b></td>'
       +'<td>'+(p.enabled ? '<span class="badge badge-green">enabled</span>' : '<span class="badge badge-gray">disabled</span>')+'</td>'
       +'<td>'+esc(p.schedule_type)+' '+esc(p.schedule_time||'')+'</td>'
       +'<td>'+esc(fmtTime(p.next_run_at))+'</td>'
       +'<td>'+(p.last_status ? statusBadge(p.last_status) : '-')+'</td>'
-      +'<td>'
-        +'<button onclick="showPlanRuns('+jsArg(p.plan_name)+')">Runs</button>'
-        +'<button class="primary" onclick="runPlanNow('+jsArg(p.plan_name)+')">Run Now</button>'
-      +'</td></tr>';
+      +'<td><div class="action-stack">'
+        +'<button onclick="showPlanRuns('+jsArg(p.plan_name)+')" title="View runs for this plan">Runs</button>'
+        +'<button class="primary" onclick="runPlanNow('+jsArg(p.plan_name)+')" title="Trigger this plan now">Run Now</button>'
+      +'</div></td></tr>';
   }
-  html += '</table>';
+  html += '</table></div>';
   pel.innerHTML = html;
 
+  // Runs table
   const rel = document.getElementById('schedule-runs');
-  html = '<table><tr><th>Run ID</th><th>Plan</th><th>Source</th><th>Status</th><th>Started</th><th>Finished</th><th>Action</th></tr>';
-  for (const r of (runs.items||runs)) {
+  html = '<div class="table-wrap"><table class="data-table" style="min-width:700px"><tr><th>Run ID</th><th>Plan</th><th>Source</th><th>Status</th><th>Started</th><th>Finished</th><th>Action</th></tr>';
+  for (const r of runsArr) {
     html += '<tr>'
-      +'<td class="mono"><span class="link" onclick="showRunDetail('+jsArg(r.run_id)+')">'+esc(shortId(r.run_id))+'</span></td>'
+      +'<td class="mono"><span class="link text-ellipsis" title="'+esc(r.run_id)+'" onclick="showRunDetail('+jsArg(r.run_id)+')">'+esc(shortId(r.run_id))+'</span></td>'
       +'<td>'+esc(r.plan_name)+'</td>'
       +'<td>'+sourceBadge(r.trigger_source)+'</td>'
       +'<td>'+statusBadge(r.status)+'</td>'
       +'<td>'+esc(fmtTime(r.started_at))+'</td>'
       +'<td>'+esc(fmtTime(r.finished_at))+'</td>'
-      +'<td><button onclick="showRunDetail('+jsArg(r.run_id)+')">Steps</button></td>'
+      +'<td><button onclick="showRunDetail('+jsArg(r.run_id)+')" title="View run steps">Steps</button></td>'
       +'</tr>';
   }
-  html += '</table>';
+  html += '</table></div>';
   rel.innerHTML = html;
 }
 
@@ -574,10 +764,11 @@ async function showPlanRuns(planName) {
     const r = await fetch(API+'/admin/schedules/runs?plan_name='+encodeURIComponent(planName)+'&limit=10', {headers});
     const runs = await r.json();
     const el = document.getElementById('schedule-runs');
-    let html = '<h2>Runs for '+esc(planName)+'</h2><table><tr><th>Run ID</th><th>Source</th><th>Status</th><th>Started</th><th>Finished</th><th>Action</th></tr>';
+    let html = '<div style="display:flex;justify-content:space-between;align-items:center"><h2 style="margin:0">Runs for '+esc(planName)+'</h2><button onclick="loadSchedules()" title="Back to all runs">Back</button></div>'
+      +'<div class="table-wrap"><table class="data-table" style="min-width:700px"><tr><th>Run ID</th><th>Source</th><th>Status</th><th>Started</th><th>Finished</th><th>Action</th></tr>';
     for (const r of (runs.items||runs)) {
       html += '<tr>'
-        +'<td class="mono"><span class="link" onclick="showRunDetail('+jsArg(r.run_id)+')">'+esc(shortId(r.run_id))+'</span></td>'
+        +'<td class="mono"><span class="link text-ellipsis" title="'+esc(r.run_id)+'" onclick="showRunDetail('+jsArg(r.run_id)+')">'+esc(shortId(r.run_id))+'</span></td>'
         +'<td>'+sourceBadge(r.trigger_source)+'</td>'
         +'<td>'+statusBadge(r.status)+'</td>'
         +'<td>'+esc(fmtTime(r.started_at))+'</td>'
@@ -585,43 +776,9 @@ async function showPlanRuns(planName) {
         +'<td><button onclick="showRunDetail('+jsArg(r.run_id)+')">Steps</button></td>'
         +'</tr>';
     }
-    html += '</table>';
-    el.innerHTML = html;
-  } catch(e) { toast('Failed: '+e.message, 'error'); }
-}
-
-async function showRunDetail(runId) {
-  const el = document.getElementById('run-detail');
-  el.style.display = 'block';
-  try {
-    const r = await fetch(API+'/admin/schedules/runs/'+encodeURIComponent(runId), {headers});
-    const run = await r.json();
-    let html = '<div class="card">'
-      +'<div class="card-header"><span class="card-title">Run: '+esc(shortId(runId))+'</span><button onclick="document.getElementById(\'run-detail\').style.display=\'none\'">Close</button></div>'
-      +'<table>'
-      +'<tr><td style="color:#94a3b8;width:140px">Run ID</td><td class="mono">'+esc(run.run_id)+'</td></tr>'
-      +'<tr><td style="color:#94a3b8">Plan</td><td>'+esc(run.plan_name)+'</td></tr>'
-      +'<tr><td style="color:#94a3b8">Source</td><td>'+sourceBadge(run.trigger_source)+'</td></tr>'
-      +'<tr><td style="color:#94a3b8">Status</td><td>'+statusBadge(run.status)+'</td></tr>'
-      +'<tr><td style="color:#94a3b8">Error</td><td class="error-cell">'+esc(run.error||'-')+'</td></tr>'
-      +'<tr><td style="color:#94a3b8">Started</td><td>'+esc(fmtTime(run.started_at))+'</td></tr>'
-      +'<tr><td style="color:#94a3b8">Finished</td><td>'+esc(fmtTime(run.finished_at))+'</td></tr>'
-      +'</table>'
-      +'<h3>Steps</h3>'
-      +'<table><tr><th>Step</th><th>Command</th><th>Status</th><th>Job ID</th><th>Error</th></tr>';
-    for (const s of (run.steps||[])) {
-      html += '<tr>'
-        +'<td>'+s.step_order+'</td>'
-        +'<td>'+esc(s.command_name)+'</td>'
-        +'<td>'+statusBadge(s.status)+'</td>'
-        +'<td>'+(s.job_id ? '<span class="link" onclick="showJobDetail('+jsArg(s.job_id)+')">'+esc(shortId(s.job_id))+'</span>' : '-')+'</td>'
-        +'<td class="error-cell">'+esc(s.error||'-')+'</td>'
-        +'</tr>';
-    }
     html += '</table></div>';
     el.innerHTML = html;
-    el.scrollIntoView({behavior:'smooth'});
-  } catch(e) { el.innerHTML = '<p style="color:#fca5a5">Error: '+esc(e.message)+'</p>'; }
+  } catch(e) { toast('Failed: '+e.message, 'error'); }
 }
 
 // ========== Tables ==========
@@ -629,7 +786,7 @@ async function loadTables() {
   const r = await fetch(API+'/schemas', {headers});
   const data = await r.json();
   const el = document.getElementById('table-stats');
-  let html = '<table><tr><th>Table</th><th>Primary Key</th><th>Write Mode</th><th>Columns</th><th>Row Count</th></tr>';
+  let html = '<div class="table-wrap"><table class="data-table" style="min-width:600px"><tr><th>Table</th><th>Primary Key</th><th>Write Mode</th><th>Columns</th><th>Row Count</th></tr>';
   for (const [name, spec] of Object.entries(data.tables || {})) {
     html += '<tr>'
       +'<td><b>'+esc(name)+'</b></td>'
@@ -639,7 +796,7 @@ async function loadTables() {
       +'<td id="rows-'+esc(name)+'">...</td>'
       +'</tr>';
   }
-  html += '</table>';
+  html += '</table></div>';
   el.innerHTML = html;
   for (const name of Object.keys(data.tables || {})) {
     try {
