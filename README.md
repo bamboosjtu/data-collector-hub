@@ -114,15 +114,24 @@ tests/
 
 ## API
 
-- `GET /health`
+- `GET /health` — 基础存活检查
+- `GET /health/ready` — 就绪检查（DB 连通性、scheduler 状态）
 - `GET /metadata`
 - `GET /plugins`
 - `GET /schemas` / `GET /schemas/{table_name}`
 - `POST /ingestion/v1/jobs` — 触发采集
 - `GET /ingestion/v1/jobs` / `GET /ingestion/v1/jobs/{id}`
+- `GET /ingestion/v1/jobs/{id}/children` — 子任务列表
+- `GET /ingestion/v1/jobs/{id}/fanout` — fan-out 详情
+- `POST /ingestion/v1/jobs/{id}/retry` — 重试失败 job
+- `POST /ingestion/v1/jobs/{id}/retry-failed-children` — 重试 fan-out 失败子任务
 - `POST /ingestion/v1/table-batches` — 入库回调
 - `GET /ingestion/v1/messages` / `GET /ingestion/v1/table-writes`
 - `POST /admin/api-keys`
+- `GET /admin/schedules/plans` / `GET /admin/schedules/plans/{name}`
+- `POST /admin/schedules/plans/{name}/run` — 手动触发计划
+- `GET /admin/schedules/runs` / `GET /admin/schedules/runs/{id}`
+- `GET /ops` — Admin UI
 - Dynamic query routes from plugin `query_routes`
 
 Dev 模式引导 API Key: `dev-admin-key` (scopes: admin, ingestion, query)
@@ -135,19 +144,33 @@ Dev 模式引导 API Key: `dev-admin-key` (scopes: admin, ingestion, query)
 | `DATAHUB_PLUGIN_DIR` | `plugins` | 插件目录 |
 | `DATAHUB_CALLBACK_BASE_URL` | `http://localhost:8000` | 回调基础 URL |
 | `DATAHUB_CALLBACK_API_KEY` | dev 模式自动填充 | 回调 API Key，**生产环境必须显式配置** |
-| `DATAHUB_DEV_MODE` | `1` | dev 模式开关 |
+| `DATAHUB_DEV_MODE` | `1` | dev 模式开关，生产环境设为 `0` |
+| `DATAHUB_COLLECTION_SCHEDULER_ENABLED` | (空=false) | 采集调度器开关 |
+| `DATAHUB_DAILY_DCP_REFRESH_ENABLED` | (空=false) | 每日 DCP 刷新开关 |
+| `DATAHUB_DAILY_DCP_REFRESH_TIME` | `02:00` | 每日刷新时间 |
+| `DATAHUB_DAILY_DCP_RECENT_DAYS` | `3` | 刷新回溯天数（**不要设为 890**） |
+| `DATAHUB_COLLECTION_SCHEDULER_TICK_SECONDS` | `30` | 调度器 tick 间隔（秒） |
 
 ## Current Limitations
 
-- **8000 ops UI** (`/ops`) 是后续长期运维方向，当前功能有限
-- **command → service 抽象尚未开始**，当前 command 直接映射到 trigger
 - SQLite 单写者，fan-out 并发受 max_concurrency 控制
 - DCP session/WAF 过期后 fan-out transient retry 自动重试，超过重试上限后仍需手动处理
-- 部分表未配置 query route（返回 404）
-- permanent failure 仍需通过 CLI 手动 retry
+- callback 认证当前为 deferred 模式（无 API Key 时 warn 但放行）
+- fanout scheduler 始终运行（当有 connector 时），无独立开关
+- daily schedule 默认关闭，需手动开启
+
+## Scripts
+
+| 脚本 | 说明 |
+|------|------|
+| `scripts/backup_sqlite.py` | SQLite 在线备份 |
+| `scripts/mvp_check_env.py` | 环境变量完整性检查 |
+| `scripts/mvp_smoke_check.py` | MVP smoke 验证 |
+| `scripts/smoke/verify_run.py` | 完整 smoke 流程 |
 
 ## Documentation
 
-- [MVP_ARCHITECTURE.md](MVP_ARCHITECTURE.md) — 架构设计
-- [docs/devlog/dcp-mvp-final-acceptance.md](docs/devlog/dcp-mvp-final-acceptance.md) — 最终联调验收报告（三阶段结果、12 表入库数据、transient retry、circuit breaker）
-- [docs/runbooks/dcp-mvp-smoke-run.md](docs/runbooks/dcp-mvp-smoke-run.md) — 运行手册（三阶段执行顺序、验收 SQL、partial/failed 判断、失败子任务查询、replay 指引）
+- [docs/runbook/mvp-ops-runbook.md](docs/runbook/mvp-ops-runbook.md) — 运维手册（环境变量、启动顺序、备份、常见问题）
+- [docs/runbook/mvp-release-checklist.md](docs/runbook/mvp-release-checklist.md) — 发布前验收清单
+- [docs/devlog/dcp-mvp-final-acceptance.md](docs/devlog/dcp-mvp-final-acceptance.md) — 最终联调验收报告
+- [docs/runbooks/dcp-mvp-smoke-run.md](docs/runbooks/dcp-mvp-smoke-run.md) — DCP smoke 运行手册

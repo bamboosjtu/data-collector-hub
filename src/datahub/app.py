@@ -149,7 +149,7 @@ def create_app(
         logger.warning("RequestValidationError %s %s: %s", request.method, request.url.path, errors)
         return JSONResponse(status_code=422, content={"detail": errors})
 
-    app.include_router(build_health_router(registry))
+    app.include_router(build_health_router(registry, store=active_store, settings=active_settings))
     app.include_router(build_metadata_router(plugins, registry))
     app.include_router(build_admin_router(active_store))
     app.include_router(build_ops_router(store=active_store, plugins=plugins))
