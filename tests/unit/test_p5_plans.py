@@ -60,7 +60,7 @@ def plan_service(store, mock_job_service):
         job_service=mock_job_service,
         recent_days=3,
     )
-    svc._wait_for_job_terminal = MagicMock(return_value="succeeded")
+    svc._wait_for_job_terminal = MagicMock(return_value=("succeeded", False))
     return svc
 
 

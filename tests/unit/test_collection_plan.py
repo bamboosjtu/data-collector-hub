@@ -60,7 +60,7 @@ def plan_service(store, mock_job_service):
         recent_days=3,
     )
     # Make _wait_for_job_terminal return immediately by default
-    svc._wait_for_job_terminal = MagicMock(return_value="succeeded")
+    svc._wait_for_job_terminal = MagicMock(return_value=("succeeded", False))
     return svc
 
 
@@ -244,8 +244,8 @@ class TestRunPlanNowAsync:
     def test_partial_step_continues_but_run_partial(self, plan_service, mock_job_service, store):
         plan_service.seed_default_plans()
         # Make _wait_for_job_terminal return partial for step 3, succeeded for others
-        wait_results = iter(["succeeded", "succeeded", "partial", "succeeded", "succeeded", "succeeded", "succeeded"])
-        plan_service._wait_for_job_terminal = MagicMock(side_effect=lambda jid: next(wait_results))
+        wait_results = iter([("succeeded", False), ("succeeded", False), ("partial", False), ("succeeded", False), ("succeeded", False), ("succeeded", False), ("succeeded", False)])
+        plan_service._wait_for_job_terminal = MagicMock(side_effect=lambda jid, **kw: next(wait_results))
 
         result = plan_service.run_plan_now("daily_dcp_refresh", source="api")
         run = _wait_for_run(store, result.run_id)

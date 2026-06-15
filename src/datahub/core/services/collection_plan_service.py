@@ -66,6 +66,8 @@ def resolve_plan_params(params: Any) -> Any:
 
 DCP_INITIAL_FULL_LOAD_CONFIG = {
     "description": "DCP 初始化全量采集",
+    "wait_timeout_seconds": 28800,
+    "poll_interval_seconds": 5,
     "steps": [
         {"command": "refresh_annual_plans_history", "params": {}, "wait_for_terminal": True},
         {"command": "refresh_plan_progress", "params": {}, "wait_for_terminal": True},
@@ -79,6 +81,8 @@ DCP_INITIAL_FULL_LOAD_CONFIG = {
 
 DCP_DAILY_UPDATE_CONFIG = {
     "description": "DCP 每日增量更新",
+    "wait_timeout_seconds": 7200,
+    "poll_interval_seconds": 5,
     "steps": [
         {"command": "refresh_annual_plans_current", "params": {}, "wait_for_terminal": True},
         {"command": "refresh_plan_progress", "params": {}, "wait_for_terminal": True},
@@ -276,6 +280,10 @@ class CollectionPlanService:
             self._store.update_scheduled_run(run_id, status="failed", error="plan not found during execution")
             return
 
+        config = json.loads(plan["config_json"] or "{}")
+        plan_timeout = config.get("wait_timeout_seconds", 3600)
+        plan_poll_interval = config.get("poll_interval_seconds", 5)
+
         run_status = "succeeded"
         run_error = None
         failed = False
@@ -316,21 +324,42 @@ class CollectionPlanService:
 
             # Wait for terminal status if required
             if wait_for_terminal:
-                step_status = self._wait_for_job_terminal(job_result.ingestion_job_id)
+                # Step-level timeout overrides plan-level
+                step_cfg = config.get("steps", [])
+                step_idx = step_row["step_order"]
+                step_timeout = plan_timeout
+                if step_idx < len(step_cfg):
+                    step_timeout = step_cfg[step_idx].get("wait_timeout_seconds", plan_timeout)
+
+                step_status, is_timeout = self._wait_for_job_terminal(
+                    job_result.ingestion_job_id,
+                    timeout=step_timeout,
+                    poll_interval=plan_poll_interval,
+                )
                 job_detail = self._store.get_job(job_result.ingestion_job_id)
                 step_error = job_detail.get("error") if job_detail else None
-                self._store.update_scheduled_run_step(
-                    step_id, status=step_status, error=step_error,
-                    result_json=self._store._json(job_detail) if job_detail else None,
-                )
 
-                if step_status == "failed":
+                if is_timeout:
+                    timeout_msg = f"wait timeout after {step_timeout}s"
+                    self._store.update_scheduled_run_step(
+                        step_id, status="failed", error=timeout_msg,
+                        result_json=self._store._json(job_detail) if job_detail else None,
+                    )
                     run_status = "failed"
-                    run_error = f"step {command_name} failed"
+                    run_error = f"step {command_name} {timeout_msg}"
                     failed = True
-                elif step_status == "partial":
-                    if run_status == "succeeded":
-                        run_status = "partial"
+                else:
+                    self._store.update_scheduled_run_step(
+                        step_id, status=step_status, error=step_error,
+                        result_json=self._store._json(job_detail) if job_detail else None,
+                    )
+                    if step_status == "failed":
+                        run_status = "failed"
+                        run_error = f"step {command_name} failed"
+                        failed = True
+                    elif step_status == "partial":
+                        if run_status == "succeeded":
+                            run_status = "partial"
             else:
                 # Fire-and-forget: mark succeeded once submitted
                 self._store.update_scheduled_run_step(step_id, status="succeeded")
@@ -403,28 +432,47 @@ class CollectionPlanService:
 
     # ── Helpers ──────────────────────────────────────────────────
 
-    def _wait_for_job_terminal(self, ingestion_job_id: str, timeout: float = 3600, poll_interval: float = 5.0) -> str:
-        """Poll until an ingestion_job reaches terminal status."""
+    def _wait_for_job_terminal(self, ingestion_job_id: str, timeout: float = 3600, poll_interval: float = 5.0) -> tuple[str, bool]:
+        """Poll until an ingestion_job reaches terminal status.
+
+        Returns:
+            (status, is_timeout): status is the job status string;
+            is_timeout is True if the poll loop exhausted the timeout.
+        """
         start = time.monotonic()
         while time.monotonic() - start < timeout:
             job = self._store.get_job(ingestion_job_id)
             if job and job["status"] in _TERMINAL_STATUSES:
-                return job["status"]
+                return job["status"], False
             time.sleep(poll_interval)
-        return "failed"
+        return "failed", True
 
-    def mark_stale_runs(self, stale_seconds: int = 7200) -> int:
+    def mark_stale_runs(self, stale_seconds: int = 32400) -> int:
         """Mark running scheduled_runs as failed if they've been running too long.
 
         This handles crash recovery: if the process restarts with stale running runs,
         they get marked as failed so new runs can be triggered.
+
+        Default stale_seconds is 32400 (9 hours) to accommodate long-running
+        initial full load plans. Per-plan timeout is read from config_json
+        wait_timeout_seconds; stale cutoff is max(stale_seconds, plan_timeout + 3600).
         """
-        cutoff = (datahub_now() - timedelta(seconds=stale_seconds)).strftime("%Y-%m-%d %H:%M:%S")
         runs = self._store.list_scheduled_runs(limit=200)
         marked = 0
         for run in runs:
             if run["status"] != "running":
                 continue
+            # Determine per-plan stale cutoff
+            plan_name = run.get("plan_name", "")
+            plan = self._store.get_scheduled_plan(plan_name) if plan_name else None
+            plan_stale = stale_seconds
+            if plan:
+                config = json.loads(plan.get("config_json") or "{}")
+                plan_timeout = config.get("wait_timeout_seconds", 0)
+                if plan_timeout:
+                    plan_stale = max(stale_seconds, plan_timeout + 3600)
+
+            cutoff = (datahub_now() - timedelta(seconds=plan_stale)).strftime("%Y-%m-%d %H:%M:%S")
             if run["started_at"] and run["started_at"] < cutoff:
                 self._store.update_scheduled_run(run["run_id"], status="failed", error="stale run marked failed on restart")
                 marked += 1
