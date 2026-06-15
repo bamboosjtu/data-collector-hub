@@ -69,7 +69,7 @@ class TestHealthReady:
         data = resp.json()
         assert data["status"] == "ok"
         assert data["db"] == "ok"
-        assert "plugins" in data
+        assert "tables" in data
         assert data["scheduler_enabled"] is False
         assert data["daily_dcp_refresh_enabled"] is False
         assert data["fanout_scheduler"] == "unknown"

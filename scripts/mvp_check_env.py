@@ -3,7 +3,7 @@
 import os
 import sys
 
-DEFAULT_DB_PATH = "data/datahub.db"
+DEFAULT_DB_PATH = "data/datahub_mvp.db"
 DEFAULT_CALLBACK_BASE_URL = "http://localhost:8000"
 
 

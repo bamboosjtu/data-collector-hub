@@ -36,7 +36,7 @@ def build_health_router(registry: SchemaRegistry, *, store: DataHubStore, settin
         return {
             "status": status,
             "db": db_status,
-            "plugins": len(registry.tables),
+            "tables": len(registry.tables),
             "scheduler_enabled": settings.collection_scheduler_enabled,
             "daily_dcp_refresh_enabled": settings.daily_dcp_refresh_enabled,
             "fanout_scheduler": fanout_status,

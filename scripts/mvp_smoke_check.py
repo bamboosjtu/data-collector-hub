@@ -199,8 +199,9 @@ def run_plan(base: str, api_key: str, plan_name: str) -> None:
             try:
                 run_data = json.loads(body)
                 run_status = run_data.get("status", "unknown")
-                if run_status in ("completed", "failed", "cancelled"):
-                    print(f"[OK] Run {run_id} finished: status={run_status}")
+                if run_status in ("succeeded", "partial", "failed", "cancelled", "skipped"):
+                    tag = "OK" if run_status in ("succeeded", "partial") else "FAIL"
+                    print(f"[{tag}] Run {run_id} finished: status={run_status}")
                     steps = run_data.get("steps", [])
                     for step in steps:
                         s = step.get("status", "?")
