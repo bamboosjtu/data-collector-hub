@@ -263,25 +263,44 @@ def _project_fan_out(
         store.mark_job(parent_job_id, status="succeeded", result={"total": 0, "succeeded": 0, "failed": 0})
         return {"total": 0, "succeeded": 0, "failed": 0}
 
-    # 3. Extract unique projectCodes
+    # 3. Extract unique projectCodes — explicit dedup by projectCode
+    # Same projectCode may appear across multiple years; tower/substation/line_section
+    # collection only depends on projectCode, not year, so we must emit one child per projectCode.
     source_columns = list(params_mapping.keys())
     param_sets: list[dict[str, str]] = []
-    seen: set[str] = set()
+    seen_project_codes: set[str] = set()
+    duplicate_project_rows = 0
+    skipped_empty_project_code = 0
+
     for row in all_rows:
+        # Read the source column (prjCode) value
+        raw_values: dict[str, str] = {}
+        for source_col in source_columns:
+            value = row.get(source_col)
+            if value is not None:
+                raw_values[source_col] = str(value)
+
+        # Determine projectCode for dedup (use the first source column, typically prjCode)
+        dedup_col = source_columns[0]
+        project_code = raw_values.get(dedup_col, "").strip()
+
+        if not project_code:
+            skipped_empty_project_code += 1
+            continue
+
+        if project_code in seen_project_codes:
+            duplicate_project_rows += 1
+            continue
+        seen_project_codes.add(project_code)
+
+        # Build child params — only business fields, never control params
         child_params: dict[str, str] = {}
         for source_col in source_columns:
             target_param = params_mapping.get(source_col, source_col)
-            value = row.get(source_col)
+            value = raw_values.get(source_col)
             if value is not None:
-                child_params[target_param] = str(value)
-        if child_params:
-            key = "|".join(f"{k}={v}" for k, v in sorted(child_params.items()))
-            if key not in seen:
-                seen.add(key)
-                # Clean fan-out control params
-                clean = {k: v for k, v in child_params.items()
-                         if k not in ("max_items", "max_concurrency", "cooldown_seconds", "consecutive_failure_threshold", "years")}
-                param_sets.append(clean)
+                child_params[target_param] = value
+        param_sets.append(child_params)
 
     # Apply max_items limit
     total_available = len(param_sets)
@@ -292,8 +311,10 @@ def _project_fan_out(
         store.mark_job(parent_job_id, status="succeeded", result={"total": 0, "succeeded": 0, "failed": 0})
         return {"total": 0, "succeeded": 0, "failed": 0}
 
-    logger.info("project fan-out %s: %d projects (of %d available, years=%s, max_concurrency=%d, circuit_breaker=%d)",
-                child_command, len(param_sets), total_available, years, max_concurrency, consecutive_failure_threshold)
+    logger.info("project fan-out %s: source_rows=%d, unique_projects=%d, duplicate_project_rows=%d, "
+                "skipped_empty_project_code=%d, years=%s, max_concurrency=%d",
+                child_command, len(all_rows), len(param_sets), duplicate_project_rows,
+                skipped_empty_project_code, years, max_concurrency)
 
     # 3. Create fanout_run + fanout_items (single transaction)
     store.create_fanout_run_with_items(
@@ -310,10 +331,29 @@ def _project_fan_out(
     store.mark_job(
         parent_job_id,
         status="running",
-        result={"fanout_scheduler": True, "total": len(param_sets), "total_available": total_available, "max_concurrency": max_concurrency},
+        result={
+            "fanout_scheduler": True,
+            "total": len(param_sets),
+            "source_rows": len(all_rows),
+            "unique_projects": len(param_sets),
+            "duplicate_project_rows": duplicate_project_rows,
+            "skipped_empty_project_code": skipped_empty_project_code,
+            "years": years,
+            "max_concurrency": max_concurrency,
+        },
     )
 
-    return {"status": "running", "total": len(param_sets), "total_available": total_available, "max_concurrency": max_concurrency}
+    return {
+        "fanout_scheduler": True,
+        "status": "running",
+        "total": len(param_sets),
+        "source_rows": len(all_rows),
+        "unique_projects": len(param_sets),
+        "duplicate_project_rows": duplicate_project_rows,
+        "skipped_empty_project_code": skipped_empty_project_code,
+        "years": years,
+        "max_concurrency": max_concurrency,
+    }
 
 
 # ---------------------------------------------------------------------------
