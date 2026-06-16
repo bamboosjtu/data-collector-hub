@@ -115,8 +115,39 @@ def build_ingestion_router(
         return resp
 
     @router.get("/ingestion/v1/jobs", dependencies=[Depends(require_scope(store, "admin"))])
-    def list_jobs(limit: int = Query(default=50, ge=1, le=200)) -> dict[str, Any]:
-        return {"items": store.list_jobs(limit)}
+    def list_jobs(
+        limit: int = Query(default=100, ge=1, le=1000),
+        offset: int = Query(default=0, ge=0),
+        status: str | None = Query(default=None),
+        source: str | None = Query(default=None),
+        parent_job_id: str | None = Query(default=None),
+        retry_of_job_id: str | None = Query(default=None),
+        trigger_key: str | None = Query(default=None),
+        q: str | None = Query(default=None),
+    ) -> dict[str, Any]:
+        return store.list_jobs_page(
+            limit=limit, offset=offset,
+            status=status, source=source,
+            parent_job_id=parent_job_id,
+            retry_of_job_id=retry_of_job_id,
+            trigger_key=trigger_key, q=q,
+        )
+
+    @router.get("/ingestion/v1/jobs/summary", dependencies=[Depends(require_scope(store, "admin"))])
+    def jobs_summary(
+        status: str | None = Query(default=None),
+        source: str | None = Query(default=None),
+        parent_job_id: str | None = Query(default=None),
+        retry_of_job_id: str | None = Query(default=None),
+        trigger_key: str | None = Query(default=None),
+        q: str | None = Query(default=None),
+    ) -> dict[str, Any]:
+        return store.get_jobs_summary(
+            status=status, source=source,
+            parent_job_id=parent_job_id,
+            retry_of_job_id=retry_of_job_id,
+            trigger_key=trigger_key, q=q,
+        )
 
     @router.get("/ingestion/v1/jobs/{ingestion_job_id}", dependencies=[Depends(require_scope(store, "admin"))])
     def get_job(ingestion_job_id: str) -> dict[str, Any]:

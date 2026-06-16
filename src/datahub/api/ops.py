@@ -195,7 +195,12 @@ select{height:30px}
   <div class="filter-bar">
     <label>Status <select id="job-status-filter" onchange="loadJobs()"><option value="">All</option><option value="failed">failed</option><option value="partial">partial</option><option value="cancelled">cancelled</option><option value="succeeded">succeeded</option><option value="running">running</option></select></label>
     <label>Source <select id="job-source-filter" onchange="loadJobs()"><option value="">All</option><option value="api">api</option><option value="cli">cli</option><option value="scheduler">scheduler</option><option value="retry">retry</option></select></label>
+    <label>Search <input id="job-q" size="20" placeholder="job ID, command, error..." onkeydown="if(event.key==='Enter')loadJobs()"></label>
+    <label>Parent <input id="job-parent-filter" size="20" placeholder="parent_job_id" onkeydown="if(event.key==='Enter')loadJobs()"></label>
+    <label>Page Size <select id="job-page-size" onchange="loadJobs()"><option value="100">100</option><option value="200">200</option><option value="500">500</option><option value="1000">1000</option></select></label>
+    <button onclick="loadJobs()">Go</button>
   </div>
+  <div id="job-pager" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;font-size:13px;color:var(--muted)"></div>
   <div id="job-list"></div>
 </div>
 
@@ -378,21 +383,53 @@ async function triggerCommand() {
 }
 
 // ========== Jobs ==========
-async function loadJobs() {
-  const r = await fetch(API+'/ingestion/v1/jobs?limit=100', {headers});
-  const data = await r.json();
+let _jobOffset = 0;
+
+async function loadJobs(resetPage) {
+  if (resetPage !== false) _jobOffset = 0;
+  const limit = parseInt(document.getElementById('job-page-size')?.value || '100');
   const statusFilter = document.getElementById('job-status-filter')?.value || '';
   const sourceFilter = document.getElementById('job-source-filter')?.value || '';
-  let items = data.items || [];
-  const allItems = items;
-  if (statusFilter) items = items.filter(j => j.status === statusFilter);
-  if (sourceFilter) items = items.filter(j => j.source === sourceFilter);
+  const q = document.getElementById('job-q')?.value?.trim() || '';
+  const parentJobId = document.getElementById('job-parent-filter')?.value?.trim() || '';
 
-  // Summary cards
+  const params = new URLSearchParams({limit, offset: _jobOffset});
+  if (statusFilter) params.set('status', statusFilter);
+  if (sourceFilter) params.set('source', sourceFilter);
+  if (q) params.set('q', q);
+  if (parentJobId) params.set('parent_job_id', parentJobId);
+
+  const summaryParams = new URLSearchParams();
+  if (statusFilter) summaryParams.set('status', statusFilter);
+  if (sourceFilter) summaryParams.set('source', sourceFilter);
+  if (q) summaryParams.set('q', q);
+  if (parentJobId) summaryParams.set('parent_job_id', parentJobId);
+
+  const [r, sr] = await Promise.all([
+    fetch(API+'/ingestion/v1/jobs?'+params.toString(), {headers}),
+    fetch(API+'/ingestion/v1/jobs/summary?'+summaryParams.toString(), {headers}),
+  ]);
+  const data = await r.json();
+  const summary = await sr.json();
+  const items = data.items || [];
+  const total = data.total || 0;
+  const offset = data.offset || 0;
+  const showing = items.length;
+
+  // Summary cards (from summary API — full filtered counts, not page-only)
   const se = document.getElementById('job-summary');
-  const counts = {total:allItems.length, running:0, failed:0, partial:0, retry:0};
-  allItems.forEach(j => { if(j.status==='running'||j.status==='triggering'||j.status==='accepted') counts.running++; if(j.status==='failed') counts.failed++; if(j.status==='partial') counts.partial++; if(j.source==='retry') counts.retry++; });
-  se.innerHTML = summaryCard('Shown',counts.total,'sv-primary') + summaryCard('Running',counts.running,'sv-warning') + summaryCard('Failed',counts.failed,'sv-danger') + summaryCard('Partial',counts.partial,'sv-warning') + summaryCard('Retry',counts.retry,'sv-primary');
+  se.innerHTML = summaryCard('Total',summary.total||0,'sv-primary') + summaryCard('Running',summary.running||0,'sv-warning') + summaryCard('Failed',summary.failed||0,'sv-danger') + summaryCard('Partial',summary.partial||0,'sv-warning') + summaryCard('Retry',summary.retry||0,'sv-primary');
+
+  // Pager
+  const pagerEl = document.getElementById('job-pager');
+  const from = total > 0 ? offset + 1 : 0;
+  const to = offset + showing;
+  let pagerHtml = '<span>Showing '+from+'-'+to+' of '+total+'</span><div style="display:flex;gap:8px">';
+  pagerHtml += '<button onclick="_jobOffset=0;loadJobs(false)"'+(offset===0?' disabled':'')+'>First</button>';
+  pagerHtml += '<button onclick="_jobOffset=Math.max(0,_jobOffset-limit);loadJobs(false)"'+(offset===0?' disabled':'')+'>Prev</button>';
+  pagerHtml += '<button onclick="_jobOffset=_jobOffset+'+limit+';loadJobs(false)"'+(to>=total?' disabled':'')+'>Next</button>';
+  pagerHtml += '</div>';
+  pagerEl.innerHTML = pagerHtml;
 
   const el = document.getElementById('job-list');
   let html = '<div class="table-wrap"><table class="data-table"><tr>'

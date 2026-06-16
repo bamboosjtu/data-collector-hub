@@ -100,6 +100,112 @@ class DataHubStore:
     def list_jobs(self, limit: int = 50) -> list[dict[str, Any]]:
         return self._get_rows("SELECT * FROM ingestion_jobs ORDER BY id DESC LIMIT ?", (limit,))
 
+    @staticmethod
+    def _build_jobs_where(
+        *,
+        status: str | None = None,
+        source: str | None = None,
+        parent_job_id: str | None = None,
+        retry_of_job_id: str | None = None,
+        trigger_key: str | None = None,
+        q: str | None = None,
+    ) -> tuple[str, list[Any]]:
+        """Build WHERE clause and params for job queries."""
+        where_clauses: list[str] = []
+        params: list[Any] = []
+
+        if status is not None:
+            where_clauses.append("status = ?")
+            params.append(status)
+        if source is not None:
+            where_clauses.append("source = ?")
+            params.append(source)
+        if parent_job_id is not None:
+            where_clauses.append("parent_job_id = ?")
+            params.append(parent_job_id)
+        if retry_of_job_id is not None:
+            where_clauses.append("retry_of_job_id = ?")
+            params.append(retry_of_job_id)
+        if trigger_key is not None:
+            where_clauses.append("trigger_key = ?")
+            params.append(trigger_key)
+        if q is not None:
+            where_clauses.append("(ingestion_job_id LIKE ? OR trigger_key LIKE ? OR parent_job_id LIKE ? OR retry_of_job_id LIKE ? OR error LIKE ?)")
+            pattern = f"%{q}%"
+            params.extend([pattern] * 5)
+
+        where_sql = (" WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+        return where_sql, params
+
+    def list_jobs_page(
+        self,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+        status: str | None = None,
+        source: str | None = None,
+        parent_job_id: str | None = None,
+        retry_of_job_id: str | None = None,
+        trigger_key: str | None = None,
+        q: str | None = None,
+    ) -> dict[str, Any]:
+        """Paginated job listing with filters and full-text search."""
+        limit = min(limit, 1000)
+        where_sql, params = self._build_jobs_where(
+            status=status, source=source, parent_job_id=parent_job_id,
+            retry_of_job_id=retry_of_job_id, trigger_key=trigger_key, q=q,
+        )
+
+        # Count total (unaffected by limit/offset)
+        count_row = self._get_row(f"SELECT COUNT(*) as cnt FROM ingestion_jobs{where_sql}", tuple(params))
+        total = count_row["cnt"] if count_row else 0
+
+        # Fetch page
+        page_params = params + [limit, offset]
+        items = self._get_rows(
+            f"SELECT * FROM ingestion_jobs{where_sql} ORDER BY id DESC LIMIT ? OFFSET ?",
+            tuple(page_params),
+        )
+
+        return {"items": items, "total": total, "limit": limit, "offset": offset}
+
+    def get_jobs_summary(
+        self,
+        *,
+        status: str | None = None,
+        source: str | None = None,
+        parent_job_id: str | None = None,
+        retry_of_job_id: str | None = None,
+        trigger_key: str | None = None,
+        q: str | None = None,
+    ) -> dict[str, int]:
+        """Aggregate status counts for jobs matching the given filters."""
+        where_sql, params = self._build_jobs_where(
+            status=status, source=source, parent_job_id=parent_job_id,
+            retry_of_job_id=retry_of_job_id, trigger_key=trigger_key, q=q,
+        )
+
+        row = self._get_row(
+            f"SELECT "
+            f"COUNT(*) as total, "
+            f"COALESCE(SUM(CASE WHEN status IN ('running','triggering','accepted','submitted') THEN 1 ELSE 0 END),0) as running, "
+            f"COALESCE(SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END),0) as failed, "
+            f"COALESCE(SUM(CASE WHEN status='partial' THEN 1 ELSE 0 END),0) as partial, "
+            f"COALESCE(SUM(CASE WHEN source='retry' THEN 1 ELSE 0 END),0) as retry, "
+            f"COALESCE(SUM(CASE WHEN status='succeeded' THEN 1 ELSE 0 END),0) as succeeded "
+            f"FROM ingestion_jobs{where_sql}",
+            tuple(params),
+        )
+
+        return {
+            "total": row["total"] if row else 0,
+            "running": row["running"] if row else 0,
+            "failed": row["failed"] if row else 0,
+            "partial": row["partial"] if row else 0,
+            "retry": row["retry"] if row else 0,
+            "succeeded": row["succeeded"] if row else 0,
+        }
+
     def list_child_jobs(self, parent_job_id: str) -> list[dict[str, Any]]:
         return self._get_rows("SELECT * FROM ingestion_jobs WHERE parent_job_id = ? ORDER BY id", (parent_job_id,))
 
