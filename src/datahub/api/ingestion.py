@@ -33,7 +33,6 @@ _ERROR_STATUS_MAP: dict[str, int] = {
     "job_not_found": 404,
     "no_command": 422,
     "job_not_retryable": 409,
-    "retry_already_running": 409,
     "not_fanout_parent": 404,
     "no_failed_children": 409,
     "no_retry_submitted": 409,
@@ -202,7 +201,7 @@ def build_ingestion_router(
 
     @router.post("/ingestion/v1/jobs/{ingestion_job_id}/retry", status_code=202, dependencies=[Depends(require_scope(store, "ingestion"))])
     def retry_ingestion_job(ingestion_job_id: str) -> dict[str, Any]:
-        """Retry a failed job by re-creating it with the same command and params."""
+        """Retry a failed job in-place using the same ingestion_job_id."""
         try:
             result = _job_service.retry_job(ingestion_job_id)
         except JobServiceError as exc:
@@ -211,10 +210,6 @@ def build_ingestion_router(
         resp: dict[str, Any] = {"ingestion_job_id": result.ingestion_job_id, "status": result.status}
         if result.downloader_job_id:
             resp["downloader_job_id"] = result.downloader_job_id
-        if result.original_job_id:
-            resp["original_job_id"] = result.original_job_id
-        if result.retry_of_job_id:
-            resp["retry_of_job_id"] = result.retry_of_job_id
         return resp
 
     @router.post("/ingestion/v1/jobs/{parent_job_id}/retry-failed-children", status_code=202, dependencies=[Depends(require_scope(store, "ingestion"))])

@@ -545,6 +545,22 @@ class DataHubStore:
                 (new_child_job_id, datahub_now_text(), item_id),
             )
 
+    def update_fanout_item_for_inplace_retry(self, item_id: int) -> None:
+        """Reset a fanout_item for in-place retry: same child_job_id, increment retry_count, clear error."""
+        with closing(self.connect()) as conn, conn:
+            conn.execute(
+                """UPDATE fanout_items
+                   SET status = 'submitted',
+                       error = NULL,
+                       claimed_by = NULL,
+                       claimed_at = NULL,
+                       retry_count = retry_count + 1,
+                       next_attempt_at = NULL,
+                       updated_at = ?
+                   WHERE id = ?""",
+                (datahub_now_text(), item_id),
+            )
+
     def reopen_fanout_run(self, parent_job_id: str) -> None:
         """Reopen a closed fanout_run back to running status."""
         with closing(self.connect()) as conn, conn:
@@ -571,6 +587,37 @@ class DataHubStore:
                        updated_at = ?
                    WHERE ingestion_job_id = ?""",
                 (datahub_now_text(), ingestion_job_id),
+            )
+
+    def reopen_job_for_retry(
+        self,
+        ingestion_job_id: str,
+        *,
+        new_producer_job_id: str,
+        params_json: str,
+        source: str = "retry",
+    ) -> None:
+        """Reopen an existing job for in-place retry.
+
+        Resets status/producer_job_id/params_json/source and clears
+        error/result/producer_status/row_count/finished_at.
+        Unlike mark_job, this explicitly sets fields to NULL/0 (no COALESCE).
+        """
+        with closing(self.connect()) as conn, conn:
+            conn.execute(
+                """UPDATE ingestion_jobs
+                   SET status = 'triggering',
+                       producer_job_id = ?,
+                       params_json = ?,
+                       source = ?,
+                       error = NULL,
+                       result_json = NULL,
+                       producer_status_json = NULL,
+                       row_count = 0,
+                       finished_at = NULL,
+                       updated_at = ?
+                   WHERE ingestion_job_id = ?""",
+                (new_producer_job_id, params_json, source, datahub_now_text(), ingestion_job_id),
             )
 
     def list_job_retries(self, ingestion_job_id: str) -> list[dict[str, Any]]:

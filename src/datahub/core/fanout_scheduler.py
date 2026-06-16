@@ -52,6 +52,24 @@ def _is_transient_child_failure(child_job: dict[str, Any]) -> bool:
     return any(kw in combined for kw in _TRANSIENT_KEYWORDS)
 
 
+def _is_child_non_success(child_job: dict[str, Any]) -> bool:
+    """Check if a child job is in a non-success terminal state (failed/partial/cancelled)."""
+    return child_job.get("status") in ("failed", "partial", "cancelled")
+
+
+def _get_child_retry_count(child_job: dict[str, Any]) -> int:
+    """Read retry_count from child job's __datahub internal params."""
+    import json
+    try:
+        params = json.loads(child_job.get("params_json") or "{}")
+        internal = params.get("__datahub")
+        if isinstance(internal, dict):
+            return int(internal.get("retry_count", 0))
+    except (json.JSONDecodeError, TypeError, ValueError):
+        pass
+    return 0
+
+
 def start_fanout_scheduler(
     store,
     trigger_clients,
@@ -111,6 +129,85 @@ def fanout_scheduler_tick(
             logger.error("fanout scheduler error for %s: %s", run["parent_job_id"], exc, exc_info=True)
 
 
+def _inplace_retry_child(
+    store, trigger_clients, plugins, run, item, child_job,
+    *,
+    callback_base_url: str,
+    callback_headers: dict[str, str] | None,
+) -> None:
+    """In-place retry a failed child job: reopen same job_id, bump __datahub, re-trigger."""
+    import json
+    from src.datahub.core.services.job_service import (
+        bump_internal_retry_meta,
+        strip_internal_params,
+    )
+    from src.datahub.core.plugin_loader import find_command, find_plugin_for_job
+    from src.datahub.core.trigger_runtime import new_producer_job_id
+
+    child_job_id = item["child_job_id"]
+    child_command = run["child_command"]
+    command = find_command(plugins, child_command)
+    plugin = find_plugin_for_job(plugins, child_command)
+
+    if command is None or plugin is None:
+        store.update_fanout_item_terminal(item["id"], status="failed", error=f"child command not found: {child_command}")
+        return
+
+    params = json.loads(child_job.get("params_json") or "{}")
+    last_error = child_job.get("error")
+    params = bump_internal_retry_meta(params, reason="auto_non_success", last_error=last_error)
+
+    producer_job_id = new_producer_job_id(child_command, params, command)
+    store.reopen_job_for_retry(
+        child_job_id,
+        new_producer_job_id=producer_job_id,
+        params_json=json.dumps(params, ensure_ascii=False),
+        source="retry",
+    )
+
+    business_params = strip_internal_params(params)
+    trigger_type = command.trigger.get("type", "downloader_sync")
+
+    if trigger_type == "plugin_handler":
+        from src.datahub.core.fan_out import build_handler_context, load_plugin_handler, run_handler_async
+        store.mark_job(child_job_id, status="running")
+        handler_path = command.trigger.get("handler")
+        handler = load_plugin_handler(handler_path, plugin_name=plugin.name)
+        ctx = build_handler_context(
+            store=store,
+            plugins=plugins,
+            trigger_clients=trigger_clients,
+            ingestion_job_id=child_job_id,
+            callback_base_url=callback_base_url,
+            callback_headers=callback_headers,
+            params=business_params,
+            command=command,
+            plugin=plugin,
+        )
+        run_handler_async(handler, ctx)
+    else:
+        client = trigger_clients.get(plugin.name)
+        downloader_job_type = command.trigger.get("job_type")
+        if client and downloader_job_type:
+            callback_url = f"{callback_base_url}/ingestion/v1/table-batches"
+            try:
+                response = client.sync(
+                    producer_job_id=producer_job_id,
+                    job_type=downloader_job_type,
+                    params=business_params,
+                    callback_url=callback_url,
+                    callback_headers=callback_headers,
+                )
+                store.mark_job(child_job_id, status=str(response.get("status") or "accepted"), producer_status=response)
+            except Exception as exc:
+                store.mark_job(child_job_id, status="failed", error=str(exc))
+        else:
+            store.mark_job(child_job_id, status="failed", error="no connector for auto-retry")
+
+    # Update fanout_item: same child_job_id, increment retry_count, clear error
+    store.update_fanout_item_for_inplace_retry(item["id"])
+
+
 def _advance_fanout_run(
     store,
     trigger_clients,
@@ -139,6 +236,9 @@ def _advance_fanout_run(
             from plugins.dcp.fan_out import _is_child_failed
             failed = _is_child_failed(child_job)
             if failed:
+                child_retry_count = _get_child_retry_count(child_job)
+
+                # Transient failure: retry with backoff (up to _MAX_TRANSIENT_RETRIES)
                 if _is_transient_child_failure(child_job) and item.get("retry_count", 0) < _MAX_TRANSIENT_RETRIES:
                     retry_count = item.get("retry_count", 0)
                     delay_seconds = 3 * (2 ** retry_count)
@@ -154,6 +254,15 @@ def _advance_fanout_run(
                         error=child_job.get("error") or "transient failure",
                         delay_seconds=delay_seconds,
                     )
+                # Non-success auto-retry: in-place retry once (retry_count < 1)
+                elif _is_child_non_success(child_job) and child_retry_count < 1:
+                    logger.info(
+                        "fanout %s: auto-retrying child %s in-place (child_retry_count=%d, status=%s)",
+                        parent_job_id, item["child_job_id"], child_retry_count, child_job["status"],
+                    )
+                    _inplace_retry_child(store, trigger_clients, plugins, run, item, child_job,
+                                         callback_base_url=callback_base_url,
+                                         callback_headers=callback_headers)
                 else:
                     store.update_fanout_item_terminal(
                         item["id"],
