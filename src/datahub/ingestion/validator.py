@@ -120,4 +120,9 @@ def validate_payload(
                     raise
         if valid_rows:
             validated.append((table, scope_values, valid_rows))
+        elif table.write_mode == "replace_scope" and table.scope_column_names:
+            # Empty snapshot for scoped replace_scope: still append so writer
+            # can DELETE old rows in this scope. Scope values were already
+            # validated by validate_scope above.
+            validated.append((table, scope_values, []))
     return validated, skipped

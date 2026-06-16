@@ -349,7 +349,7 @@ tables:
   dcp_project_tower:
     dataset_key: tower
     description: DCP tower details by single project from project.towerDetails API.
-    write_mode: upsert
+    write_mode: replace_scope
     scope_column_names: [singleProjectCode]
     primary_key: [singleProjectCode, id]
     columns:
@@ -488,7 +488,7 @@ tables:
   dcp_project_substation:
     dataset_key: substation
     description: DCP substation coordinates detail by single project.
-    write_mode: upsert
+    write_mode: replace_scope
     scope_column_names: [singleProjectCode]
     primary_key: [singleProjectCode]
     columns:
@@ -504,7 +504,7 @@ tables:
   dcp_project_line_branches:
     dataset_key: line_section
     description: DCP line branches (outer layer of sectionDetails). Each row is one branch containing tower list, span list, and child sections.
-    write_mode: upsert
+    write_mode: replace_scope
     scope_column_names: [biddingSectionCode]
     primary_key: [biddingSectionCode, branchId]
     columns:
@@ -518,7 +518,7 @@ tables:
   dcp_project_line_sections:
     dataset_key: line_section
     description: DCP line sections (inner layer from sectionVo.sectionDTOList). Each row is one section within a branch.
-    write_mode: upsert
+    write_mode: replace_scope
     scope_column_names: [biddingSectionCode]
     primary_key: [biddingSectionCode, sectionId]
     columns:
