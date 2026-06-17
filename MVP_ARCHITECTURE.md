@@ -1101,26 +1101,28 @@ upsert / replace_scope 表根据业务 primary_key 建唯一约束。
 
 MVP 的 DCP 表清单由 `plugins/dcp/tables.yaml` 决定。当前已验证的表清单：
 
-| 表名 | 域 | 主键 | 写入模式 | 列数 | 说明 |
+| 表名 | 域 | 主键 | 写入模式 | scope_column_names | 说明 |
 |---|---|---|---|---|---|
-| dcp_plan_projects | 计划域 | year, prjCode | upsert | - | 年度计划项目 |
-| dcp_plan_single_projects | 计划域 | year, singleProjectCode | upsert | - | 单项工程 |
-| dcp_plan_project_progress | 计划域 | prjCode | replace_scope | - | 项目进度 |
-| dcp_plan_single_project_progress | 计划域 | singleProjectCode | replace_scope | - | 单项工程进度 |
-| dcp_plan_bidding_section_progress | 计划域 | biddingSectionCode | replace_scope | - | 标段进度 |
-| dcp_plan_dept_key_personnel | 计划域 | originalIdCard, positionCode | replace_scope | - | 关键人员 |
-| dcp_tower | 项目域 | singleProjectCode, id | upsert | - | 杆塔 |
-| dcp_substation | 项目域 | singleProjectCode | upsert | - | 变电站 |
-| dcp_line_branches | 项目域 | biddingSectionCode, branchId | upsert | - | 线路分支 |
-| dcp_line_sections | 项目域 | biddingSectionCode, sectionId | upsert | - | 架线区段 |
-| dcp_daily_meeting | 安全域 | date, id | upsert | 42 | 站班会（字段化） |
-| dcp_daily_meeting_snapshot | 安全域 | date, id | upsert | 42 | 站班会快照（字段化） |
+| dcp_plan_year_project | 计划域 | year, prjCode | upsert | [year] | 年度计划项目 |
+| dcp_plan_year_single_project | 计划域 | year, singleProjectCode | upsert | [year] | 单项工程 |
+| dcp_plan_project_progress | 计划域 | prjCode | replace_scope | [] | 项目进度 |
+| dcp_plan_single_project_progress | 计划域 | singleProjectCode | replace_scope | [] | 单项工程进度 |
+| dcp_plan_bidsection_progress | 计划域 | biddingSectionCode | replace_scope | [] | 标段进度 |
+| dcp_plan_dept_key_personnel | 计划域 | originalIdCard, positionCode | replace_scope | [] | 关键人员 |
+| dcp_project_tower | 项目域 | singleProjectCode, id | replace_scope | [singleProjectCode] | 杆塔 |
+| dcp_project_substation | 项目域 | singleProjectCode | replace_scope | [singleProjectCode] | 变电站 |
+| dcp_project_line_branches | 项目域 | biddingSectionCode, branchId | replace_scope | [biddingSectionCode] | 线路分支 |
+| dcp_project_line_sections | 项目域 | biddingSectionCode, sectionId | replace_scope | [biddingSectionCode] | 架线区段 |
+| dcp_safe_daily_meeting | 安全域 | date, id | upsert | [] | 站班会（字段化） |
+| dcp_safe_daily_meeting_snapshot | 安全域 | date, id | upsert | [] | 站班会快照（字段化） |
 
 关键设计决策：
 - 所有业务表采用 response-aligned storage，关键业务字段展开为独立列
 - 不使用 raw JSON 字段存储业务数据（AGENTS.md 原则）
 - normalizer 机制：plugin 可声明 normalizer 对原始行进行预处理（如过滤空壳行、提取字段）
 - fan-out 机制：支持按项目/日期分片的批量采集，parent 汇总 child 状态
+- 项目域快照表使用 replace_scope + scope_column_names，防止远端删除数据在本地残留
+- multi-year fan-out 显式按 projectCode 去重，避免跨年重复项目
 - 890 天并发回补验证通过：303,548 行，890/890 succeeded，3.7x speedup
 
 ---
@@ -1142,7 +1144,12 @@ GET /schemas/{table_name}
 ```text
 POST /ingestion/v1/jobs
 GET  /ingestion/v1/jobs
+GET  /ingestion/v1/jobs/summary
 GET  /ingestion/v1/jobs/{ingestion_job_id}
+GET  /ingestion/v1/jobs/{ingestion_job_id}/children
+GET  /ingestion/v1/jobs/{ingestion_job_id}/fanout
+POST /ingestion/v1/jobs/{ingestion_job_id}/retry
+POST /ingestion/v1/jobs/{ingestion_job_id}/retry-failed-children
 ```
 
 `POST /ingestion/v1/jobs` 用于通过 plugin trigger 发起采集。
@@ -1165,6 +1172,12 @@ GET  /ingestion/v1/jobs/{ingestion_job_id}
   "status": "accepted"
 }
 ```
+
+`GET /ingestion/v1/jobs` 支持服务端分页和过滤参数：`limit`、`offset`、`status`、`source`、`parent_job_id`、`retry_of_job_id`、`trigger_key`、`q`（全文搜索）。
+
+`GET /ingestion/v1/jobs/summary` 返回匹配过滤条件的 Job 状态统计（total/running/failed/partial/retry/succeeded）。
+
+`POST /ingestion/v1/jobs/{id}/retry` 原地重试失败 job，复用同一 ingestion_job_id，不创建新 job。内部通过 `__datahub` 参数键追踪 retry_count，发送给 downloader 前自动剥离。
 
 ### 8.3 入库 API
 
@@ -1198,10 +1211,12 @@ MVP 查询 API 只查询本地已入库数据。
 - Fan-out concurrent scheduling: fan-out commands use a persisted scheduler (tick=3s) with `max_concurrency` + `cooldown_seconds` control; not serial execution
 - SQLite single-writer: `busy_timeout=30000` (30s) to tolerate concurrent writes; WAL mode set at schema init
 - Fan-out circuit breaker: both date and project fan-out have consecutive failure circuit breaker (default threshold=5); pending items are skipped when circuit opens, submitted items drain normally
+- Fan-out auto-retry: non-success child jobs (failed/partial/cancelled) are automatically retried in-place once; retry_count tracked via `__datahub` internal params
+- Job in-place retry: `POST /ingestion/v1/jobs/{id}/retry` reopens the same ingestion_job_id instead of creating a new job; `__datahub.retry_count` incremented, internal params stripped before sending to downloader
 - Callback endpoint: uses `asyncio.to_thread` to avoid blocking the event loop on synchronous DB writes
 - Beijing time: all timestamps use Asia/Shanghai timezone via `core/time_utils.py`
-- No automated retry for transient failures: retry via CLI `uv run python -m src.datahub.cli retry <job_id>`
 - Lease-based fan-out run claiming: prevents duplicate scheduler processing; stale submitting items (120s) auto-recover to pending
+- Jobs pagination: server-side pagination with limit/offset/status/source/q filters; /ops UI supports full pagination and summary stats
 
 ### 9.2 Known Limitations
 
@@ -1212,7 +1227,7 @@ MVP 查询 API 只查询本地已入库数据。
 - 8000 ops UI is the long-term direction for operations monitoring
 - command → service abstraction not yet started
 - Query routes not configured for all tables (some return 404)
-- No automated retry for transient failures
+- Fan-out auto-retry limited to one attempt; persistent failures still require manual intervention
 
 ---
 
@@ -1229,10 +1244,12 @@ DataCollectorHub/
 │       │   ├── plugin_loader.py
 │       │   ├── registry.py
 │       │   ├── trigger_runtime.py
-│       │   ├── fan_out.py
 │       │   ├── fanout_scheduler.py
 │       │   ├── specs.py
-│       │   └── time_utils.py
+│       │   ├── time_utils.py
+│       │   └── services/
+│       │       ├── job_service.py
+│       │       └── collection_plan_service.py
 │       │
 │       ├── ingestion/
 │       │   ├── models.py
@@ -1246,10 +1263,14 @@ DataCollectorHub/
 │       │   └── writer.py
 │       │
 │       ├── api/
+│       │   ├── health.py
 │       │   ├── metadata.py
 │       │   ├── ingestion.py
-│       │   ├── query.py
-│       │   └── health.py
+│       │   ├── admin.py
+│       │   ├── ops.py
+│       │   ├── schedules.py
+│       │   ├── auth.py
+│       │   └── query.py
 │       │
 │       └── admin/
 │           └── views.py
@@ -1265,13 +1286,12 @@ DataCollectorHub/
 ├── tests/
 │   ├── unit/                  # Pure logic, no external dependencies
 │   ├── integration/           # SQLite/Store but no external services
-│   ├── e2e/                   # Full DataHub + downloader-dcp
 │   └── fixtures/              # Shared test fixtures
 │
 ├── scripts/
-│   ├── dev/                   # Development utilities
-│   ├── smoke/                 # Smoke test scripts
-│   └── ops/                   # Operations scripts
+│   ├── backup_sqlite.py       # SQLite online backup
+│   ├── mvp_check_env.py       # Environment variable completeness check
+│   └── mvp_smoke_check.py     # MVP smoke verification
 │
 ├── docs/
 │   ├── MVP_ARCHITECTURE.md

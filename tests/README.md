@@ -32,10 +32,16 @@ uv run pytest tests/integration/test_fan_out_circuit_breaker.py tests/integratio
 
 | 文件 | 覆盖能力 |
 |------|----------|
-| `test_validator.py` | 空壳行判定、extra 字段过滤、schema 校验 |
+| `test_validator.py` | 空壳行判定、extra 字段过滤、schema 校验、scope 校验、空快照处理 |
+| `test_writer_replace_scope.py` | replace_scope 写入模式（DELETE + upsert）、空快照删除、scope 列验证 |
+| `test_writer_timestamps.py` | 业务表 `_ingest_created_at`/`_ingest_updated_at` 写入与 upsert 行为 |
 | `test_normalizer_substation.py` | substation normalizer 输出规则 |
 | `test_normalizer_daily_meeting.py` | daily meeting 字段化、date 补全、wrapper 过滤 |
-| `test_writer_timestamps.py` | 业务表 `_ingest_created_at`/`_ingest_updated_at` 写入与 upsert 行为 |
+| `test_job_service.py` | JobService 提交/重试/查询、原地 retry（复用 job_id）、`__datahub` 内部参数、retry_failed_children |
+| `test_collection_plan.py` | 采集计划服务、步骤执行、$-placeholder 解析、超时处理、计划运行 |
+| `test_fan_out.py` | 项目域 fan-out、multi-year projectCode 去重、统计字段 |
+| `test_jobs_page.py` | Jobs 服务端分页、过滤、summary 统计 |
+| `test_mvp_hardening.py` | /health/ready、backup_sqlite、环境变量检查、smoke 验证、schema baseline |
 
 ### integration/
 

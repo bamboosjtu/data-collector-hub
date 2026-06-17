@@ -6,13 +6,17 @@ DataCollectorHub 是独立 DataHub 服务。通过插件声明 schema、trigger 
 
 ## MVP Status
 
-DCP MVP 已封板 (2026-06-09)。当前能力：
+DCP MVP 已封板 (2026-06-09)，P5 系列加固已完成。当前能力：
 
 - 基础域：年度计划、项目进度、关键人员 — 全量通过
-- 项目域：杆塔、变电站、架线区段 fan-out（max_concurrency=5）— partial（412~415/416），个案缺口追踪
+- 项目域：杆塔、变电站、架线区段 fan-out（max_concurrency=5）— replace_scope 入库，远端删除数据不再残留
 - 安全域：站班会 890 天回补 — 303,548 行，890/890 succeeded
 - Fan-out 熔断器：date 和 project fan-out 均已验证
 - Fan-out transient retry：session_expired / timeout 等可恢复错误自动重试（最多 2 次），不计入 consecutive failures
+- Fan-out auto-retry：子任务失败后自动原地重试一次（不创建新 job）
+- Job 原地 retry：重试失败 job 时复用同一 ingestion_job_id，不创建新 job
+- 项目域去重：multi-year fan-out 显式按 projectCode 去重
+- Jobs 服务端分页：支持 limit/offset/status/source/q 等过滤，/ops UI 完整支持
 - SQLite 稳定性：WAL + busy_timeout，connection-per-operation
 
 详见 [docs/devlog/dcp-mvp-final-acceptance.md](docs/devlog/dcp-mvp-final-acceptance.md)。
@@ -62,7 +66,7 @@ uv run pytest tests/e2e/ -v
 或使用 smoke 脚本（需要 DataHub + downloader-dcp 运行）：
 
 ```powershell
-uv run python scripts/smoke/verify_run.py
+uv run python scripts/mvp_smoke_check.py
 ```
 
 ### 4. 触发采集
@@ -90,26 +94,26 @@ src/datahub/
   app.py                  # FastAPI app factory
   settings.py             # environment-backed settings
   core/                   # plugin loading, registry, trigger runtime, fanout scheduler, time_utils
+    services/             # job_service (submit/retry), collection_plan_service (scheduled plans)
   ingestion/              # TableBatch v1 models, validation, idempotency, service
   storage/                # SQLite DDL, metadata tables, write modes
-  api/                    # health, metadata, ingestion, admin, dynamic query routes
+  api/                    # health, metadata, ingestion, admin, ops, schedules, query routes
 
 plugins/
   dcp/
     plugin.yaml           # external collector connector, commands, query routes
     tables.yaml           # 12 DCP business table schemas
     normalizers.py        # 6 normalizers (plan_sgcc_year, plan_progress, plan_dept_key_personnel, line_section, substation, daily_meeting)
-    fan_out.py            # project/date fan-out handlers with circuit breaker and transient retry
+    fan_out.py            # project/date fan-out handlers with circuit breaker, transient retry, projectCode dedup
 
 scripts/
-  dev/                    # 开发调试辅助
-  smoke/                  # Smoke 测试脚本
-  ops/                    # 运维监控脚本
+  backup_sqlite.py        # SQLite 在线备份
+  mvp_check_env.py        # 环境变量完整性检查
+  mvp_smoke_check.py      # MVP smoke 验证
 
 tests/
   unit/                   # 纯逻辑测试
   integration/            # 集成测试
-  e2e/                    # 端到端测试
 ```
 
 ## API
@@ -120,18 +124,22 @@ tests/
 - `GET /plugins`
 - `GET /schemas` / `GET /schemas/{table_name}`
 - `POST /ingestion/v1/jobs` — 触发采集
-- `GET /ingestion/v1/jobs` / `GET /ingestion/v1/jobs/{id}`
+- `GET /ingestion/v1/jobs` — Job 列表（分页 + 过滤）
+- `GET /ingestion/v1/jobs/summary` — Job 状态统计摘要
+- `GET /ingestion/v1/jobs/{id}` — Job 详情
 - `GET /ingestion/v1/jobs/{id}/children` — 子任务列表
 - `GET /ingestion/v1/jobs/{id}/fanout` — fan-out 详情
-- `POST /ingestion/v1/jobs/{id}/retry` — 重试失败 job
+- `POST /ingestion/v1/jobs/{id}/retry` — 原地重试失败 job（复用同一 job_id）
 - `POST /ingestion/v1/jobs/{id}/retry-failed-children` — 重试 fan-out 失败子任务
 - `POST /ingestion/v1/table-batches` — 入库回调
-- `GET /ingestion/v1/messages` / `GET /ingestion/v1/table-writes`
+- `GET /ingestion/v1/messages` / `GET /ingestion/v1/messages/{id}`
+- `GET /ingestion/v1/table-writes`
 - `POST /admin/api-keys`
 - `GET /admin/schedules/plans` / `GET /admin/schedules/plans/{name}`
 - `POST /admin/schedules/plans/{name}/run` — 手动触发计划
 - `GET /admin/schedules/runs` / `GET /admin/schedules/runs/{id}`
-- `GET /ops` — Admin UI
+- `GET /ops` — Admin UI（Commands / Jobs / Fan-out / Schedules / Tables）
+- `GET /api/v1/ops/table-stats` — 业务表行数统计
 - Dynamic query routes from plugin `query_routes`
 
 Dev 模式引导 API Key: `dev-admin-key` (scopes: admin, ingestion, query)
@@ -165,8 +173,7 @@ Dev 模式引导 API Key: `dev-admin-key` (scopes: admin, ingestion, query)
 |------|------|
 | `scripts/backup_sqlite.py` | SQLite 在线备份 |
 | `scripts/mvp_check_env.py` | 环境变量完整性检查 |
-| `scripts/mvp_smoke_check.py` | MVP smoke 验证 |
-| `scripts/smoke/verify_run.py` | 完整 smoke 流程 |
+| `scripts/mvp_smoke_check.py` | MVP smoke 验证（9 项检查） |
 
 ## Documentation
 
