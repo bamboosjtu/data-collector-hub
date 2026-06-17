@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import tempfile
+from pathlib import Path
+
 import pytest
 
-from src.datahub.core.registry import SchemaRegistry, TableSpec, ColumnSpec, validate_row
+from src.datahub.core.registry import SchemaRegistry, TableSpec, ColumnSpec, validate_row, validate_scope
 from src.datahub.ingestion.validator import _is_empty_wrapper_row, validate_payload, SkippedRow
+from src.datahub.storage.sqlite import DataHubStore
 
 
 def _make_table(name: str = "test_table", pk: tuple[str, ...] = ("id",), extra: bool = True) -> TableSpec:
@@ -40,6 +44,38 @@ def _make_registry(table: TableSpec | None = None, extra: bool | None = None) ->
 
 def _noop_scope_mappings(table_name: str, scope_values: dict) -> dict:
     return scope_values
+
+
+def _make_store():
+    from src.datahub.core.plugin_loader import load_all_plugins
+    from src.datahub.core.registry import load_registry_from_plugins
+    from src.datahub.settings import Settings
+    d = tempfile.mkdtemp()
+    db_path = str(Path(d) / "test_validator.db")
+    plugins = load_all_plugins(Settings.plugin_dir)
+    registry = load_registry_from_plugins(plugins)
+    s = DataHubStore(db_path, registry)
+    s.init_schema(dev_mode=True)
+    return s
+
+
+def _make_payload(table_name, dataset_key, scope_values, rows,
+                  message_id="msg_test", idempotency_key="idem_test",
+                  downloader_job_id="dl_test", collect_run_id="run_test",
+                  payload_hash="hash_test"):
+    return {
+        "message_id": message_id,
+        "idempotency_key": idempotency_key,
+        "downloader_job_id": downloader_job_id,
+        "collect_run_id": collect_run_id,
+        "payload_hash": payload_hash,
+        "dataset_key": dataset_key,
+        "tables": [{
+            "table_name": table_name,
+            "scope_values": scope_values,
+            "rows": rows,
+        }],
+    }
 
 
 # --- _is_empty_wrapper_row tests ---
@@ -355,3 +391,173 @@ class TestSubstationSchema:
         row = {"singleProjectCode": None, "id": "sub_123"}
         with pytest.raises(ValueError, match="schema_mismatch.*singleProjectCode is required"):
             validate_row(table, row)
+
+
+# --- scope must exist for replace_scope ---
+
+class TestScopeRequired:
+
+    def test_replace_scope_missing_scope_raises(self):
+        """replace_scope table without required scope_values must fail validation."""
+        store = _make_store()
+
+        # Missing singleProjectCode in scope_values
+        payload = _make_payload(
+            "dcp_project_tower", "tower",
+            {},  # no scope values
+            [{"singleProjectCode": "A", "id": "1"}],
+        )
+
+        with pytest.raises(ValueError, match="missing_scope_values"):
+            validate_payload(store.registry, payload, store.apply_scope_mappings)
+
+    def test_replace_scope_empty_scope_value_raises(self):
+        """replace_scope table with None scope value must fail validation."""
+        store = _make_store()
+
+        payload = _make_payload(
+            "dcp_project_tower", "tower",
+            {"singleProjectCode": None},  # None value
+            [{"singleProjectCode": "A", "id": "1"}],
+        )
+
+        with pytest.raises(ValueError, match="missing_scope_values"):
+            validate_payload(store.registry, payload, store.apply_scope_mappings)
+
+    def test_replace_scope_no_scope_columns_no_delete(self):
+        """replace_scope with empty scope_column_names (like plan_progress) should not require scope."""
+        store = _make_store()
+        table = store.registry.tables.get("dcp_plan_project_progress")
+        if table:
+            # Should not raise — empty scope_column_names means no scope required
+            validate_scope(table, {})
+
+
+# --- validator empty snapshot for replace_scope with scope ---
+
+class TestValidatorEmptySnapshot:
+
+    def test_replace_scope_with_scope_empty_rows_appended(self):
+        """replace_scope with scope_column_names and empty rows should still be appended."""
+        store = _make_store()
+
+        payload = _make_payload(
+            "dcp_project_tower", "tower",
+            {"singleProjectCode": "A"},
+            [],  # empty rows
+        )
+
+        validated, skipped = validate_payload(store.registry, payload, store.apply_scope_mappings)
+        assert len(validated) == 1
+        table, scope_values, rows = validated[0]
+        assert table.write_mode == "replace_scope"
+        assert table.scope_column_names == ("singleProjectCode",)
+        assert rows == []
+        assert scope_values["singleProjectCode"] == "A"
+
+    def test_replace_scope_without_scope_empty_rows_not_appended(self):
+        """replace_scope without scope_column_names and empty rows should NOT be appended."""
+        columns = {
+            "prjCode": ColumnSpec(name="prjCode", type="string", nullable=False),
+        }
+        table = TableSpec(
+            table_name="test_full_replace",
+            dataset_key="test",
+            description="test",
+            write_mode="replace_scope",
+            primary_key=("prjCode",),
+            scope_column_names=(),  # empty — full table replace
+            columns=columns,
+        )
+        registry = SchemaRegistry(
+            version=1,
+            tables={"test_full_replace": table},
+            datasets={"test"},
+            raw={"version": 1, "tables": {}},
+        )
+
+        payload = {
+            "dataset_key": "test",
+            "tables": [{
+                "table_name": "test_full_replace",
+                "scope_values": {},
+                "rows": [],  # empty
+            }],
+        }
+
+        validated, skipped = validate_payload(registry, payload, _noop_scope_mappings)
+        assert len(validated) == 0  # No scope columns → empty rows not appended
+
+
+# --- non-project-domain tables not regressed ---
+
+class TestNonProjectDomainNoRegression:
+
+    def test_upsert_table_empty_rows_not_appended(self):
+        """upsert tables with empty rows should NOT be appended to validated."""
+        # Create a simple upsert table
+        columns = {
+            "date": ColumnSpec(name="date", type="string", nullable=False),
+            "id": ColumnSpec(name="id", type="string", nullable=False),
+        }
+        table = TableSpec(
+            table_name="dcp_safe_daily_meeting",
+            dataset_key="daily_meeting",
+            description="test",
+            write_mode="upsert",
+            primary_key=("date", "id"),
+            scope_column_names=(),
+            columns=columns,
+        )
+        registry = SchemaRegistry(
+            version=1,
+            tables={"dcp_safe_daily_meeting": table},
+            datasets={"daily_meeting"},
+            raw={"version": 1, "tables": {}},
+        )
+
+        payload = {
+            "dataset_key": "daily_meeting",
+            "tables": [{
+                "table_name": "dcp_safe_daily_meeting",
+                "scope_values": {},
+                "rows": [],  # empty
+            }],
+        }
+
+        validated, skipped = validate_payload(registry, payload, _noop_scope_mappings)
+        assert len(validated) == 0  # upsert with empty rows → not appended
+
+    def test_replace_scope_full_table_no_scope_still_works(self):
+        """replace_scope with empty scope_column_names (full table replace) should work."""
+        columns = {
+            "prjCode": ColumnSpec(name="prjCode", type="string", nullable=False),
+        }
+        table = TableSpec(
+            table_name="dcp_plan_project_progress",
+            dataset_key="plan_progress",
+            description="test",
+            write_mode="replace_scope",
+            primary_key=("prjCode",),
+            scope_column_names=(),  # empty — full table replace
+            columns=columns,
+        )
+        registry = SchemaRegistry(
+            version=1,
+            tables={"dcp_plan_project_progress": table},
+            datasets={"plan_progress"},
+            raw={"version": 1, "tables": {}},
+        )
+
+        payload = {
+            "dataset_key": "plan_progress",
+            "tables": [{
+                "table_name": "dcp_plan_project_progress",
+                "scope_values": {},
+                "rows": [{"prjCode": "P001"}],
+            }],
+        }
+
+        validated, skipped = validate_payload(registry, payload, _noop_scope_mappings)
+        assert len(validated) == 1
+        assert len(validated[0][2]) == 1
