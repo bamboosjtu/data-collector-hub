@@ -593,32 +593,41 @@ class DataHubStore:
         self,
         ingestion_job_id: str,
         *,
-        new_producer_job_id: str,
+        new_downloader_job_id: str,
         params_json: str,
         source: str = "retry",
-    ) -> None:
+    ) -> bool:
         """Reopen an existing job for in-place retry.
 
-        Resets status/producer_job_id/params_json/source and clears
-        error/result/producer_status/row_count/finished_at.
+        Resets status/downloader_job_id/params_json/source and clears
+        error/result/producer_status/message counters/row_count/finished_at.
         Unlike mark_job, this explicitly sets fields to NULL/0 (no COALESCE).
+
+        Only succeeds if current status is in (failed, partial, cancelled).
+        Returns True if exactly one row was updated, False otherwise.
         """
         with closing(self.connect()) as conn, conn:
-            conn.execute(
+            cursor = conn.execute(
                 """UPDATE ingestion_jobs
                    SET status = 'triggering',
-                       producer_job_id = ?,
+                       downloader_job_id = ?,
                        params_json = ?,
                        source = ?,
                        error = NULL,
                        result_json = NULL,
                        producer_status_json = NULL,
+                       message_total = 0,
+                       message_received = 0,
+                       message_failed = 0,
                        row_count = 0,
+                       started_at = ?,
                        finished_at = NULL,
                        updated_at = ?
-                   WHERE ingestion_job_id = ?""",
-                (new_producer_job_id, params_json, source, datahub_now_text(), ingestion_job_id),
+                   WHERE ingestion_job_id = ?
+                     AND status IN ('failed','partial','cancelled')""",
+                (new_downloader_job_id, params_json, source, datahub_now_text(), datahub_now_text(), ingestion_job_id),
             )
+            return cursor.rowcount == 1
 
     def list_job_retries(self, ingestion_job_id: str) -> list[dict[str, Any]]:
         """List all retry jobs for the given original job."""

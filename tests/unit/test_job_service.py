@@ -12,6 +12,7 @@ Covers:
 
 from __future__ import annotations
 
+import inspect
 import json
 import sqlite3
 import tempfile
@@ -475,7 +476,7 @@ class TestRetryFailedChildren:
             "ing_child_0": {"ingestion_job_id": "ing_child_0", "status": "failed", "params_json": json.dumps({"domain": "a"})},
             "ing_child_1": {"ingestion_job_id": "ing_child_1", "status": "cancelled", "params_json": json.dumps({"domain": "b"})},
         }.get(jid))
-        store.reopen_job_for_retry = MagicMock()
+        store.reopen_job_for_retry = MagicMock(return_value=True)
         store.update_fanout_item_for_inplace_retry = MagicMock()
         store.reopen_fanout_run = MagicMock()
         store.reopen_parent_ingestion_job = MagicMock()
@@ -606,7 +607,7 @@ class TestRetryFailedChildren:
         store.get_job = MagicMock(return_value={"ingestion_job_id": "ing_child_0", "status": "failed", "params_json": json.dumps({"domain": "a"})})
         store.reopen_fanout_run = MagicMock()
         store.reopen_parent_ingestion_job = MagicMock()
-        store.reopen_job_for_retry = MagicMock()
+        store.reopen_job_for_retry = MagicMock(return_value=True)
         store.update_fanout_item_for_inplace_retry = MagicMock()
         # Make connector unavailable
         svc._trigger_clients = {}
@@ -1654,3 +1655,334 @@ class TestRetryFailedChildrenInPlace:
 
         store.reopen_fanout_run.assert_called_once_with("ing_parent_001")
         store.reopen_parent_ingestion_job.assert_called_once_with("ing_parent_001")
+
+
+# ---------------------------------------------------------------------------
+# P5.5.2: reopen_job_for_retry uses downloader_job_id, concurrent protection,
+#          fanout scheduler crash guard
+# ---------------------------------------------------------------------------
+
+class TestReopenJobForRetryStoreLevel:
+    """Store-level tests for reopen_job_for_retry using downloader_job_id."""
+
+    @staticmethod
+    def _make_store():
+        from src.datahub.storage.sqlite import DataHubStore
+        from src.datahub.core.registry import SchemaRegistry
+        import tempfile
+
+        tmpdir = tempfile.mkdtemp()
+        db_path = str(Path(tmpdir) / "test.db")
+        registry = SchemaRegistry(version=1, tables={}, datasets=set(), raw={})
+        store = DataHubStore(db_path, registry)
+        store.init_schema(dev_mode=False)
+        return store
+
+    def test_reopen_uses_downloader_job_id(self):
+        """reopen_job_for_retry updates downloader_job_id, not producer_job_id."""
+        store = self._make_store()
+        store.create_ingestion_job(
+            ingestion_job_id="ing_1",
+            producer_job_id="dl_original",
+            job_type="test_cmd",
+            params={"x": 1},
+        )
+        store.mark_job("ing_1", status="failed", error="boom")
+
+        result = store.reopen_job_for_retry(
+            "ing_1",
+            new_downloader_job_id="dl_retry_new",
+            params_json='{"x":1,"__datahub":{"retry_count":1}}',
+            source="retry",
+        )
+        assert result is True
+
+        job = store.get_job("ing_1")
+        assert job["downloader_job_id"] == "dl_retry_new"
+        assert job["status"] == "triggering"
+
+    def test_reopen_no_producer_job_id_column(self):
+        """reopen_job_for_retry SQL must not reference producer_job_id."""
+        import re
+        from src.datahub.storage import sqlite as sqlite_mod
+        source = inspect.getsource(sqlite_mod.DataHubStore.reopen_job_for_retry)
+        assert "producer_job_id" not in source, "reopen_job_for_retry must not reference producer_job_id column"
+
+    def test_reopen_does_not_increase_row_count(self):
+        """Reopening a job does not create a new ingestion_jobs row."""
+        store = self._make_store()
+        store.create_ingestion_job(
+            ingestion_job_id="ing_1",
+            producer_job_id="dl_1",
+            job_type="test_cmd",
+            params={},
+        )
+        store.mark_job("ing_1", status="failed", error="boom")
+
+        import sqlite3
+        with sqlite3.connect(store.db_path) as conn:
+            count_before = conn.execute("SELECT COUNT(*) FROM ingestion_jobs").fetchone()[0]
+
+        store.reopen_job_for_retry(
+            "ing_1",
+            new_downloader_job_id="dl_retry",
+            params_json='{}',
+            source="retry",
+        )
+
+        with sqlite3.connect(store.db_path) as conn:
+            count_after = conn.execute("SELECT COUNT(*) FROM ingestion_jobs").fetchone()[0]
+        assert count_after == count_before
+
+    def test_reopen_clears_error_result_producer_status_finished(self):
+        """reopen clears error, result_json, producer_status_json, finished_at."""
+        store = self._make_store()
+        store.create_ingestion_job(
+            ingestion_job_id="ing_1",
+            producer_job_id="dl_1",
+            job_type="test_cmd",
+            params={},
+        )
+        store.mark_job("ing_1", status="failed", error="some error", result={"k": "v"})
+
+        job_before = store.get_job("ing_1")
+        assert job_before["error"] is not None
+        assert job_before["result_json"] is not None
+        assert job_before["finished_at"] is not None
+
+        store.reopen_job_for_retry(
+            "ing_1",
+            new_downloader_job_id="dl_retry",
+            params_json='{}',
+            source="retry",
+        )
+
+        job = store.get_job("ing_1")
+        assert job["error"] is None
+        assert job["result_json"] is None
+        assert job["producer_status_json"] is None
+        assert job["finished_at"] is None
+
+    def test_reopen_resets_message_counters_and_row_count(self):
+        """reopen resets message_total, message_received, message_failed, row_count to 0."""
+        store = self._make_store()
+        store.create_ingestion_job(
+            ingestion_job_id="ing_1",
+            producer_job_id="dl_1",
+            job_type="test_cmd",
+            params={},
+        )
+        store.mark_job("ing_1", status="failed", error="boom")
+
+        # Simulate counters being set
+        import sqlite3
+        with sqlite3.connect(store.db_path) as conn:
+            conn.execute(
+                "UPDATE ingestion_jobs SET message_total=5, message_received=3, message_failed=2, row_count=100 WHERE ingestion_job_id='ing_1'"
+            )
+
+        store.reopen_job_for_retry(
+            "ing_1",
+            new_downloader_job_id="dl_retry",
+            params_json='{}',
+            source="retry",
+        )
+
+        job = store.get_job("ing_1")
+        assert job["message_total"] == 0
+        assert job["message_received"] == 0
+        assert job["message_failed"] == 0
+        assert job["row_count"] == 0
+
+    def test_reopen_only_allows_failed_partial_cancelled(self):
+        """reopen_job_for_retry returns False for non-retryable statuses."""
+        store = self._make_store()
+        store.create_ingestion_job(
+            ingestion_job_id="ing_1",
+            producer_job_id="dl_1",
+            job_type="test_cmd",
+            params={},
+        )
+        # Job starts as 'triggering' — not retryable
+        result = store.reopen_job_for_retry(
+            "ing_1",
+            new_downloader_job_id="dl_retry",
+            params_json='{}',
+            source="retry",
+        )
+        assert result is False
+
+        # Mark as succeeded — not retryable
+        store.mark_job("ing_1", status="succeeded")
+        result = store.reopen_job_for_retry(
+            "ing_1",
+            new_downloader_job_id="dl_retry2",
+            params_json='{}',
+            source="retry",
+        )
+        assert result is False
+
+        # Mark as failed — retryable
+        store.mark_job("ing_1", status="failed", error="boom")
+        result = store.reopen_job_for_retry(
+            "ing_1",
+            new_downloader_job_id="dl_retry3",
+            params_json='{}',
+            source="retry",
+        )
+        assert result is True
+
+
+class TestRetryJobConcurrentProtection:
+    """retry_job handles concurrent reopen failures gracefully."""
+
+    def test_retry_concurrent_reopen_returns_retry_already_started(self):
+        """If reopen returns False because job is already triggering, raise retry_already_started."""
+        store = MagicMock()
+        store.get_job.return_value = {
+            "ingestion_job_id": "ing_1",
+            "status": "failed",
+            "trigger_key": "test_cmd",
+            "params_json": json.dumps({"x": 1}),
+            "error": "boom",
+        }
+        store.reopen_job_for_retry.return_value = False
+
+        # Second get_job call returns already-triggering status
+        store.get_job.side_effect = [
+            {"ingestion_job_id": "ing_1", "status": "failed", "trigger_key": "test_cmd",
+             "params_json": json.dumps({"x": 1}), "error": "boom"},
+            {"ingestion_job_id": "ing_1", "status": "triggering", "trigger_key": "test_cmd",
+             "params_json": json.dumps({"x": 1})},
+        ]
+
+        plugin, command = _make_plugin_with_command()
+        with patch("src.datahub.core.services.job_service.find_command", return_value=command), \
+             patch("src.datahub.core.services.job_service.find_plugin_for_job", return_value=plugin), \
+             patch("src.datahub.core.services.job_service.new_producer_job_id", return_value="prod_123"):
+            svc = _make_p55_service(store, [plugin], trigger_clients={"dcp": MagicMock()})
+
+        with pytest.raises(JobServiceError) as exc_info:
+            svc.retry_job("ing_1")
+        assert exc_info.value.error_code == "retry_already_started"
+
+    def test_retry_concurrent_reopen_still_failed_returns_not_retryable(self):
+        """If reopen returns False and job is still failed, raise job_not_retryable."""
+        store = MagicMock()
+        store.reopen_job_for_retry.return_value = False
+
+        # Both get_job calls return failed (edge case: status changed back)
+        store.get_job.side_effect = [
+            {"ingestion_job_id": "ing_1", "status": "failed", "trigger_key": "test_cmd",
+             "params_json": json.dumps({"x": 1}), "error": "boom"},
+            {"ingestion_job_id": "ing_1", "status": "succeeded", "trigger_key": "test_cmd",
+             "params_json": json.dumps({"x": 1})},
+        ]
+
+        plugin, command = _make_plugin_with_command()
+        with patch("src.datahub.core.services.job_service.find_command", return_value=command), \
+             patch("src.datahub.core.services.job_service.find_plugin_for_job", return_value=plugin), \
+             patch("src.datahub.core.services.job_service.new_producer_job_id", return_value="prod_123"):
+            svc = _make_p55_service(store, [plugin], trigger_clients={"dcp": MagicMock()})
+
+        with pytest.raises(JobServiceError) as exc_info:
+            svc.retry_job("ing_1")
+        assert exc_info.value.error_code == "job_not_retryable"
+
+
+class TestRetryJobDownloaderJobId:
+    """retry_job updates downloader_job_id after reopen."""
+
+    def test_retry_updates_downloader_job_id(self):
+        """After retry, the job's downloader_job_id should be updated."""
+        store = self._make_store()
+        store.create_ingestion_job(
+            ingestion_job_id="ing_1",
+            producer_job_id="dl_original",
+            job_type="test_cmd",
+            params={"x": 1},
+        )
+        store.mark_job("ing_1", status="failed", error="boom")
+
+        store.reopen_job_for_retry(
+            "ing_1",
+            new_downloader_job_id="dl_retry_new",
+            params_json='{"x":1,"__datahub":{"retry_count":1}}',
+            source="retry",
+        )
+
+        job = store.get_job("ing_1")
+        assert job["downloader_job_id"] == "dl_retry_new"
+
+    @staticmethod
+    def _make_store():
+        from src.datahub.storage.sqlite import DataHubStore
+        from src.datahub.core.registry import SchemaRegistry
+        import tempfile
+
+        tmpdir = tempfile.mkdtemp()
+        db_path = str(Path(tmpdir) / "test.db")
+        registry = SchemaRegistry(version=1, tables={}, datasets=set(), raw={})
+        store = DataHubStore(db_path, registry)
+        store.init_schema(dev_mode=False)
+        return store
+
+
+class TestFanoutSchedulerCrashGuard:
+    """Fanout scheduler does not crash on _inplace_retry_child exception."""
+
+    def test_inplace_retry_exception_marks_item_failed(self):
+        """If _inplace_retry_child throws, the item is marked failed, not left hanging."""
+        from src.datahub.core.fanout_scheduler import _advance_fanout_run
+
+        store = MagicMock()
+        store.get_fanout_run.return_value = {
+            "parent_job_id": "ing_parent_001",
+            "child_command": "refresh_towers_for_project",
+            "status": "running",
+            "circuit_opened": False,
+            "consecutive_failure_threshold": 10,
+            "max_concurrency": 5,
+            "cooldown_seconds": 3,
+            "last_submit_at": None,
+            "total": 1,
+        }
+        store.list_submitted_fanout_items.return_value = [
+            {
+                "id": 1,
+                "item_index": 0,
+                "child_job_id": "ing_child_001",
+                "status": "submitted",
+                "retry_count": 0,
+                "params_json": json.dumps({"projectCode": "A"}),
+            },
+        ]
+        child_job = {
+            "ingestion_job_id": "ing_child_001",
+            "status": "failed",
+            "params_json": json.dumps({"projectCode": "A"}),
+            "error": "dcp_remote_failure",
+        }
+        store.get_job.return_value = child_job
+        store.get_fanout_stats.return_value = {"total": 1, "succeeded": 0, "failed": 1, "skipped": 0, "pending": 0, "submitted": 0, "submitting": 0}
+        store.get_consecutive_failures.return_value = 1
+
+        plugin, command = _make_plugin_with_command("refresh_towers_for_project")
+
+        with patch("src.datahub.core.plugin_loader.find_command", return_value=command), \
+             patch("src.datahub.core.plugin_loader.find_plugin_for_job", return_value=plugin), \
+             patch("src.datahub.core.fanout_scheduler._inplace_retry_child", side_effect=Exception("DB column not found")):
+            _advance_fanout_run(
+                store, {"dcp": MagicMock()}, [plugin],
+                run=store.get_fanout_run.return_value,
+                callback_base_url="http://localhost:8000",
+                callback_headers=None,
+                scheduler_id="test_scheduler",
+            )
+
+        # Item should be marked failed, not left hanging
+        store.update_fanout_item_terminal.assert_called_once()
+        call_args = store.update_fanout_item_terminal.call_args
+        assert call_args[0][0] == 1  # item id
+        assert call_args[1]["status"] == "failed"
+        assert "inplace_retry_failed" in call_args[1]["error"]

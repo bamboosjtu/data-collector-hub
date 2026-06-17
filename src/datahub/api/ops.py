@@ -278,13 +278,17 @@ function sourceBadge(s) {
   const m = {api:'blue',cli:'purple',scheduler:'green',retry:'yellow',ui_manual:'blue'};
   return s ? '<span class="badge badge-'+(m[s]||'gray')+'">'+esc(s)+'</span>' : '-';
 }
-
 function toast(msg, type='info') {
   const el = document.createElement('div');
   el.className = 'toast toast-'+type;
   el.textContent = msg;
-  document.body.appendChild(el);
+  document.getElementById('toasts').appendChild(el);
   setTimeout(() => el.remove(), type==='error' ? 8000 : 6000);
+}
+async function readJsonOrText(resp) {
+  const text = await resp.text();
+  try { return JSON.parse(text); }
+  catch { return {error:'non_json_response', message:text||resp.statusText}; }
 }
 
 function confirmAction(msg, onConfirm) {
@@ -662,9 +666,9 @@ async function retryJob(jobId, cmd) {
   confirmAction('Retry job '+jobId+'?\nCommand: '+cmd, async () => {
     try {
       const resp = await fetch(API+'/ingestion/v1/jobs/'+encodeURIComponent(jobId)+'/retry', {method:'POST', headers});
-      const result = await resp.json();
+      const result = await readJsonOrText(resp);
       if (resp.ok) {
-        toast('Retry job created: '+result.ingestion_job_id+' (retry_of: '+(result.retry_of_job_id||'-')+')', 'success');
+        toast('Retry started: '+result.ingestion_job_id, 'success');
         loadJobs();
       } else {
         const d = result.detail || result;
@@ -716,7 +720,7 @@ async function retryFailedChildren(parentJobId) {
         method:'POST', headers,
         body: body ? JSON.stringify(body) : undefined
       });
-      const result = await resp.json();
+      const result = await readJsonOrText(resp);
       if (resp.ok) {
         toast('Retry submitted: '+result.submitted+' submitted, '+result.skipped+' skipped', 'success');
         showFanoutDetail(parentJobId);

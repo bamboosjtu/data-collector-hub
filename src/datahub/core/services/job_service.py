@@ -295,12 +295,29 @@ class JobService:
             raise JobServiceError("unknown_command", f"command {command_name} not found")
 
         producer_job_id = new_producer_job_id(command_name, params, command)
-        self._store.reopen_job_for_retry(
+        reopened = self._store.reopen_job_for_retry(
             ingestion_job_id,
-            new_producer_job_id=producer_job_id,
+            new_downloader_job_id=producer_job_id,
             params_json=json.dumps(params, ensure_ascii=False),
             source=source,
         )
+
+        # Concurrent protection: if reopen failed, another retry may have already started
+        if not reopened:
+            recheck = self._store.get_job(ingestion_job_id)
+            if not recheck:
+                raise JobServiceError("job_not_found", f"ingestion job {ingestion_job_id} not found")
+            if recheck["status"] in ("triggering", "running", "accepted", "submitted"):
+                raise JobServiceError(
+                    "retry_already_started",
+                    f"job {ingestion_job_id} is already {recheck['status']}, cannot retry again",
+                    ingestion_job_id=ingestion_job_id,
+                )
+            raise JobServiceError(
+                "job_not_retryable",
+                f"job {ingestion_job_id} has status '{recheck['status']}', only {sorted(RETRYABLE_STATUSES)} can be retried",
+                ingestion_job_id=ingestion_job_id,
+            )
 
         # Trigger execution with stripped params
         trigger_type = command.trigger.get("type", "downloader_sync")
@@ -438,7 +455,7 @@ class JobService:
                     producer_job_id = new_producer_job_id(child_command, params, command)
                     self._store.reopen_job_for_retry(
                         child_job_id,
-                        new_producer_job_id=producer_job_id,
+                        new_downloader_job_id=producer_job_id,
                         params_json=json.dumps(params, ensure_ascii=False),
                         source=source,
                     )

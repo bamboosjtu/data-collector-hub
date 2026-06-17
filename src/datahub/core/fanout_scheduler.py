@@ -160,7 +160,7 @@ def _inplace_retry_child(
     producer_job_id = new_producer_job_id(child_command, params, command)
     store.reopen_job_for_retry(
         child_job_id,
-        new_producer_job_id=producer_job_id,
+        new_downloader_job_id=producer_job_id,
         params_json=json.dumps(params, ensure_ascii=False),
         source="retry",
     )
@@ -260,9 +260,20 @@ def _advance_fanout_run(
                         "fanout %s: auto-retrying child %s in-place (child_retry_count=%d, status=%s)",
                         parent_job_id, item["child_job_id"], child_retry_count, child_job["status"],
                     )
-                    _inplace_retry_child(store, trigger_clients, plugins, run, item, child_job,
-                                         callback_base_url=callback_base_url,
-                                         callback_headers=callback_headers)
+                    try:
+                        _inplace_retry_child(store, trigger_clients, plugins, run, item, child_job,
+                                             callback_base_url=callback_base_url,
+                                             callback_headers=callback_headers)
+                    except Exception as exc:
+                        logger.exception(
+                            "fanout %s: inplace retry failed for child %s, marking item failed",
+                            parent_job_id, item["child_job_id"],
+                        )
+                        store.update_fanout_item_terminal(
+                            item["id"],
+                            status="failed",
+                            error=f"inplace_retry_failed: {exc}",
+                        )
                 else:
                     store.update_fanout_item_terminal(
                         item["id"],
